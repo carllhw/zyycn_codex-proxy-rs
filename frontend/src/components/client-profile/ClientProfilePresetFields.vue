@@ -88,6 +88,13 @@ const terminal = computed({
       model.value = { ...preset.value, terminal: value === '' ? null : value }
   },
 })
+const osVersion = computed({
+  get: () => preset.value?.osVersion ?? '',
+  set: (value: string) => {
+    if (preset.value)
+      model.value = { ...preset.value, osVersion: value === '' ? null : value }
+  },
+})
 const userAgent = computed({
   get: () => model.value?.mode === 'custom' ? model.value.userAgent : props.preview?.userAgent ?? '',
   set: (value: string) => {
@@ -152,18 +159,32 @@ const userAgent = computed({
           :disabled="disabled"
         />
       </BaseFormItem>
-      <BaseFormItem label="终端标识">
-        <BaseInput
-          v-model="terminal"
-          :disabled="disabled"
-          aria-label="终端标识"
-          placeholder="留空使用 unknown"
-          maxlength="128"
-          spellcheck="false"
-          autocomplete="off"
-          class="font-mono"
-        />
-      </BaseFormItem>
+      <div class="grid gap-4" :class="{ 'sm:grid-cols-2': preset?.client === 'desktop' }">
+        <BaseFormItem label="终端标识">
+          <BaseInput
+            v-model="terminal"
+            :disabled="disabled"
+            aria-label="终端标识"
+            placeholder="留空使用 unknown"
+            maxlength="128"
+            spellcheck="false"
+            autocomplete="off"
+            class="font-mono"
+          />
+        </BaseFormItem>
+        <BaseFormItem v-if="preset?.client === 'desktop'" label="系统版本">
+          <BaseInput
+            v-model="osVersion"
+            :disabled="disabled"
+            aria-label="系统版本"
+            :placeholder="currentPreset?.defaults.osVersion ?? undefined"
+            maxlength="128"
+            spellcheck="false"
+            autocomplete="off"
+            class="font-mono"
+          />
+        </BaseFormItem>
+      </div>
     </div>
     <template v-if="custom">
       <BaseTextarea
