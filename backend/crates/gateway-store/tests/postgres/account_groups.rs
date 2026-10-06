@@ -27,7 +27,7 @@ const EMPTY_GROUP: &str = "grp_00000000000000000000000000000002";
 
 #[tokio::test]
 async fn fast_mode_migration_preserves_existing_group_choices() {
-    let Some(database) = TestDatabase::create_through("group_fast_mode_upgrade", 22).await else {
+    let Some(database) = TestDatabase::create_through("group_fast_mode_upgrade", 21).await else {
         return;
     };
     for (id, disabled) in [(MIXED_GROUP, true), (EMPTY_GROUP, false)] {
