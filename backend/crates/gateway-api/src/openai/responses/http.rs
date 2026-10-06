@@ -134,6 +134,8 @@ pub(crate) async fn execute_prepared_responses(
         ClientTransport::HttpJson
     };
     let model_hint = Some(decoded.metadata().requested_model().to_owned());
+    // 终端会重新校验中间件改写后的正文，初步解码不必保留到响应交付
+    drop(decoded);
     let execution = service.execution();
     let request_id = prepared.request_id().clone();
     let cancellation = prepared.cancellation();

@@ -1,4 +1,4 @@
-//! 验证 XZ 索引读取的定位、跨块访问与无关块跳过
+//! 验证 XZ 索引读取的定位、跨块访问、无关块跳过与大块缓冲保留量
 
 use provider_openai::transport::profile::platform_release::xz::IndexedXz;
 use std::io::{Cursor, Read, Seek, SeekFrom, Write};
@@ -8,6 +8,30 @@ pub(super) fn compress(bytes: &[u8]) -> Vec<u8> {
     encoder.write_all(bytes).unwrap();
     encoder.finish().unwrap()
 }
+
+#[test]
+fn indexed_xz_keeps_large_block_buffer_close_to_unpacked_size() {
+    // 同时覆盖实际制品的 24 MiB 块和会因 EOF 探测再次扩容的二次幂边界
+    for size in [24 * 1024 * 1024, 32 * 1024 * 1024] {
+        let compressed = compress(&vec![0x5a; size]);
+        let mut reader =
+            IndexedXz::new(Cursor::new(&compressed), 0, compressed.len() as u64).unwrap();
+        let mut byte = [0];
+        let allocations = allocation_counter::measure(|| reader.read_exact(&mut byte).unwrap());
+
+        assert_eq!(byte, [0x5a]);
+        // 测量读取器仍存活时的 Rust 分配；为块元数据留余量，不等同于进程 RSS
+        assert!(
+            allocations.bytes_current <= size as i64 + 64 * 1024,
+            "size={size}, {allocations:?}"
+        );
+        reader.seek(SeekFrom::End(-1)).unwrap();
+        reader.read_exact(&mut byte).unwrap();
+        assert_eq!(byte, [0x5a]);
+        assert_eq!(reader.read(&mut byte).unwrap(), 0);
+    }
+}
+
 #[test]
 fn indexed_xz_supports_backward_and_end_relative_seeks() {
     let bytes: Vec<u8> = (0..100_000).map(|i| (i % 251) as u8).collect();

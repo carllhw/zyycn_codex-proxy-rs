@@ -140,6 +140,8 @@ impl<R: Read + Seek> Read for IndexedXz<R> {
                 .map_err(|_| invalid())?;
             let decoder = xz2::read::XzDecoder::new_stream(bytes.as_slice(), stream);
             self.buffer.clear();
+            // 索引长度已受 MAX_BLOCK 限制，多留一字节检查越界，避免 read_to_end 倍增容量
+            self.buffer.reserve_exact(block.unpacked as usize + 1);
             decoder
                 .take(block.unpacked + 1)
                 .read_to_end(&mut self.buffer)?;

@@ -214,8 +214,9 @@ async fn serve_responses_websocket(socket: WebSocket, session: ResponsesWebSocke
         }
         request_count = request_count.saturating_add(1);
         let correlation_id = Arc::<str>::from(service.next_request_id());
-        let decoded = match decode_response_create_with_context(&payload, &request_headers) {
-            Ok(decoded) => decoded,
+        // 初步解码只保留路由事实，避免整份正文跨越准入等待和响应交付
+        let model_hint = match decode_response_create_with_context(&payload, &request_headers) {
+            Ok(decoded) => Some(decoded.metadata().requested_model().to_owned()),
             Err(error) => {
                 trace_rejected_request(
                     &correlation_id,
@@ -298,9 +299,9 @@ async fn serve_responses_websocket(socket: WebSocket, session: ResponsesWebSocke
             protocol: "openai".to_owned(),
             operation: Some(OperationKind::Generate),
             transport: ClientTransport::WebSocket,
-            model_hint: Some(decoded.metadata().requested_model().to_owned()),
+            model_hint,
             headers: encode_headers(&raw_headers),
-            body: Bytes::from(payload.clone()),
+            body: Bytes::from(payload),
         };
         let service_for_terminal = service.clone();
         let replay_for_terminal = replay.clone();
