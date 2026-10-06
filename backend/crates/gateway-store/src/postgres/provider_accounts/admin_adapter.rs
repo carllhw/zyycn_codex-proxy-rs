@@ -123,7 +123,9 @@ impl PgAdminAccountStore {
                     .bind(ends)
                     .fetch_all(&self.pool)
                     .await
-                    .map_err(|_| postgres_unavailable("load provider account quota window usage"))
+                    .map_err(|source| {
+                        postgres_unavailable("load provider account quota window usage", source)
+                    })
             })
             .await
             .map_err(|error| admin_store_error(ENTITY, error))?;
@@ -270,10 +272,10 @@ impl PgAdminAccountStore {
         .bind(account_ids)
         .fetch_all(&self.pool)
         .await
-        .map_err(|_| {
+        .map_err(|source| {
             admin_store_error(
                 ENTITY,
-                postgres_unavailable("load account group references"),
+                postgres_unavailable("load account group references", source),
             )
         })?;
         let mut groups = BTreeMap::<String, Vec<AccountGroupRef>>::new();
@@ -430,7 +432,12 @@ impl AccountStore for PgAdminAccountStore {
         )
         .fetch_one(&self.pool)
         .await
-        .map_err(|_| admin_store_error(ENTITY, postgres_unavailable("load account concurrency")))?;
+        .map_err(|source| {
+            admin_store_error(
+                ENTITY,
+                postgres_unavailable("load account concurrency", source),
+            )
+        })?;
         let default_concurrency = u64::try_from(default_concurrency).map_err(|_| {
             AdminStoreError::new(
                 AdminStoreErrorKind::Invalid,
@@ -701,8 +708,11 @@ impl AccountStore for PgAdminAccountStore {
         limit: AccountConcurrencyLimit,
         context: &MutationContext,
     ) -> AdminStoreResult<Option<AccountUpdateResult>> {
-        let mut transaction = self.pool.begin().await.map_err(|_| {
-            admin_store_error(ENTITY, postgres_unavailable("begin concurrency reduction"))
+        let mut transaction = self.pool.begin().await.map_err(|source| {
+            admin_store_error(
+                ENTITY,
+                postgres_unavailable("begin concurrency reduction", source),
+            )
         })?;
         let result =
             async {
@@ -710,7 +720,7 @@ impl AccountStore for PgAdminAccountStore {
                 let default_limit: i64 = sqlx::query_scalar(
                 "select max_concurrent_per_account from runtime_settings where id = 1 for update"
             ).fetch_one(&mut *transaction).await
-                .map_err(|_| postgres_unavailable("lock default concurrency"))?;
+                .map_err(|source| postgres_unavailable("lock default concurrency", source))?;
                 let changed = sqlx::query_scalar::<_, String>(
                     "update provider_accounts set concurrency_limit = $2, updated_at = greatest(now(), updated_at)
                  where id = $1 and enabled = true
@@ -722,7 +732,7 @@ impl AccountStore for PgAdminAccountStore {
                 .bind(default_limit)
                 .fetch_optional(&mut *transaction)
                 .await
-                .map_err(|_| postgres_unavailable("lower account concurrency"))?;
+                .map_err(|source| postgres_unavailable("lower account concurrency", source))?;
                 if changed.is_none() {
                     return Ok(None);
                 }
@@ -919,10 +929,10 @@ impl AccountStore for PgAdminAccountStore {
             .await
             .map_err(|error| admin_store_error(ENTITY, error))?;
         let revision = control_plane.settings.config_revision;
-        let mut transaction = self.accounts.pool.begin().await.map_err(|_| {
+        let mut transaction = self.accounts.pool.begin().await.map_err(|source| {
             admin_store_error(
                 ENTITY,
-                postgres_unavailable("begin credential export audit"),
+                postgres_unavailable("begin credential export audit", source),
             )
         })?;
         let result = async {

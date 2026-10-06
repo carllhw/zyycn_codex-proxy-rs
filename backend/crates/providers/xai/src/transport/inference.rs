@@ -6,7 +6,10 @@ use std::pin::Pin;
 use std::time::Duration;
 
 use futures::Stream;
-use gateway_core::error::{ClientVisibleUpstreamError, OpaqueUpstreamValue, ProviderDiagnostic};
+use gateway_core::error::{
+    ClientVisibleUpstreamError, ErrorSource, OpaqueUpstreamValue, ProviderDiagnostic,
+    RawUpstreamError,
+};
 use gateway_core::event::UpstreamHttpVersion;
 use gateway_core::upstream::UpstreamSendState;
 use url::Url;
@@ -317,11 +320,13 @@ pub enum GrokInferenceTransportErrorKind {
     Cancelled,
 }
 
-/// 已分类的 transport 错误，绝不包含上游响应体
-#[derive(Clone, PartialEq, Eq)]
+/// 推理 transport 失败，公开分类与受控上游详情分别承载
+#[derive(Clone)]
 pub struct GrokInferenceTransportError {
     kind: GrokInferenceTransportErrorKind,
+    source: Option<ErrorSource>,
     diagnostic: Option<Box<ProviderDiagnostic>>,
+    raw_upstream_error: Option<Box<RawUpstreamError>>,
     send_state: UpstreamSendState,
     status: Option<u16>,
     retry_after: Option<Duration>,
@@ -340,7 +345,9 @@ impl GrokInferenceTransportError {
     pub const fn new(kind: GrokInferenceTransportErrorKind, send_state: UpstreamSendState) -> Self {
         Self {
             kind,
+            source: None,
             diagnostic: None,
+            raw_upstream_error: None,
             send_state,
             status: None,
             retry_after: None,
@@ -370,6 +377,24 @@ impl GrokInferenceTransportError {
         self.diagnostic.as_deref()
     }
 
+    #[must_use]
+    pub fn with_source(mut self, source: impl std::error::Error + Send + Sync + 'static) -> Self {
+        self.source = Some(ErrorSource::new(source));
+        self
+    }
+
+    /// 原始响应仅交给受控诊断，普通格式化不会展开正文
+    #[must_use]
+    pub fn with_raw_upstream_error(mut self, error: RawUpstreamError) -> Self {
+        self.raw_upstream_error = Some(Box::new(error));
+        self
+    }
+
+    #[must_use]
+    pub fn raw_upstream_error(&self) -> Option<&RawUpstreamError> {
+        self.raw_upstream_error.as_deref()
+    }
+
     /// 附着合法的 HTTP 状态码
     #[must_use]
     pub fn with_status(mut self, status: u16) -> Self {
@@ -397,7 +422,7 @@ impl GrokInferenceTransportError {
         self
     }
 
-    /// 附着从错误 JSON 中提取并清洗后的稳定机器码
+    /// 保留错误 JSON 中的原始 code，业务分类不覆盖此值
     #[must_use]
     pub fn with_upstream_code(mut self, code: OpaqueUpstreamValue) -> Self {
         self.upstream_code = Some(Box::new(code));
@@ -536,7 +561,11 @@ impl fmt::Display for GrokInferenceTransportError {
     }
 }
 
-impl std::error::Error for GrokInferenceTransportError {}
+impl std::error::Error for GrokInferenceTransportError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        self.source.as_deref().map(|source| source as _)
+    }
+}
 
 /// 推理 transport 返回的 future
 pub type GrokInferenceTransportFuture<'a> = Pin<

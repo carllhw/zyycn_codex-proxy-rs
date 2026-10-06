@@ -67,7 +67,7 @@ async fn exclude_active_imports(
             .bind(id)
             .fetch_one(&mut **transaction)
             .await
-            .map_err(|_| unavailable())?;
+            .map_err(unavailable)?;
     if !acquired {
         return Err(conflict(id));
     }
@@ -77,8 +77,8 @@ async fn exclude_active_imports(
 fn store_error(error: StoreError) -> AdminStoreError {
     admin_store_error(ENTITY, error)
 }
-fn unavailable() -> StoreError {
-    postgres_unavailable("outbound proxy operation")
+fn unavailable(source: impl std::error::Error + Send + Sync + 'static) -> StoreError {
+    postgres_unavailable("outbound proxy operation", source)
 }
 fn conflict(id: &str) -> StoreError {
     StoreError::Conflict {
@@ -213,7 +213,7 @@ async fn transaction_record(
         .build()
         .fetch_optional(&mut **transaction)
         .await
-        .map_err(|_| unavailable())?
+        .map_err(unavailable)?
         .ok_or_else(|| conflict(id))?;
     record(row)
 }
@@ -234,7 +234,7 @@ async fn save_test(
         .bind(result.exit_ip.map(|ip| ip.to_string())).bind(result.exit_ipv4.map(|ip| ip.to_string()))
         .bind(result.exit_ipv6.map(|ip| ip.to_string())).bind(result.message)
         .bind(sqlx::types::Json(result.location)).bind(detected.map(sqlx::types::Json))
-        .execute(&mut **transaction).await.map_err(|_| unavailable())?;
+        .execute(&mut **transaction).await.map_err(unavailable)?;
     Ok(())
 }
 
@@ -252,7 +252,7 @@ async fn save_location(
         .bind(location.map(|value| value.region.trim()))
         .bind(location.map(|value| value.city.trim()))
         .bind(location.map(|value| value.timezone.name()))
-        .execute(&mut **transaction).await.map_err(|_| unavailable())?;
+        .execute(&mut **transaction).await.map_err(unavailable)?;
     Ok(())
 }
 
@@ -264,7 +264,7 @@ async fn lock_url(
         .bind(proxy.expose_url())
         .execute(&mut **transaction)
         .await
-        .map_err(|_| unavailable())?;
+        .map_err(unavailable)?;
     Ok(())
 }
 
@@ -276,7 +276,7 @@ pub(crate) async fn ensure_proxy_for_url(
 ) -> StoreResult<(String, bool)> {
     lock_url(transaction, proxy).await?;
     if let Some(id) = sqlx::query_scalar::<_, String>("select id from outbound_proxies where proxy_url = $1 order by created_at, id limit 1 for share")
-        .bind(proxy.expose_url()).fetch_optional(&mut **transaction).await.map_err(|_| unavailable())? {
+        .bind(proxy.expose_url()).fetch_optional(&mut **transaction).await.map_err(unavailable)? {
         return Ok((id, false));
     }
     let id = format!("proxy_{}", uuid::Uuid::now_v7().simple());
@@ -287,7 +287,7 @@ pub(crate) async fn ensure_proxy_for_url(
         .bind(proxy.expose_url())
         .execute(&mut **transaction)
         .await
-        .map_err(|_| unavailable())?;
+        .map_err(unavailable)?;
     Ok((id, true))
 }
 
@@ -308,7 +308,7 @@ pub(crate) async fn resolve_proxy_selection(
             .bind(id)
             .fetch_optional(&mut **transaction)
             .await
-            .map_err(|_| unavailable())?
+            .map_err(unavailable)?
             .ok_or_else(|| StoreError::NotFound {
                 entity: ENTITY,
                 id: id.clone(),
@@ -354,7 +354,7 @@ impl ProxyStore for PgProxyRepository {
             .pool
             .begin()
             .await
-            .map_err(|_| store_error(unavailable()))?;
+            .map_err(|source| store_error(unavailable(source)))?;
         let revision = bump_config_revision_in_transaction(&mut transaction)
             .await
             .map_err(store_error)?;
@@ -369,7 +369,7 @@ impl ProxyStore for PgProxyRepository {
         .bind(proxy_id)
         .execute(&mut *transaction)
         .await
-        .map_err(|_| store_error(unavailable()))?;
+        .map_err(|source| store_error(unavailable(source)))?;
         if updated.rows_affected() != 1 {
             return Err(store_error(conflict(proxy_id)));
         }
@@ -388,7 +388,7 @@ impl ProxyStore for PgProxyRepository {
         transaction
             .commit()
             .await
-            .map_err(|_| store_error(unavailable()))?;
+            .map_err(|source| store_error(unavailable(source)))?;
         admin_revision(revision)
     }
 
@@ -403,12 +403,12 @@ impl ProxyStore for PgProxyRepository {
             .pool
             .begin()
             .await
-            .map_err(|_| store_error(unavailable()))?;
+            .map_err(|source| store_error(unavailable(source)))?;
         // 数量和当前页共用只读快照，避免绑定变化使同一次响应的分页事实不一致
         sqlx::query("set transaction isolation level repeatable read, read only")
             .execute(&mut *transaction)
             .await
-            .map_err(|_| store_error(unavailable()))?;
+            .map_err(|source| store_error(unavailable(source)))?;
         let total: i64 = sqlx::query_scalar(
             "select count(a.id) from outbound_proxies p
              left join provider_accounts a on a.outbound_proxy_id = p.id
@@ -420,7 +420,7 @@ impl ProxyStore for PgProxyRepository {
         .bind(&query.search)
         .fetch_optional(&mut *transaction)
         .await
-        .map_err(|_| store_error(unavailable()))?
+        .map_err(|source| store_error(unavailable(source)))?
         .ok_or_else(|| {
             store_error(StoreError::NotFound {
                 entity: ENTITY,
@@ -439,7 +439,7 @@ impl ProxyStore for PgProxyRepository {
         .bind(i64::from(query.page - 1) * i64::from(query.page_size.get()))
         .fetch_all(&mut *transaction)
         .await
-        .map_err(|_| store_error(unavailable()))?
+        .map_err(|source| store_error(unavailable(source)))?
         .into_iter()
         .map(|row| {
             Ok(ProxyAccountRef {
@@ -468,7 +468,7 @@ impl ProxyStore for PgProxyRepository {
             .bind(&account_ids)
             .fetch_all(&mut *transaction)
             .await
-            .map_err(|_| store_error(unavailable()))?;
+            .map_err(|source| store_error(unavailable(source)))?;
             let mut groups = BTreeMap::<String, Vec<AccountGroupRef>>::new();
             for (account_id, group_id, name, color, enabled) in rows {
                 groups.entry(account_id).or_default().push(AccountGroupRef {
@@ -486,7 +486,7 @@ impl ProxyStore for PgProxyRepository {
         transaction
             .commit()
             .await
-            .map_err(|_| store_error(unavailable()))?;
+            .map_err(|source| store_error(unavailable(source)))?;
         Ok(ProxyAccountPage {
             items,
             total: u64::try_from(total).map_err(|_| store_error(invalid()))?,
@@ -505,14 +505,14 @@ impl ProxyStore for PgProxyRepository {
             .pool
             .acquire()
             .await
-            .map_err(|_| store_error(unavailable()))?
+            .map_err(|source| store_error(unavailable(source)))?
             .detach();
         let acquired: bool =
             sqlx::query_scalar("select pg_try_advisory_lock_shared(hashtextextended($1, 739219))")
                 .bind(id)
                 .fetch_one(&mut connection)
                 .await
-                .map_err(|_| store_error(unavailable()))?;
+                .map_err(|source| store_error(unavailable(source)))?;
         if !acquired {
             return Err(store_error(conflict(id)));
         }
@@ -524,7 +524,7 @@ impl ProxyStore for PgProxyRepository {
                     .bind(id)
                     .execute(&mut connection)
                     .await
-                    .map_err(|_| store_error(unavailable()))?;
+                    .map_err(|source| store_error(unavailable(source)))?;
                 return Err(error);
             }
         };
@@ -550,7 +550,7 @@ impl ProxyStore for PgProxyRepository {
         .bind(&query.search)
         .fetch_one(&self.pool)
         .await
-        .map_err(|_| store_error(unavailable()))?;
+        .map_err(|source| store_error(unavailable(source)))?;
         let mut builder = QueryBuilder::<Postgres>::new(SELECT);
         builder
             .push(" where strpos(lower(p.name), lower(")
@@ -563,7 +563,7 @@ impl ProxyStore for PgProxyRepository {
             .build()
             .fetch_all(&self.pool)
             .await
-            .map_err(|_| store_error(unavailable()))?
+            .map_err(|source| store_error(unavailable(source)))?
             .into_iter()
             .map(record)
             .collect::<StoreResult<Vec<_>>>()
@@ -583,7 +583,7 @@ impl ProxyStore for PgProxyRepository {
             .build()
             .fetch_optional(&self.pool)
             .await
-            .map_err(|_| store_error(unavailable()))?
+            .map_err(|source| store_error(unavailable(source)))?
             .ok_or_else(|| {
                 store_error(StoreError::NotFound {
                     entity: ENTITY,
@@ -602,7 +602,7 @@ impl ProxyStore for PgProxyRepository {
             .pool
             .begin()
             .await
-            .map_err(|_| store_error(unavailable()))?;
+            .map_err(|source| store_error(unavailable(source)))?;
         let revision = bump_config_revision_in_transaction(&mut transaction)
             .await
             .map_err(store_error)?;
@@ -621,7 +621,7 @@ impl ProxyStore for PgProxyRepository {
             .bind(command.auto_location)
             .execute(&mut *transaction)
             .await
-            .map_err(|_| store_error(unavailable()))?;
+            .map_err(|source| store_error(unavailable(source)))?;
         if let Some(test) = command.test {
             let current = transaction_record(&mut transaction, &id)
                 .await
@@ -643,7 +643,7 @@ impl ProxyStore for PgProxyRepository {
         transaction
             .commit()
             .await
-            .map_err(|_| store_error(unavailable()))?;
+            .map_err(|source| store_error(unavailable(source)))?;
         Ok(ProxyMutation {
             config_revision: admin_revision(revision)?,
             record: self.get(&id).await?,
@@ -659,7 +659,7 @@ impl ProxyStore for PgProxyRepository {
             .pool
             .begin()
             .await
-            .map_err(|_| store_error(unavailable()))?;
+            .map_err(|source| store_error(unavailable(source)))?;
         exclude_active_imports(&mut transaction, &command.id)
             .await
             .map_err(store_error)?;
@@ -677,7 +677,7 @@ impl ProxyStore for PgProxyRepository {
             .bind(&command.id)
             .fetch_one(&mut *transaction)
             .await
-            .map_err(|_| store_error(unavailable()))?;
+            .map_err(|source| store_error(unavailable(source)))?;
             if duplicate {
                 return Err(store_error(conflict(&command.id)));
             }
@@ -697,7 +697,7 @@ impl ProxyStore for PgProxyRepository {
              where id = $1 and revision = $2")
             .bind(&command.id).bind(i64::try_from(command.revision.get()).map_err(|_| store_error(invalid()))?)
             .bind(&command.name).bind(command.proxy.as_ref().map(OutboundProxy::expose_url)).bind(command.auto_location)
-            .execute(&mut *transaction).await.map_err(|_| store_error(unavailable()))?;
+            .execute(&mut *transaction).await.map_err(|source| store_error(unavailable(source)))?;
         if changed.rows_affected() != 1 {
             return Err(store_error(conflict(&command.id)));
         }
@@ -715,7 +715,7 @@ impl ProxyStore for PgProxyRepository {
                 .map_err(store_error)?;
         }
         sqlx::query("update provider_accounts a set outbound_proxy_url = p.proxy_url, updated_at = greatest(now(), a.updated_at) from outbound_proxies p where p.id = $1 and a.outbound_proxy_id = p.id and a.outbound_proxy_url is distinct from p.proxy_url")
-            .bind(&command.id).execute(&mut *transaction).await.map_err(|_| store_error(unavailable()))?;
+            .bind(&command.id).execute(&mut *transaction).await.map_err(|source| store_error(unavailable(source)))?;
         audit(
             &mut transaction,
             context,
@@ -729,7 +729,7 @@ impl ProxyStore for PgProxyRepository {
         transaction
             .commit()
             .await
-            .map_err(|_| store_error(unavailable()))?;
+            .map_err(|source| store_error(unavailable(source)))?;
         Ok(ProxyMutation {
             config_revision: admin_revision(revision)?,
             record: self.get(&command.id).await?,
@@ -746,7 +746,7 @@ impl ProxyStore for PgProxyRepository {
             .pool
             .begin()
             .await
-            .map_err(|_| store_error(unavailable()))?;
+            .map_err(|source| store_error(unavailable(source)))?;
         exclude_active_imports(&mut transaction, id)
             .await
             .map_err(store_error)?;
@@ -765,7 +765,7 @@ impl ProxyStore for PgProxyRepository {
                 }) {
                     store_error(conflict(id))
                 } else {
-                    store_error(unavailable())
+                    store_error(unavailable(error))
                 }
             })?;
         if result.rows_affected() != 1 {
@@ -784,7 +784,7 @@ impl ProxyStore for PgProxyRepository {
         transaction
             .commit()
             .await
-            .map_err(|_| store_error(unavailable()))?;
+            .map_err(|source| store_error(unavailable(source)))?;
         admin_revision(config_revision)
     }
 
@@ -799,7 +799,7 @@ impl ProxyStore for PgProxyRepository {
             .pool
             .begin()
             .await
-            .map_err(|_| store_error(unavailable()))?;
+            .map_err(|source| store_error(unavailable(source)))?;
         exclude_active_imports(&mut transaction, id)
             .await
             .map_err(store_error)?;
@@ -809,7 +809,7 @@ impl ProxyStore for PgProxyRepository {
         )
         .fetch_one(&mut *transaction)
         .await
-        .map_err(|_| store_error(unavailable()))?;
+        .map_err(|source| store_error(unavailable(source)))?;
         let current = transaction_record(&mut transaction, id)
             .await
             .map_err(store_error)?;
@@ -818,7 +818,7 @@ impl ProxyStore for PgProxyRepository {
             transaction
                 .rollback()
                 .await
-                .map_err(|_| store_error(unavailable()))?;
+                .map_err(|source| store_error(unavailable(source)))?;
             return Err(store_error(conflict(id)));
         }
         save_test(&mut transaction, &current, result)
@@ -826,7 +826,7 @@ impl ProxyStore for PgProxyRepository {
             .map_err(store_error)?;
         if current.auto_location {
             sqlx::query("update outbound_proxies set revision = revision + 1, updated_at = now() where id = $1")
-                .bind(id).execute(&mut *transaction).await.map_err(|_| store_error(unavailable()))?;
+                .bind(id).execute(&mut *transaction).await.map_err(|source| store_error(unavailable(source)))?;
         }
         let updated = transaction_record(&mut transaction, id)
             .await
@@ -852,7 +852,7 @@ impl ProxyStore for PgProxyRepository {
         transaction
             .commit()
             .await
-            .map_err(|_| store_error(unavailable()))?;
+            .map_err(|source| store_error(unavailable(source)))?;
         Ok(ProxyMutation {
             config_revision: admin_revision(revision)?,
             record: updated,

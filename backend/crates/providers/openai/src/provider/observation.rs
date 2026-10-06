@@ -769,10 +769,26 @@ pub(super) fn map_request_error(error: CodexRequestEncodeError) -> ProviderError
 }
 
 pub(super) fn map_selection_error(error: CredentialSelectionError) -> ProviderError {
-    match error {
+    selection_failure(&error).with_source(error)
+}
+
+fn selection_failure(error: &CredentialSelectionError) -> ProviderError {
+    let diagnostic_code = match error {
+        CredentialSelectionError::InvalidCredential(_) => Some("account_credential_invalid"),
+        CredentialSelectionError::Store(_) => Some("account_store_unavailable"),
+        CredentialSelectionError::Coordinator(_) => Some("account_coordinator_unavailable"),
+        CredentialSelectionError::CookiePolicy(_) => Some("account_cookie_policy_rejected"),
+        CredentialSelectionError::PolicyUnavailable => Some("account_policy_unavailable"),
+        _ => None,
+    };
+    // 这些变体只含固定文案，不格式化可能承载外部正文的其他错误
+    let diagnostic = diagnostic_code.map(|code| {
+        ProviderDiagnostic::new(error.to_string()).with_classification("account_selection", code)
+    });
+    let mapped = match error {
         CredentialSelectionError::Cancelled => provider_error(ProviderErrorKind::Cancelled, UpstreamSendState::NotSent).with_retry_prohibited(),
         CredentialSelectionError::ContinuationOwnerChanged => continuation_replay_required_error("scope_unavailable"),
-        CredentialSelectionError::SessionBound(error) => map_selection_error(*error).with_retry_prohibited(),
+        CredentialSelectionError::SessionBound(error) => selection_failure(error).with_retry_prohibited(),
         CredentialSelectionError::QueueRejected(error) => {
             provider_error(error.provider_kind(), UpstreamSendState::NotSent)
         }
@@ -782,7 +798,7 @@ pub(super) fn map_selection_error(error: CredentialSelectionError) -> ProviderEr
                 UpstreamSendState::NotSent,
             );
             match retry_after {
-                Some(retry) => error.with_retry_after(retry),
+                Some(retry) => error.with_retry_after(*retry),
                 None => error,
             }
         }
@@ -807,10 +823,10 @@ pub(super) fn map_selection_error(error: CredentialSelectionError) -> ProviderEr
             ProviderDiagnostic::new("OpenAI account changed repeatedly during selection")
                 .with_classification("account_selection", "account_snapshot_conflict"),
         ),
-        CredentialSelectionError::InvalidCredential
-        | CredentialSelectionError::Store
-        | CredentialSelectionError::Coordinator
-        | CredentialSelectionError::CookiePolicy => provider_error(
+        CredentialSelectionError::InvalidCredential(_)
+        | CredentialSelectionError::Store(_)
+        | CredentialSelectionError::Coordinator(_)
+        | CredentialSelectionError::CookiePolicy(_) => provider_error(
             ProviderErrorKind::ProviderInfrastructureUnavailable,
             UpstreamSendState::NotSent,
         ),
@@ -822,5 +838,9 @@ pub(super) fn map_selection_error(error: CredentialSelectionError) -> ProviderEr
             ProviderErrorKind::Unavailable,
             UpstreamSendState::NotSent,
         ),
+    };
+    match diagnostic {
+        Some(diagnostic) => mapped.with_diagnostic(diagnostic),
+        None => mapped,
     }
 }

@@ -1310,8 +1310,12 @@ impl DefaultExecutionService {
             let timeout = Delay::new(COORDINATION_TIMEOUT).fuse();
             pin_mut!(write, timeout);
             select_biased! {
-                result = write => { if result.is_err() { tracing::warn!("入口拒绝观测写入失败"); } },
-                _ = timeout => tracing::warn!("入口拒绝观测写入超时"),
+                result = write => {
+                    if let Err(error) = result {
+                        tracing::warn!(request_id = request_id.as_str(), operation = "record_entry_rejection", error_kind = ?error.kind(), "入口拒绝观测写入失败");
+                    }
+                },
+                _ = timeout => tracing::warn!(request_id = request_id.as_str(), operation = "record_entry_rejection", "入口拒绝观测写入超时"),
             }
         }
         if let (Some(observation), Err(error)) = (&request_observation, &result) {
@@ -2091,7 +2095,8 @@ impl DefaultExecutionService {
                 failure_kind = provider_error.kind().as_str(),
                 send_state = ?provider_error.send_state(),
                 upstream_status = ?provider_error.upstream_status(),
-                provider_error_code = ?provider_error.upstream_code().map(|code| code.as_str()),
+                diagnostic_stage = ?provider_error.diagnostic().and_then(|diagnostic| diagnostic.stage()),
+                diagnostic_code = ?provider_error.diagnostic().and_then(|diagnostic| diagnostic.code()),
                 latency_ms,
                 "账号连接测试失败"
             );
@@ -2477,8 +2482,9 @@ struct AdmissionLease {
 }
 
 async fn settle_budget(port: &dyn ClientBudgetPort, charge: ClientBudgetCharge) {
+    let request_id = charge.request_id.clone();
     if let Err(error) = port.settle(charge).await {
-        tracing::error!(%error, "Client budget settlement failed; storage will retry on the next request");
+        tracing::error!(request_id = request_id.as_str(), operation = "settle_client_budget", %error, "Client budget settlement failed; storage will retry on the next request");
     }
 }
 
@@ -2490,7 +2496,7 @@ impl AdmissionLease {
             .release(&self.client_api_key_id, &self.model_request_id)
             .await
         {
-            tracing::warn!(%error, "Client admission 释放失败，依赖租约 TTL 收敛");
+            tracing::warn!(request_id = self.model_request_id.as_str(), key_id = self.client_api_key_id.as_str(), operation = "release_client_admission", %error, "Client admission 释放失败，依赖租约 TTL 收敛");
         }
         self.armed = false;
     }
@@ -2621,7 +2627,7 @@ impl DefaultExecutionSession {
 
     async fn finalize_detached(&mut self) {
         if let Err(error) = self.core.cancel_and_finalize().await {
-            tracing::warn!(%error, "Detached execution 终态收敛失败");
+            tracing::warn!(request_id = self.core.request_id().as_str(), operation = "finalize_detached_execution", %error, "Detached execution 终态收敛失败");
         }
         self.settle_if_finalized().await;
     }

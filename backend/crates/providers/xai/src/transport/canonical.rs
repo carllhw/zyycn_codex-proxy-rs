@@ -1246,8 +1246,9 @@ fn upstream_event_error(value: &Value) -> ProviderError {
             _ => ProviderErrorKind::Unavailable,
         }
     };
-    let mut error = ProviderError::new(kind, UpstreamSendState::Sent)
-        .redact_sensitive_context("upstream event");
+    let mut error = ProviderError::new(kind, UpstreamSendState::Sent).with_raw_upstream_error(
+        gateway_core::error::RawUpstreamError::new(value.to_string()),
+    );
     if let Some(code) = code {
         error = error.with_upstream_code(OpaqueUpstreamValue::new(code.to_owned()));
     }
@@ -1271,8 +1272,8 @@ fn upstream_error_field<'a>(value: &'a Value, field: &str) -> Option<&'a str> {
         .and_then(Value::as_str)
 }
 
-fn protocol_error(_error: impl std::fmt::Debug) -> ProviderError {
-    protocol_error_marker()
+fn protocol_error(error: impl std::error::Error + Send + Sync + 'static) -> ProviderError {
+    protocol_error_marker().with_source(error)
 }
 
 fn protocol_error_marker() -> ProviderError {

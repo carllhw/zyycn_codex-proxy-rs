@@ -361,9 +361,7 @@ impl CodexProvider {
             client: self
                 .client_for_request(&context)?
                 .for_account(lease.account())
-                .map_err(|_| {
-                    provider_error(ProviderErrorKind::Unavailable, UpstreamSendState::NotSent)
-                })?
+                .map_err(|error| map_client_error(error, UpstreamSendState::NotSent, false).error)?
                 .with_authentication(lease.authentication())
                 .with_middleware_headers(middleware_headers),
             registry: Arc::clone(&self.live_registry),

@@ -209,7 +209,18 @@ export interface RequestTraceEvent {
   exchangeId: number | null
   stage: string
   count: number
-  data: Record<string, unknown>
+  data: Record<string, unknown> & {
+    /** attempt.failed 由 Core 从 ProviderError 生成，分类与诊断只有这一份来源 */
+    kind?: string
+    sendState?: 'not_sent' | 'sent' | 'ambiguous'
+    upstreamStatus?: number | null
+    diagnostic?: {
+      stage: string | null
+      code: string | null
+      message: string
+      truncated?: boolean
+    } | null
+  }
 }
 
 export interface RequestTrace {
@@ -303,7 +314,7 @@ export interface OpsError {
   subagentKind: string | null
   compact: boolean | null
   message: string
-  rawUpstreamError: string | null
+  errorDetails: string | null
   metadata: OpsErrorMetadata
   createdAt: string
   createdAtDisplay: string

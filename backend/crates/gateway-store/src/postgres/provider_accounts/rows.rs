@@ -465,11 +465,11 @@ pub(crate) fn core_account_from_summary(
     summary: ProviderAccountSummary,
 ) -> Result<CoreProviderAccount, CoreStoreError> {
     let id = CoreProviderAccountId::new(summary.id)
-        .map_err(|_| CoreStoreError::new(CoreStoreErrorKind::InvalidData))?;
+        .map_err(|source| CoreStoreError::caused_by(CoreStoreErrorKind::InvalidData, source))?;
     let provider = ProviderKind::new(summary.provider_kind)
-        .map_err(|_| CoreStoreError::new(CoreStoreErrorKind::InvalidData))?;
+        .map_err(|source| CoreStoreError::caused_by(CoreStoreErrorKind::InvalidData, source))?;
     let revision = CoreCredentialRevision::new(summary.credential_revision.get())
-        .map_err(|_| CoreStoreError::new(CoreStoreErrorKind::InvalidData))?;
+        .map_err(|source| CoreStoreError::caused_by(CoreStoreErrorKind::InvalidData, source))?;
     Ok(CoreProviderAccount::new(
         id,
         provider,
@@ -499,17 +499,6 @@ pub(crate) fn core_account_from_summary(
         summary.has_refresh_token,
         summary.next_refresh_at.map(Into::into),
     ))
-}
-
-pub(crate) fn core_store_error(error: StoreError) -> CoreStoreError {
-    let kind = match error {
-        StoreError::Unavailable { .. } => CoreStoreErrorKind::Unavailable,
-        StoreError::Conflict { .. } => CoreStoreErrorKind::Conflict,
-        StoreError::NotFound { .. } | StoreError::InvalidData { .. } => {
-            CoreStoreErrorKind::InvalidData
-        }
-    };
-    CoreStoreError::new(kind)
 }
 
 pub(crate) fn require_core_update(updated: bool) -> Result<(), CoreStoreError> {

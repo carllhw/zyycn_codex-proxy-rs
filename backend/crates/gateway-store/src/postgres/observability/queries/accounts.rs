@@ -92,7 +92,7 @@ pub(crate) async fn provider_account_usage(
         .build()
         .fetch_all(pool)
         .await
-        .map_err(|_| postgres_unavailable("load provider account usage"))?;
+        .map_err(|source| postgres_unavailable("load provider account usage", source))?;
 
     let mut observations = Vec::with_capacity(usize::from(query.limit));
     let mut costs = HashMap::<String, Vec<CurrencyCostTotal>>::new();
@@ -126,9 +126,11 @@ pub(crate) async fn provider_account_usage(
             }
             (0 | 1, 0 | 1) => {}
             _ => {
-                return Err(postgres_unavailable(
-                    "decode provider account usage grouping",
-                ));
+                return Err(crate::StoreError::Unavailable {
+                    backend: crate::StoreBackend::PostgreSql,
+                    message: "decode provider account usage grouping".to_owned(),
+                    source: None,
+                });
             }
         }
     }
@@ -188,7 +190,7 @@ pub(crate) async fn provider_account_request_buckets(
         .bind(range.end)
         .fetch_all(pool)
         .await
-        .map_err(|_| postgres_unavailable("load provider account request timeline"))?;
+        .map_err(|source| postgres_unavailable("load provider account request timeline", source))?;
 
     let mut observed = HashMap::<String, BTreeMap<u64, u64>>::new();
     for row in rows {

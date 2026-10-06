@@ -1,5 +1,7 @@
 //! 单行 `model_requests` 生命周期与最终 usage/cost 的 PostgreSQL owner
 
+use crate::core_store_error;
+
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use serde_json::Value;
@@ -289,7 +291,7 @@ pub struct ModelRequestFinalization {
     pub error_kind: Option<String>,
     pub provider_error_code: Option<String>,
     pub error_message: Option<String>,
-    pub raw_upstream_error: Option<String>,
+    pub error_details: Option<String>,
     pub continuation_unavailable_reason: Option<String>,
     pub upstream_connection_id: Option<String>,
     pub upstream_connection_exit_reason: Option<String>,
@@ -492,7 +494,7 @@ impl ModelRequestRepository for PgExecutionStore {
         .bind(request.continuation.requested)
         .execute(&self.pool)
         .await
-        .map_err(|_| postgres_unavailable("insert model request"))?;
+        .map_err(|source| postgres_unavailable("insert model request", source))?;
         Ok(())
     }
 
@@ -581,7 +583,9 @@ impl ModelRequestRepository for PgExecutionStore {
         .bind(request.continuation.requested)
         .execute(&self.pool)
         .await
-        .map_err(|_| postgres_unavailable("insert model request with first attempt"))?;
+        .map_err(|source| {
+            postgres_unavailable("insert model request with first attempt", source)
+        })?;
         Ok(())
     }
 
@@ -643,7 +647,7 @@ impl ModelRequestRepository for PgExecutionStore {
         )?)
         .fetch_optional(&self.pool)
         .await
-        .map_err(|_| postgres_unavailable("begin model request attempt"))?
+        .map_err(|source| postgres_unavailable("begin model request attempt", source))?
         .ok_or(StoreError::Conflict {
             entity: ENTITY,
             id: attempt.model_request_id,
@@ -666,7 +670,7 @@ impl ModelRequestRepository for PgExecutionStore {
         .bind(state.as_str())
         .execute(&self.pool)
         .await
-        .map_err(|_| postgres_unavailable("mark upstream send state"))?;
+        .map_err(|source| postgres_unavailable("mark upstream send state", source))?;
         Ok(result.rows_affected() == 1)
     }
 
@@ -689,7 +693,7 @@ impl ModelRequestRepository for PgExecutionStore {
         .bind(client_status_code.map(i32::from))
         .execute(&self.pool)
         .await
-        .map_err(|_| postgres_unavailable("mark downstream committed"))?;
+        .map_err(|source| postgres_unavailable("mark downstream committed", source))?;
         Ok(result.rows_affected() == 1)
     }
 
@@ -708,7 +712,7 @@ impl ModelRequestRepository for PgExecutionStore {
         .bind(i32::from(client_status_code))
         .execute(&self.pool)
         .await
-        .map_err(|_| postgres_unavailable("record client status code"))?;
+        .map_err(|source| postgres_unavailable("record client status code", source))?;
         Ok(result.rows_affected() == 1)
     }
 
@@ -739,7 +743,7 @@ impl ModelRequestRepository for PgExecutionStore {
                  upstream_transport = coalesce($37, upstream_transport),
                  http_version = coalesce($38, http_version), websocket_pool = $39,
                  service_tier = $40, provider_observation_json = $41,
-                 raw_upstream_error = $42,
+                 error_details = $42,
                  continuation_unavailable_reason = $43,
                  upstream_connection_id = $44,
                  upstream_connection_exit_reason = $45,
@@ -924,7 +928,7 @@ impl ModelRequestRepository for PgExecutionStore {
         .bind(finalization.websocket_pool)
         .bind(finalization.service_tier)
         .bind(finalization.provider_metadata_json.map(sqlx::types::Json))
-        .bind(finalization.raw_upstream_error)
+        .bind(finalization.error_details)
         .bind(finalization.continuation_unavailable_reason)
         .bind(finalization.upstream_connection_id)
         .bind(finalization.upstream_connection_exit_reason)
@@ -941,7 +945,7 @@ impl ModelRequestRepository for PgExecutionStore {
         .bind(finalization.billing_snapshot_json.map(sqlx::types::Json))
         .fetch_one(&self.pool)
         .await
-        .map_err(|_| postgres_unavailable("finalize model request"))?;
+        .map_err(|source| postgres_unavailable("finalize model request", source))?;
         Ok(finalized == 1)
     }
 
@@ -962,7 +966,7 @@ impl ModelRequestRepository for PgExecutionStore {
         .bind(now)
         .execute(&self.pool)
         .await
-        .map_err(|_| postgres_unavailable("recover expired model requests"))?;
+        .map_err(|source| postgres_unavailable("recover expired model requests", source))?;
         Ok(ModelRequestRecoveryReport {
             requests: result.rows_affected(),
         })
@@ -1006,7 +1010,7 @@ impl ExecutionStore for PgExecutionStore {
                     .bind(ttl_ms)
                     .fetch_one(&pool)
                     .await
-                    .map_err(|_| postgres_unavailable("renew model request recovery lease"))
+                    .map_err(|source| postgres_unavailable("renew model request recovery lease", source))
                 })
             },
         ))
@@ -1105,7 +1109,7 @@ impl ExecutionStore for PgExecutionStore {
             .retry_after()
             .map(|duration| u64::try_from(duration.as_millis()))
             .transpose()
-            .map_err(|_| CoreStoreError::new(CoreStoreErrorKind::InvalidData))?;
+            .map_err(|source| CoreStoreError::caused_by(CoreStoreErrorKind::InvalidData, source))?;
         super::OpsEventRepository::append_ops_event(
             &super::PgOpsEventRepository::new(self.pool.clone()),
             super::OpsEvent {
@@ -1124,9 +1128,7 @@ impl ExecutionStore for PgExecutionStore {
                     .map(|model| model.as_str().to_owned()),
                 failure_kind: error.kind().as_str().to_owned(),
                 upstream_send_state: Some(error.send_state().as_str().to_owned()),
-                raw_upstream_error: error
-                    .raw_upstream_error()
-                    .map(|raw| raw.as_str().to_owned()),
+                error_details: error.error_details(),
                 status_code: error.upstream_status().or(failure.upstream_status_code),
                 provider_error_code: error.upstream_code().map(|code| code.as_str().to_owned()),
                 retry_after_ms,
@@ -1135,8 +1137,9 @@ impl ExecutionStore for PgExecutionStore {
                     .map(|id| id.as_str().to_owned())
                     .or(failure.upstream_request_id),
                 latency_ms: Some(
-                    u64::try_from(failure.latency.as_millis())
-                        .map_err(|_| CoreStoreError::new(CoreStoreErrorKind::InvalidData))?,
+                    u64::try_from(failure.latency.as_millis()).map_err(|source| {
+                        CoreStoreError::caused_by(CoreStoreErrorKind::InvalidData, source)
+                    })?,
                 ),
                 message: error.diagnostic().map_or_else(
                     || "intermediate upstream failure".to_owned(),
@@ -1169,7 +1172,7 @@ impl ExecutionStore for PgExecutionStore {
                 upstream_model_id: None,
                 failure_kind: error.kind().as_str().to_owned(),
                 upstream_send_state: None,
-                raw_upstream_error: None,
+                error_details: None,
                 status_code: None,
                 provider_error_code: error.client_error_code().map(str::to_owned),
                 retry_after_ms: error
@@ -1197,9 +1200,9 @@ impl ExecutionStore for PgExecutionStore {
             .retry_after()
             .map(|duration| u64::try_from(duration.as_millis()))
             .transpose()
-            .map_err(|_| CoreStoreError::new(CoreStoreErrorKind::InvalidData))?;
+            .map_err(|source| CoreStoreError::caused_by(CoreStoreErrorKind::InvalidData, source))?;
         let latency_ms = u64::try_from(failure.latency.as_millis())
-            .map_err(|_| CoreStoreError::new(CoreStoreErrorKind::InvalidData))?;
+            .map_err(|source| CoreStoreError::caused_by(CoreStoreErrorKind::InvalidData, source))?;
         let provider_error_code = error.upstream_code().map(|code| code.as_str().to_owned());
         super::OpsEventRepository::append_ops_event(
             &super::PgOpsEventRepository::new(self.pool.clone()),
@@ -1216,9 +1219,7 @@ impl ExecutionStore for PgExecutionStore {
                 upstream_model_id: Some(failure.upstream_model_id.as_str().to_owned()),
                 failure_kind: error.kind().as_str().to_owned(),
                 upstream_send_state: Some(error.send_state().as_str().to_owned()),
-                raw_upstream_error: error
-                    .raw_upstream_error()
-                    .map(|raw| raw.as_str().to_owned()),
+                error_details: error.error_details(),
                 status_code: error.upstream_status(),
                 provider_error_code,
                 retry_after_ms,
@@ -1260,7 +1261,7 @@ impl ExecutionStore for PgExecutionStore {
             .as_deref()
             .map(serde_json::from_str::<Value>)
             .transpose()
-            .map_err(|_| CoreStoreError::new(CoreStoreErrorKind::InvalidData))?;
+            .map_err(|source| CoreStoreError::caused_by(CoreStoreErrorKind::InvalidData, source))?;
         if provider_metadata_json
             .as_ref()
             .is_some_and(|metadata| !metadata.is_object())
@@ -1329,11 +1330,13 @@ impl ExecutionStore for PgExecutionStore {
                     .as_deref()
                     .map(serde_json::from_str)
                     .transpose()
-                    .map_err(|_| CoreStoreError::new(CoreStoreErrorKind::InvalidData))?,
+                    .map_err(|source| {
+                        CoreStoreError::caused_by(CoreStoreErrorKind::InvalidData, source)
+                    })?,
                 error_kind,
                 provider_error_code: finalization.provider_error_code,
                 error_message,
-                raw_upstream_error: finalization.raw_upstream_error,
+                error_details: finalization.error_details,
                 continuation_unavailable_reason,
                 upstream_connection_id,
                 upstream_connection_exit_reason,
@@ -1427,17 +1430,6 @@ fn require_core_update(updated: bool) -> Result<(), CoreStoreError> {
     } else {
         Err(CoreStoreError::new(CoreStoreErrorKind::InvalidState))
     }
-}
-
-fn core_store_error(error: StoreError) -> CoreStoreError {
-    let kind = match error {
-        StoreError::Unavailable { .. } => CoreStoreErrorKind::Unavailable,
-        StoreError::Conflict { .. } => CoreStoreErrorKind::Conflict,
-        StoreError::NotFound { .. } | StoreError::InvalidData { .. } => {
-            CoreStoreErrorKind::InvalidData
-        }
-    };
-    CoreStoreError::new(kind)
 }
 
 fn new_model_request_row(request: CoreNewModelRequest) -> NewModelRequest {

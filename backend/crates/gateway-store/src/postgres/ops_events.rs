@@ -38,7 +38,7 @@ pub struct OpsEvent {
     pub upstream_model_id: Option<String>,
     pub failure_kind: String,
     pub upstream_send_state: Option<String>,
-    pub raw_upstream_error: Option<String>,
+    pub error_details: Option<String>,
     pub status_code: Option<u16>,
     pub provider_error_code: Option<String>,
     pub retry_after_ms: Option<u64>,
@@ -119,7 +119,7 @@ impl OpsEventRepository for PgOpsEventRepository {
                provider_account_name_snapshot, provider_account_email_snapshot,
                provider_account_authentication_kind_snapshot,
                failure_kind, upstream_send_state, status_code, provider_error_code, retry_after_ms,
-               upstream_request_id, latency_ms, message, raw_upstream_error,
+               upstream_request_id, latency_ms, message, error_details,
                created_at
              ) values (
                $1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
@@ -165,11 +165,11 @@ impl OpsEventRepository for PgOpsEventRepository {
                 .map_err(|_| invalid("latency_ms is too large"))?,
         )
         .bind(event.message)
-        .bind(event.raw_upstream_error)
+        .bind(event.error_details)
         .bind(event.created_at)
         .execute(&self.pool)
         .await
-        .map_err(|_| postgres_unavailable("append ops event"))?;
+        .map_err(|source| postgres_unavailable("append ops event", source))?;
         Ok(())
     }
 }

@@ -1452,6 +1452,10 @@ fn decoder_should_classify_failed_event_without_retaining_body() {
     assert_eq!(visible.message(), "secret");
     assert_eq!(visible.code(), Some("rate_limit_exceeded"));
     assert_eq!(visible.error_type(), Some("server_error"));
+    let raw: serde_json::Value =
+        serde_json::from_str(error.raw_upstream_error().unwrap().as_str()).unwrap();
+    assert_eq!(raw["error"]["message"], "secret");
+    assert_eq!(raw["error"]["code"], "rate_limit_exceeded");
     assert!(!format!("{error:?}").contains("secret"));
 }
 

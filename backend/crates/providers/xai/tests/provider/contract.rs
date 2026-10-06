@@ -2750,7 +2750,10 @@ async fn model_quota_transport_failure_preserves_model_scoped_feedback() {
             GrokInferenceTransportErrorKind::ModelQuotaExhausted,
             UpstreamSendState::Sent,
         )
-        .with_status(403),
+        .with_status(403)
+        .with_raw_upstream_error(gateway_core::error::RawUpstreamError::new(
+            "PRIVATE_QUOTA_ERROR",
+        )),
     );
     let provider = provider(selector.clone(), transport).await;
     let mut stream = provider
@@ -2764,6 +2767,11 @@ async fn model_quota_transport_failure_preserves_model_scoped_feedback() {
     let error = next_provider_error(&mut stream).await;
 
     assert_eq!(error.kind(), ProviderErrorKind::QuotaExhausted);
+    assert_eq!(
+        error.raw_upstream_error().unwrap().as_str(),
+        "PRIVATE_QUOTA_ERROR"
+    );
+    assert!(!format!("{error:?} {error}").contains("PRIVATE_QUOTA_ERROR"));
     assert!(error.replay_is_safe());
     assert_eq!(
         selector.feedback.lock().expect("feedback").as_slice(),

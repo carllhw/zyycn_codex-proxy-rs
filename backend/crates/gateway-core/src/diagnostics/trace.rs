@@ -10,6 +10,8 @@ use base64::{Engine as _, engine::general_purpose::STANDARD};
 use serde::Serialize;
 use serde_json::{Value, json};
 
+use crate::error::ProviderError;
+
 use super::capture::{bounded, diagnostic_event_json, diagnostic_event_type};
 use super::{body_fingerprint, diagnostic_headers};
 
@@ -121,6 +123,22 @@ impl TraceContext {
     /// details 只允许调用方构造的诊断事实；不接收原始请求/响应正文
     pub fn record(&self, stage: &'static str, data: Value) {
         self.push(stage, data, false);
+    }
+
+    /// 诊断正文与导出分类来自同一失败，导出路径不接收任意 JSON 或上游文案
+    pub fn record_provider_failure(&self, error: &ProviderError) {
+        if !self.is_enabled() {
+            return;
+        }
+        let data = json!({
+            "kind": error.kind().as_str(), "sendState": error.send_state().as_str(),
+            "diagnostic": error.diagnostic().map(|diagnostic| json!({
+                "stage": diagnostic.stage(), "code": diagnostic.code(), "message": diagnostic.as_str(),
+            })),
+            "upstreamStatus": error.upstream_status(),
+            "upstreamRequestId": error.upstream_request_id().map(|id| id.as_str()),
+        });
+        self.push("attempt.failed", data, false);
     }
 
     /// 同一个头部边界只采集一次：默认脱敏，显式开启 dump 时另存完整字节
@@ -243,7 +261,7 @@ impl TraceContext {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         Some(json!({
-            "schemaVersion": 1, "requestId": state.request_id,
+            "schemaVersion": 2, "requestId": state.request_id,
             "startedAtUnixMs": state.started_at_ms, "totalEvents": state.sequence,
             "droppedEvents": state.dropped_events, "maxEvents": MAX_EVENTS,
             "captureMode": "sanitized", "events": state.events,
@@ -258,10 +276,35 @@ impl TraceContext {
         let Some(state) = &self.state else { return };
         let mut encoded = serde_json::to_vec(&data).unwrap_or_default();
         if encoded.len() > MAX_DATA_BYTES {
-            data = json!({"truncated": true, "summary": body_fingerprint(&encoded),
+            let mut summary = json!({"truncated": true, "summary": body_fingerprint(&encoded),
                 "eventType": data.get("eventType"), "body": data.get("body"),
                 "jsonValid": data.get("jsonValid"),
             });
+            if stage == "attempt.failed" {
+                // 过长诊断的指纹不能挤掉已经由 Provider 分类的失败原因
+                // 保持有界，完整诊断仍由终态错误记录保存
+                summary = json!({"truncated": true, "summary": body_fingerprint(&encoded)});
+                for key in ["kind", "sendState"] {
+                    if let Some(value) = data.get(key).and_then(Value::as_str) {
+                        summary[key] = json!(bounded(value, 64));
+                    }
+                }
+                summary["upstreamStatus"] =
+                    json!(data.get("upstreamStatus").and_then(Value::as_u64));
+                if let Some(diagnostic) = data.get("diagnostic").and_then(Value::as_object) {
+                    let mut kept = json!({});
+                    for (key, limit) in [("stage", 96), ("code", 96), ("message", 256)] {
+                        if let Some(value) = diagnostic.get(key).and_then(Value::as_str) {
+                            kept[key] = json!(bounded(value, limit));
+                            if value.chars().count() > limit {
+                                kept["truncated"] = json!(true);
+                            }
+                        }
+                    }
+                    summary["diagnostic"] = kept;
+                }
+            }
+            data = summary;
             encoded = serde_json::to_vec(&data).unwrap_or_default();
         }
         let mut state = state

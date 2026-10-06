@@ -98,11 +98,13 @@ impl RuntimeSnapshotRepository for PgRuntimeSnapshotRepository {
             .pool
             .begin()
             .await
-            .map_err(|_| postgres_unavailable("begin runtime snapshot"))?;
+            .map_err(|source| postgres_unavailable("begin runtime snapshot", source))?;
         sqlx::query("set transaction isolation level repeatable read read only")
             .execute(&mut *transaction)
             .await
-            .map_err(|_| postgres_unavailable("configure runtime snapshot transaction"))?;
+            .map_err(|source| {
+                postgres_unavailable("configure runtime snapshot transaction", source)
+            })?;
 
         let (config_revision, settings) = load_settings(&mut transaction).await?;
         let client_api_keys = load_client_keys(&mut transaction).await?;
@@ -112,7 +114,7 @@ impl RuntimeSnapshotRepository for PgRuntimeSnapshotRepository {
         transaction
             .commit()
             .await
-            .map_err(|_| postgres_unavailable("commit runtime snapshot"))?;
+            .map_err(|source| postgres_unavailable("commit runtime snapshot", source))?;
 
         let observed_current_revision =
             RuntimeSnapshotRepository::current_config_revision(self).await?;
@@ -133,7 +135,7 @@ impl RuntimeSnapshotRepository for PgRuntimeSnapshotRepository {
         )
         .fetch_optional(&self.pool)
         .await
-        .map_err(|_| postgres_unavailable("read current config revision"))?
+        .map_err(|source| postgres_unavailable("read current config revision", source))?
         .ok_or_else(|| StoreError::NotFound {
             entity: "runtime settings",
             id: "1".to_owned(),
@@ -284,7 +286,7 @@ async fn load_settings(
     )
     .fetch_optional(&mut **transaction)
     .await
-    .map_err(|_| postgres_unavailable("load snapshot settings"))?
+    .map_err(|source| postgres_unavailable("load snapshot settings", source))?
     .ok_or_else(|| StoreError::NotFound {
         entity: "runtime settings",
         id: "1".to_owned(),
@@ -349,7 +351,7 @@ async fn load_client_keys(
     )
     .fetch_all(&mut **transaction)
     .await
-    .map_err(|_| postgres_unavailable("load snapshot client policies"))?;
+    .map_err(|source| postgres_unavailable("load snapshot client policies", source))?;
     rows.into_iter()
         .map(|row| {
             let mut key = ClientApiKeySnapshot::from_persisted(row.0, row.1, row.2, row.3, row.4)?;
@@ -367,7 +369,7 @@ async fn load_account_groups(
     )
     .fetch_all(&mut **transaction)
     .await
-    .map_err(|_| postgres_unavailable("load snapshot account groups"))?;
+    .map_err(|source| postgres_unavailable("load snapshot account groups", source))?;
     rows.into_iter()
         .map(|(id, name, enabled, fast_mode)| {
             Ok(SnapshotAccountGroupData {
@@ -394,7 +396,7 @@ async fn load_provider_accounts(
     >("select id, provider_kind, model_access_json from provider_accounts order by id")
     .fetch_all(&mut **transaction)
     .await
-    .map_err(|_| postgres_unavailable("load snapshot provider accounts"))
+    .map_err(|source| postgres_unavailable("load snapshot provider accounts", source))
     .map(|rows| {
         rows.into_iter()
             .map(
@@ -417,7 +419,7 @@ async fn load_group_memberships(
     )
     .fetch_all(&mut **transaction)
     .await
-    .map_err(|_| postgres_unavailable("load snapshot group memberships"))?;
+    .map_err(|source| postgres_unavailable("load snapshot group memberships", source))?;
     rows.into_iter()
         .map(|(group_id, account_id)| {
             Ok(SnapshotGroupMembershipData {

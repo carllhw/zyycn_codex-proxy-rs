@@ -140,11 +140,11 @@ function visibleFields(items: DetailField[]) {
         </div>
       </section>
 
-      <section v-if="record.rawUpstreamError" class="mt-3" :class="panelClass">
+      <section v-if="record.errorDetails" class="mt-3" :class="panelClass">
         <UsageDetailCodePanel
-          title="上游错误与关闭信息"
+          title="原始错误详情"
           max-height="360px"
-          :content="record.rawUpstreamError"
+          :content="record.errorDetails"
         />
       </section>
 

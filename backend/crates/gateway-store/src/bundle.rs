@@ -113,11 +113,11 @@ async fn connect(
         config.pool.acquire_timeout(),
     )?;
     let redis_client = ::redis::Client::open(config.redis_url()?)
-        .map_err(|_| redis_unavailable("create Redis client"))?;
+        .map_err(|source| redis_unavailable("create Redis client", source))?;
     let redis_connection = redis_client
         .get_connection_manager()
         .await
-        .map_err(|_| redis_unavailable("connect Redis manager"))?;
+        .map_err(|source| redis_unavailable("connect Redis manager", source))?;
 
     let provider_accounts = Arc::new(postgres::PgProviderAccountRepository::new(pool.clone()));
     let cooldowns = Arc::new(redis::RedisCredentialCooldownRepository::new(

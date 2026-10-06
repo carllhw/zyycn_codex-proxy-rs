@@ -2,7 +2,7 @@
 
 mod account_isolation;
 mod capacity;
-mod live;
+mod error_details;
 mod precommit;
 mod response_interrupt;
 mod session_binding;
@@ -83,6 +83,88 @@ use crate::support::{
     TestLeaseCoordinator, account_policy, catalog_cache, profile, secret,
 };
 use crate::transport::accept_codex_test_websocket;
+
+#[tokio::test]
+async fn account_client_preparation_keeps_ca_read_cause_without_exposing_path() {
+    const CHILD: &str = "CPR_TEST_CA_PREPARATION_FAILURE";
+    if std::env::var_os(CHILD).is_none() {
+        let directory = tempfile::tempdir().unwrap();
+        // 环境变量只影响隔离子进程，不能改变并发 TLS 测试的配置
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", std::thread::current().name().unwrap()])
+            .env(CHILD, "1")
+            .env(
+                provider_openai::transport::tls::CODEX_CA_CERT_ENV,
+                directory.path().join("PRIVATE_MISSING_CA.pem"),
+            )
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(String::from_utf8_lossy(&output.stdout).contains("1 passed"));
+        return;
+    }
+    let store = Arc::new(MemoryAccountStore::default());
+    create_account(&store, "acct_provider_contract").await;
+    store.set_egress(
+        "acct_provider_contract",
+        Some(gateway_core::account::OutboundProxy::parse("http://127.0.0.1:9").unwrap()),
+        None,
+    );
+    let error = provider_with_base_url(&store, "http://127.0.0.1:9".to_owned())
+        .execute(
+            planned_request("openai", generate_operation()),
+            fallback_transport_context("req_ca_prepare"),
+        )
+        .await
+        .err()
+        .expect("CA failure must occur before returning a stream");
+    assert_eq!(error.kind(), ProviderErrorKind::Protocol);
+    assert_eq!(error.send_state(), UpstreamSendState::NotSent);
+    let snapshot = error.stable_snapshot();
+    let diagnostic = snapshot.diagnostic().unwrap();
+    assert_eq!(diagnostic.stage(), Some("prepare"));
+    assert_eq!(diagnostic.code(), Some("io_not_found"));
+    assert!(diagnostic.as_str().contains("CODEX_CA_CERTIFICATE"));
+    assert!(diagnostic.as_str().contains("OS cause:"));
+    assert!(!diagnostic.as_str().contains("PRIVATE_"));
+    let gateway = gateway_core::error::GatewayError::from_provider(&snapshot);
+    assert_eq!(gateway.safe_message(), "upstream service is unavailable");
+    assert_eq!(gateway.diagnostic(), Some(diagnostic));
+}
+
+#[tokio::test]
+async fn invalid_request_profile_preserves_diagnostic_before_any_upstream_send() {
+    let store = Arc::new(MemoryAccountStore::default());
+    let provider = provider_with_base_url(&store, "http://127.0.0.1:1".to_owned());
+    let configuration = OpaqueProviderData::new(
+        json!({
+            "mode": "custom", "userAgent": "PRIVATE_USER_AGENT\n",
+        })
+        .as_object()
+        .unwrap()
+        .clone(),
+    );
+    let error = provider
+        .resolve_request_profile(&configuration)
+        .unwrap_err();
+    assert_eq!(error.kind(), ProviderErrorKind::InvalidRequest);
+    assert_eq!(error.send_state(), UpstreamSendState::NotSent);
+    let snapshot = error.stable_snapshot();
+    let diagnostic = snapshot.diagnostic().unwrap();
+    assert_eq!(diagnostic.stage(), Some("prepare"));
+    assert_eq!(
+        diagnostic.code(),
+        Some("request_profile_user_agent_invalid")
+    );
+    assert!(!diagnostic.as_str().contains("PRIVATE_"));
+    let gateway = gateway_core::error::GatewayError::from_provider(&snapshot);
+    assert_eq!(gateway.diagnostic(), Some(diagnostic));
+}
 
 #[tokio::test]
 async fn native_openai_translates_a_non_native_source_before_encoding() {
@@ -3594,6 +3676,22 @@ async fn selection_infrastructure_errors_have_a_distinct_classification() {
             UpstreamSendState::NotSent,
         )
     );
+    let diagnostic = error.diagnostic().unwrap();
+    assert_eq!(diagnostic.stage(), Some("account_selection"));
+    assert_eq!(diagnostic.code(), Some("account_store_unavailable"));
+    assert_eq!(diagnostic.as_str(), "Codex account store is unavailable");
+    use std::error::Error as _;
+    let snapshot = error.stable_snapshot();
+    let mut cause = snapshot.source().expect("selection source");
+    while let Some(source) = cause.source() {
+        cause = source;
+    }
+    let original = cause
+        .downcast_ref::<std::io::Error>()
+        .expect("original database cause");
+    assert_eq!(original.kind(), std::io::ErrorKind::ConnectionRefused);
+    assert_eq!(original.to_string(), "PRIVATE_DATABASE_CAUSE");
+    assert!(!format!("{error:?} {error}").contains("PRIVATE_DATABASE_CAUSE"));
 }
 
 #[tokio::test]

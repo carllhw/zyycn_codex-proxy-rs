@@ -778,7 +778,7 @@ pub(crate) fn admin_ops_error(error: OpsErrorRecord) -> admin_observability::Ops
         upstream_request_id: error.upstream_request_id,
         latency_ms: error.latency_ms,
         message: error.message,
-        raw_upstream_error: error.raw_upstream_error,
+        error_details: error.error_details,
         client_ip: error.client_ip,
         user_agent: error.user_agent,
         reasoning_effort: error.reasoning_effort,
@@ -890,7 +890,7 @@ pub(crate) fn usage_record_from_row(row: &sqlx::postgres::PgRow) -> StoreResult<
         provider_metadata_json: get::<Option<serde_json::Value>>(row, "provider_observation_json")?
             .map(|value| serde_json::to_string(&value))
             .transpose()
-            .map_err(|_| postgres_unavailable("encode provider observation"))?,
+            .map_err(|source| postgres_unavailable("encode provider observation", source))?,
         attempt_count: to_u32(get(row, "attempt_count")?)?,
         upstream_send_state: get(row, "upstream_send_state")?,
         downstream_committed_at: get(row, "downstream_committed_at")?,
@@ -977,7 +977,7 @@ pub(crate) fn ops_error_from_row(row: &sqlx::postgres::PgRow) -> StoreResult<Ops
         upstream_request_id: get(row, "upstream_request_id")?,
         latency_ms: optional_unsigned(row, "latency_ms")?,
         message: get(row, "message")?,
-        raw_upstream_error: get(row, "raw_upstream_error")?,
+        error_details: get(row, "error_details")?,
         client_ip: get(row, "client_ip")?,
         user_agent: get(row, "user_agent")?,
         reasoning_effort: get(row, "reasoning_effort")?,

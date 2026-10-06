@@ -143,7 +143,7 @@ impl PgControlPlaneRepository {
     ) -> StoreResult<gateway_admin::model::pricing::StoredPricing> {
         let (Json(overrides), Json(synced), synced_at) = sqlx::query_as::<_, (Json<PricingOverrides>, Json<PricingOverrides>, Option<chrono::DateTime<chrono::Utc>>)>(
             "select pricing_overrides_json, pricing_synced_json, pricing_synced_at from runtime_settings where id = 1")
-            .fetch_one(&self.pool).await.map_err(|_| postgres_unavailable("load model pricing"))?;
+            .fetch_one(&self.pool).await.map_err(|source| postgres_unavailable("load model pricing", source))?;
         validate_pricing(&overrides)?;
         validate_pricing(&synced)?;
         Ok(gateway_admin::model::pricing::StoredPricing {
@@ -162,13 +162,13 @@ impl PgControlPlaneRepository {
             .pool
             .begin()
             .await
-            .map_err(|_| postgres_unavailable("begin pricing sync"))?;
+            .map_err(|source| postgres_unavailable("begin pricing sync", source))?;
         let Json(mut prices) = sqlx::query_scalar::<_, Json<PricingOverrides>>(
             "select pricing_synced_json from runtime_settings where id = 1 for update",
         )
         .fetch_one(&mut *transaction)
         .await
-        .map_err(|_| postgres_unavailable("lock synced model pricing"))?;
+        .map_err(|source| postgres_unavailable("lock synced model pricing", source))?;
         for (provider, models) in changes {
             let stored = prices.entry(provider).or_default();
             for (model, price) in models {
@@ -182,13 +182,13 @@ impl PgControlPlaneRepository {
         prices.retain(|_, models| !models.is_empty());
         validate_pricing(&prices)?;
         sqlx::query("update runtime_settings set pricing_synced_json = $1, pricing_synced_at = now() where id = 1")
-            .bind(Json(prices)).execute(&mut *transaction).await.map_err(|_| postgres_unavailable("sync model pricing"))?;
+            .bind(Json(prices)).execute(&mut *transaction).await.map_err(|source| postgres_unavailable("sync model pricing", source))?;
         let revision = bump_config_revision_in_transaction(&mut transaction).await?;
         append_admin_audit_event_in_transaction(&mut transaction, audit, revision).await?;
         transaction
             .commit()
             .await
-            .map_err(|_| postgres_unavailable("commit pricing sync"))?;
+            .map_err(|source| postgres_unavailable("commit pricing sync", source))?;
         Ok(revision)
     }
 
@@ -201,14 +201,14 @@ impl PgControlPlaneRepository {
             .pool
             .begin()
             .await
-            .map_err(|_| postgres_unavailable("begin model pricing update"))?;
+            .map_err(|source| postgres_unavailable("begin model pricing update", source))?;
         // 锁定当前配置再更新选中项，避免批量操作覆盖其他管理员已提交的模型
         let (Json(mut pricing), Json(mut synced)) = sqlx::query_as::<_, (Json<PricingOverrides>, Json<PricingOverrides>)>(
             "select pricing_overrides_json, pricing_synced_json from runtime_settings where id = 1 for update",
         )
         .fetch_one(&mut *transaction)
         .await
-        .map_err(|_| postgres_unavailable("lock model pricing"))?;
+        .map_err(|source| postgres_unavailable("lock model pricing", source))?;
         let models = pricing.entry(command.provider.clone()).or_default();
         let source = synced.entry(command.provider).or_default();
         for model in command.models {
@@ -242,13 +242,13 @@ impl PgControlPlaneRepository {
             .bind(Json(synced))
             .execute(&mut *transaction)
             .await
-            .map_err(|_| postgres_unavailable("update model pricing"))?;
+            .map_err(|source| postgres_unavailable("update model pricing", source))?;
         let revision = bump_config_revision_in_transaction(&mut transaction).await?;
         append_admin_audit_event_in_transaction(&mut transaction, audit, revision).await?;
         transaction
             .commit()
             .await
-            .map_err(|_| postgres_unavailable("commit model pricing"))?;
+            .map_err(|source| postgres_unavailable("commit model pricing", source))?;
         Ok(revision)
     }
 }

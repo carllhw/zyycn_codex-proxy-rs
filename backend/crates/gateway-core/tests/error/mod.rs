@@ -10,6 +10,91 @@ use gateway_core::upstream::UpstreamSendState;
 use serde_json::json;
 
 #[test]
+fn source_chain_survives_domain_conversion_and_snapshot_without_entering_formatting() {
+    use gateway_core::error::{StoreError, StoreErrorKind};
+    use gateway_core::provider_ports::{ProviderStoreError, ProviderStoreErrorKind};
+    use std::error::Error as _;
+
+    let store = StoreError::caused_by(
+        StoreErrorKind::Unavailable,
+        std::io::Error::new(std::io::ErrorKind::ConnectionRefused, "PRIVATE_DB_CAUSE"),
+    );
+    let port =
+        ProviderStoreError::caused_by(ProviderStoreErrorKind::Unavailable, "select account", store);
+    let error = ProviderError::new(
+        ProviderErrorKind::ProviderInfrastructureUnavailable,
+        UpstreamSendState::NotSent,
+    )
+    .with_source(port);
+    let snapshot = error.stable_snapshot();
+    drop(error);
+
+    let port = snapshot
+        .source()
+        .unwrap()
+        .downcast_ref::<ProviderStoreError>()
+        .unwrap();
+    let store = port.source().unwrap().downcast_ref::<StoreError>().unwrap();
+    let original = store
+        .source()
+        .unwrap()
+        .downcast_ref::<std::io::Error>()
+        .unwrap();
+    assert_eq!(original.kind(), std::io::ErrorKind::ConnectionRefused);
+    assert_eq!(original.to_string(), "PRIVATE_DB_CAUSE");
+    assert!(
+        !format!("{snapshot:?} {snapshot} {port:?} {port} {store:?} {store}")
+            .contains("PRIVATE_DB_CAUSE")
+    );
+    assert_eq!(snapshot.send_state(), UpstreamSendState::NotSent);
+}
+
+#[test]
+fn restricted_details_preserve_causes_and_verbatim_upstream_body_separately() {
+    let body = "{ \"error\": {\"code\":\"Vendor.Unknown\",\"message\":\"PRIVATE_BODY\"} }";
+    let error = ProviderError::new(ProviderErrorKind::Unavailable, UpstreamSendState::Sent)
+        .with_source(std::io::Error::other("PRIVATE_CAUSE"))
+        .with_raw_upstream_error(RawUpstreamError::new(body));
+    let details: serde_json::Value = serde_json::from_str(&error.error_details().unwrap()).unwrap();
+    assert_eq!(details["upstream"], body);
+    assert_eq!(details["causes"]["messages"], json!(["PRIVATE_CAUSE"]));
+    assert_eq!(details["causes"]["truncated"], false);
+    assert!(!format!("{error:?} {error}").contains("PRIVATE_"));
+    assert!(
+        ProviderError::new(ProviderErrorKind::Cancelled, UpstreamSendState::NotSent)
+            .error_details()
+            .is_none()
+    );
+}
+
+#[test]
+fn restricted_cause_snapshot_bounds_unicode_and_cycles_with_an_explicit_marker() {
+    let error = ProviderError::new(ProviderErrorKind::Protocol, UpstreamSendState::NotSent)
+        .with_source(std::io::Error::other("原始原因".repeat(20_000)));
+    let details: serde_json::Value = serde_json::from_str(&error.error_details().unwrap()).unwrap();
+    assert_eq!(details["causes"]["truncated"], true);
+    assert!(details["causes"]["messages"][0].as_str().unwrap().len() <= 64 * 1024);
+
+    #[derive(Debug)]
+    struct CyclicError;
+    impl std::fmt::Display for CyclicError {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str("cyclic source")
+        }
+    }
+    impl std::error::Error for CyclicError {
+        fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+            Some(self)
+        }
+    }
+    let error = ProviderError::new(ProviderErrorKind::Protocol, UpstreamSendState::NotSent)
+        .with_source(CyclicError);
+    let details: serde_json::Value = serde_json::from_str(&error.error_details().unwrap()).unwrap();
+    assert_eq!(details["causes"]["truncated"], true);
+    assert_eq!(details["causes"]["messages"].as_array().unwrap().len(), 32);
+}
+
+#[test]
 fn provider_error_debug_should_not_expose_sensitive_context() {
     let secret = "sk-do-not-log-this";
     let error = ProviderError::new(ProviderErrorKind::Unauthorized, UpstreamSendState::Sent)
@@ -53,6 +138,28 @@ fn classified_provider_diagnostic_survives_stable_snapshot_without_entering_debu
     );
     assert!(!format!("{error:?}").contains(message));
     assert!(!format!("{gateway:?}").contains(message));
+}
+
+#[test]
+fn io_diagnostic_keeps_os_cause_without_copying_custom_error_text() {
+    let os_error = std::fs::File::open(
+        std::env::temp_dir().join(format!("cpr-missing-ca-{}/missing.pem", std::process::id())),
+    )
+    .unwrap_err();
+    let diagnostic = ProviderDiagnostic::new("CA read failed")
+        .with_classification("prepare", "custom_ca_read_failed")
+        .with_io_cause(&os_error);
+    assert!(diagnostic.as_str().contains(&os_error.to_string()));
+    assert_eq!(diagnostic.stage(), Some("prepare"));
+    assert_eq!(diagnostic.code(), Some("io_not_found"));
+
+    let private = std::io::Error::new(
+        std::io::ErrorKind::ConnectionRefused,
+        "PRIVATE_URL_AND_CREDENTIAL",
+    );
+    let diagnostic = ProviderDiagnostic::new("Connect failed").with_io_cause(&private);
+    assert_eq!(diagnostic.code(), Some("connection_refused"));
+    assert!(!diagnostic.as_str().contains("PRIVATE_"));
 }
 
 #[test]

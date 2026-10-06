@@ -25,57 +25,6 @@ const UPSTREAM_TRACE_HEADERS: &[&str] = &[
 ];
 const IDENTITY_AUTHORIZATION_ERROR_HEADER: &str = "x-openai-authorization-error";
 const IDENTITY_ERROR_JSON_HEADER: &str = "x-error-json";
-const PERSISTABLE_UPSTREAM_CODES: &[&str] = &[
-    "access_token_expired",
-    "account_banned",
-    "account_deactivated",
-    "account_disabled",
-    "account_suspended",
-    "authentication_error",
-    "billing_limit",
-    "cyber_policy",
-    "deactivated_workspace",
-    "flex_unavailable",
-    "identity_verification_required",
-    "insufficient_quota",
-    "invalid_api_key",
-    "invalid_encrypted_content",
-    "invalid_prompt",
-    "invalid_request",
-    "missing_tool_output",
-    "model_not_available",
-    "model_not_supported",
-    "no_tool_output",
-    "organization_disabled",
-    "payment_required",
-    "permission_denied",
-    "previous_response_not_found",
-    "quota_exceeded",
-    "quota_exhausted",
-    "rate_limit_error",
-    "rate_limit_exceeded",
-    "rate_limit_reached",
-    "refresh_token_invalidated",
-    "server_error",
-    "server_is_overloaded",
-    "slow_down",
-    "token_expired",
-    "token_invalid",
-    "token_invalidated",
-    "token_revoked",
-    "unauthorized",
-    "unsupported",
-    "unsupported_feature",
-    "usage_limit_reached",
-    "verification_required",
-    "websocket_connection_limit_reached",
-    "workspace_deactivated",
-    "workspace_member_credits_depleted",
-    "workspace_member_usage_limit_reached",
-    "workspace_owner_credits_depleted",
-    "workspace_owner_usage_limit_reached",
-];
-
 /// 上游拒绝相对业务 payload 的发送阶段
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CodexUpstreamSendPhase {
@@ -256,15 +205,8 @@ impl CodexUpstreamFailure {
         }
     }
 
-    pub(crate) fn persistable_code(&self) -> Option<&'static str> {
-        self.code
-            .as_deref()
-            .and_then(persistable_upstream_code)
-            .or_else(|| {
-                self.identity_error_code
-                    .as_deref()
-                    .and_then(persistable_upstream_code)
-            })
+    pub(crate) fn upstream_code(&self) -> Option<&str> {
+        self.code.as_deref().or(self.identity_error_code.as_deref())
     }
 }
 
@@ -303,7 +245,10 @@ impl ParsedUpstreamError {
             .or_else(|| value.get("message"))
             .and_then(Value::as_str)
             .and_then(non_empty_owned);
-        let code = code_value.and_then(Value::as_str).and_then(non_empty_owned);
+        let code = code_value
+            .and_then(Value::as_str)
+            .filter(|code| !code.trim().is_empty())
+            .map(str::to_owned);
         let message = client_message
             .clone()
             .or_else(|| error.as_str().and_then(non_empty_owned))
@@ -417,8 +362,7 @@ fn decode_identity_error_code(encoded: &str) -> Option<String> {
         .ok()?
         .pointer("/error/code")?
         .as_str()
-        .map(str::trim)
-        .filter(|code| !code.is_empty())
+        .filter(|code| !code.trim().is_empty())
         .map(ToString::to_string)
 }
 
@@ -569,13 +513,6 @@ fn normalized(value: Option<&str>) -> String {
 fn non_empty_owned(value: &str) -> Option<String> {
     let value = value.trim();
     (!value.is_empty()).then(|| value.to_owned())
-}
-
-fn persistable_upstream_code(value: &str) -> Option<&'static str> {
-    PERSISTABLE_UPSTREAM_CODES
-        .iter()
-        .copied()
-        .find(|known| value.trim().eq_ignore_ascii_case(known))
 }
 
 fn is_model_unsupported(value: &str) -> bool {

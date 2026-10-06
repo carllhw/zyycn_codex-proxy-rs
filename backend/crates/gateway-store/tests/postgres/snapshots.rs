@@ -255,7 +255,7 @@ async fn attempts_should_keep_their_own_account_snapshots() {
             upstream_model_id: Some("upstream-a".to_owned()),
             failure_kind: "rate_limited".to_owned(),
             upstream_send_state: Some("sent".to_owned()),
-            raw_upstream_error: Some(
+            error_details: Some(
                 r#"{"error":{"code":"rate_limit","message":"raw marker"}}"#.to_owned(),
             ),
             status_code: Some(429),
@@ -365,7 +365,7 @@ async fn ops_errors_should_keep_request_and_event_snapshots_after_account_deleti
          set outcome = 'failed', error_kind = 'upstream_error',
              error_message = 'snapshot failure', client_status_code = 502,
              upstream_status_code = 502, completed_at = $1,
-             raw_upstream_error = $2
+             error_details = $2
          where id = 'req_snap_error'",
     )
     .bind(started_at + chrono::Duration::seconds(2))
@@ -387,7 +387,7 @@ async fn ops_errors_should_keep_request_and_event_snapshots_after_account_deleti
             upstream_model_id: Some("grok-test".to_owned()),
             failure_kind: "auth_failed".to_owned(),
             upstream_send_state: Some("not_sent".to_owned()),
-            raw_upstream_error: Some(r#"{"error":"raw probe failure"}"#.to_owned()),
+            error_details: Some(r#"{"error":"raw probe failure"}"#.to_owned()),
             status_code: Some(401),
             provider_error_code: Some("invalid_api_key".to_owned()),
             retry_after_ms: None,
@@ -435,7 +435,7 @@ async fn ops_errors_should_keep_request_and_event_snapshots_after_account_deleti
     );
     assert_eq!(request_error.endpoint.as_deref(), Some("/v1/responses"));
     assert_eq!(
-        request_error.raw_upstream_error.as_deref(),
+        request_error.error_details.as_deref(),
         Some(r#"{"error":{"message":"raw request failure"}}"#)
     );
     let probe_error = errors
@@ -457,7 +457,7 @@ async fn ops_errors_should_keep_request_and_event_snapshots_after_account_deleti
     );
     assert_eq!(probe_error.endpoint, None);
     assert_eq!(
-        probe_error.raw_upstream_error.as_deref(),
+        probe_error.error_details.as_deref(),
         Some(r#"{"error":"raw probe failure"}"#)
     );
 

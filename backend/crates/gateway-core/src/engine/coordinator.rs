@@ -398,7 +398,7 @@ struct FailureFinalization {
     upstream_status_code: Option<u16>,
     upstream_request_id: Option<String>,
     provider_error_code: Option<String>,
-    raw_upstream_error: Option<String>,
+    error_details: Option<String>,
     retry_after_ms: Option<u64>,
     observation: ModelRequestFailureObservation,
 }
@@ -521,6 +521,10 @@ where
     /// 当前请求共享的诊断上下文
     pub fn trace(&self) -> TraceContext {
         self.trace.clone()
+    }
+
+    pub(super) fn request_id(&self) -> &ModelRequestId {
+        &self.request_id
     }
 
     /// 读取下一条 canonical event；首条未提交事件会携带 commit 要求
@@ -956,7 +960,7 @@ where
                 upstream_status_code: None,
                 upstream_request_id: None,
                 provider_error_code: None,
-                raw_upstream_error: None,
+                error_details: None,
                 retry_after_ms: None,
                 observation: ModelRequestFailureObservation::default(),
             })
@@ -1026,6 +1030,9 @@ where
                 }
                 Ok(None) => {}
                 Err(error) => {
+                    self.trace
+                        .attempt(self.attempts)
+                        .record_provider_failure(&error);
                     self.finish_provider_error(&error).await?;
                     return Err(provider_engine_error(error));
                 }
@@ -1101,7 +1108,7 @@ where
             ProviderBoundary::Result(result) => match *result {
                 Ok(stream) => stream,
                 Err(error) => {
-                    record_trace_error(&attempt_trace, &error);
+                    attempt_trace.record_provider_failure(&error);
                     let continuation_retry = !error.retry_is_prohibited()
                         && self.prepare_unavailable_native_continuation_replay(&error);
                     let candidate_retry = !error.retry_is_prohibited() && !continuation_retry
@@ -1200,7 +1207,7 @@ where
                 upstream_status_code: None,
                 upstream_request_id: None,
                 provider_error_code: None,
-                raw_upstream_error: None,
+                error_details: None,
                 retry_after_ms: None,
                 observation: ModelRequestFailureObservation::default(),
             })
@@ -1233,7 +1240,7 @@ where
                 upstream_status_code: None,
                 upstream_request_id: None,
                 provider_error_code: None,
-                raw_upstream_error: None,
+                error_details: None,
                 retry_after_ms: None,
                 observation: ModelRequestFailureObservation::default(),
             })
@@ -1256,7 +1263,7 @@ where
                 upstream_status_code: None,
                 upstream_request_id: None,
                 provider_error_code: None,
-                raw_upstream_error: None,
+                error_details: None,
                 retry_after_ms: None,
                 observation: ModelRequestFailureObservation::default(),
             })
@@ -1282,7 +1289,7 @@ where
                 upstream_status_code: None,
                 upstream_request_id: None,
                 provider_error_code: None,
-                raw_upstream_error: None,
+                error_details: None,
                 retry_after_ms: None,
                 observation: ModelRequestFailureObservation::default(),
             })
@@ -1438,7 +1445,9 @@ where
     ) -> Result<StreamErrorOutcome, EngineError> {
         // 原始 wire 只活在 request-local 决策状态；clone、attempt 记录与持久化终态
         // 均只接触已剥离的稳定错误字段
-        record_trace_error(&self.trace.attempt(self.attempts), &error);
+        self.trace
+            .attempt(self.attempts)
+            .record_provider_failure(&error);
         let mut atomic_client_events = error.take_atomic_client_events();
         let current = self.current.take().ok_or(EngineError::NoActiveAttempt)?;
         if self.request_observation.is_some() {
@@ -1961,7 +1970,7 @@ where
             diagnostic_trace_json: self.trace.snapshot().map(|value| value.to_string()),
             error: None,
             provider_error_code: None,
-            raw_upstream_error: None,
+            error_details: None,
             failure_observation: ModelRequestFailureObservation::default(),
             retry_after_ms: None,
             usage: self.observation.usage.clone(),
@@ -2002,9 +2011,7 @@ where
             upstream_status_code: error.upstream_status(),
             upstream_request_id: error.upstream_request_id().map(|id| id.as_str().to_owned()),
             provider_error_code: error.upstream_code().map(|code| code.as_str().to_owned()),
-            raw_upstream_error: error
-                .raw_upstream_error()
-                .map(|raw| raw.as_str().to_owned()),
+            error_details: error.error_details(),
             retry_after_ms: error.retry_after().map(duration_ms),
             observation: ModelRequestFailureObservation {
                 continuation_unavailable_reason: error
@@ -2065,7 +2072,7 @@ where
             upstream_status_code: None,
             upstream_request_id: None,
             provider_error_code: None,
-            raw_upstream_error: None,
+            error_details: None,
             retry_after_ms: None,
             observation: ModelRequestFailureObservation::default(),
         })
@@ -2128,7 +2135,7 @@ where
             diagnostic_trace_json: self.trace.snapshot().map(|value| value.to_string()),
             error: Some(finalization.error),
             provider_error_code: finalization.provider_error_code,
-            raw_upstream_error: finalization.raw_upstream_error,
+            error_details: finalization.error_details,
             failure_observation: finalization.observation,
             retry_after_ms: finalization.retry_after_ms,
             usage: self.observation.usage.clone(),
@@ -2488,20 +2495,4 @@ const fn escalate_send_state(a: UpstreamSendState, b: UpstreamSendState) -> Upst
 
 fn duration_ms(duration: Duration) -> u64 {
     u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
-}
-
-fn record_trace_error(trace: &TraceContext, error: &ProviderError) {
-    trace.record("attempt.failed", json!({
-        "kind": error.kind().as_str(), "sendState": format!("{:?}", error.send_state()),
-        "diagnostic": error.diagnostic().map(|diagnostic| json!({
-            "stage": diagnostic.stage(), "code": diagnostic.code(), "message": diagnostic.as_str(),
-        })),
-        "upstreamStatus": error.upstream_status(),
-        "upstreamRequestId": error.upstream_request_id().map(|id| id.as_str()),
-        "upstreamCode": error.upstream_code().map(|code| code.as_str()),
-        "rawError": error.raw_upstream_error().map(|raw| {
-            let value = serde_json::from_str(raw.as_str()).unwrap_or_else(|_| json!(raw.as_str()));
-            crate::diagnostics::diagnostic_json(&value)
-        }),
-    }));
 }

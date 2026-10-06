@@ -841,7 +841,7 @@ async fn append_audit_in_transaction(
     .bind(event.created_at)
     .execute(&mut **transaction)
     .await
-    .map_err(|_| crate::postgres_unavailable("append backup audit event"))?;
+    .map_err(|source| crate::postgres_unavailable("append backup audit event", source))?;
     Ok(())
 }
 

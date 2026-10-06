@@ -784,6 +784,7 @@ impl ExecutionObservationWrite {
                     finalization.provider_metadata_json.as_deref(),
                     finalization.diagnostic_trace_json.as_deref(),
                     finalization.provider_error_code.as_deref(),
+                    finalization.error_details.as_deref(),
                 ])
                 .saturating_add(error_bytes)
                 .saturating_add(size_of::<ModelRequestFinalization>())
@@ -874,9 +875,13 @@ fn attempt_bytes(attempt: &AttemptRecord) -> usize {
 }
 
 fn provider_error_bytes(error: &ProviderError) -> usize {
+    use std::error::Error as _;
+
     let mut bytes = text_bytes([
         error.upstream_code().map(|value| value.as_str()),
         error.upstream_request_id().map(|value| value.as_str()),
+        error.diagnostic().map(|value| value.as_str()),
+        error.raw_upstream_error().map(|value| value.as_str()),
     ]);
     if let Some(client_error) = error.client_visible_upstream_error() {
         bytes = bytes.saturating_add(text_bytes([
@@ -895,7 +900,33 @@ fn provider_error_bytes(error: &ProviderError) -> usize {
                 .saturating_add(header.value().len());
         }
     }
-    bytes
+    bytes.saturating_add(error_source_bytes(error.source()))
+}
+
+/// 原始来源也占据队列内存；只计数而不保存格式化内容，避免复制或打印敏感原因
+fn error_source_bytes(mut source: Option<&(dyn std::error::Error + 'static)>) -> usize {
+    struct ByteCount(usize);
+    impl std::fmt::Write for ByteCount {
+        fn write_str(&mut self, value: &str) -> std::fmt::Result {
+            self.0 = self.0.saturating_add(value.len());
+            Ok(())
+        }
+    }
+    let mut bytes = ByteCount(0);
+    for _ in 0..32 {
+        let Some(error) = source else { return bytes.0 };
+        bytes.0 = bytes.0.saturating_add(std::mem::size_of_val(error));
+        if std::fmt::write(&mut bytes, format_args!("{error}")).is_err() {
+            return usize::MAX;
+        }
+        source = error.source();
+    }
+    // 过深或循环的第三方来源不能让观测写入无限遍历，交给已有超限丢弃计数
+    if source.is_some() {
+        usize::MAX
+    } else {
+        bytes.0
+    }
 }
 
 fn text_bytes<const N: usize>(values: [Option<&str>; N]) -> usize {

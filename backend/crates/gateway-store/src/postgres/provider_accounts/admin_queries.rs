@@ -160,7 +160,12 @@ pub(crate) async fn load_admin_account_page(
         .bind(offset)
         .fetch_all(pool)
         .await
-        .map_err(|_| admin_store_error(ENTITY, postgres_unavailable("load admin account page")))?;
+        .map_err(|source| {
+            admin_store_error(
+                ENTITY,
+                postgres_unavailable("load admin account page", source),
+            )
+        })?;
     let metadata = rows.first().ok_or_else(|| {
         AdminStoreError::new(
             AdminStoreErrorKind::Unavailable,
@@ -211,10 +216,10 @@ async fn validate_group_filter(
             .bind(group_id.as_str())
             .fetch_one(pool)
             .await
-            .map_err(|_| {
+            .map_err(|source| {
                 admin_store_error(
                     ENTITY,
-                    postgres_unavailable("validate admin account group filter"),
+                    postgres_unavailable("validate admin account group filter", source),
                 )
             })?;
     if exists {

@@ -462,7 +462,7 @@ impl GrokInferenceTransport for ReqwestGrokInferenceTransport {
                             UpstreamSendState::Sent,
                         )
                         .with_transport_metrics(transport_metrics)),
-                        Err(error) => Err(classify_inference_stream_error(&error)
+                        Err(error) => Err(classify_inference_stream_error(error)
                             .with_transport_metrics(transport_metrics)),
                     };
                     std::future::ready(Some(item))
@@ -1018,8 +1018,19 @@ fn classify_inference_reqwest_error(error: reqwest::Error) -> GrokInferenceTrans
             UpstreamSendState::Ambiguous,
         )
     };
-    GrokInferenceTransportError::new(kind, send_state)
-        .with_diagnostic(inference_http_diagnostic(&error))
+    let failure = GrokInferenceTransportError::new(kind, send_state)
+        .with_diagnostic(inference_http_diagnostic(&error));
+    with_inference_reqwest_source(failure, error)
+}
+
+fn with_inference_reqwest_source(
+    mut failure: GrokInferenceTransportError,
+    source: reqwest::Error,
+) -> GrokInferenceTransportError {
+    if source.url().is_some() {
+        failure = failure.redact_sensitive_context("request URL");
+    }
+    failure.with_source(source.without_url())
 }
 
 fn classify_model_catalog_reqwest_error(error: reqwest::Error) -> GrokModelCatalogTransportError {
@@ -1044,8 +1055,8 @@ fn classify_billing_reqwest_error(error: reqwest::Error) -> GrokBillingTransport
     GrokBillingTransportError::new(kind)
 }
 
-fn classify_inference_stream_error(error: &reqwest::Error) -> GrokInferenceTransportError {
-    GrokInferenceTransportError::new(
+fn classify_inference_stream_error(error: reqwest::Error) -> GrokInferenceTransportError {
+    let failure = GrokInferenceTransportError::new(
         if error.is_timeout() {
             GrokInferenceTransportErrorKind::Timeout
         } else {
@@ -1053,7 +1064,8 @@ fn classify_inference_stream_error(error: &reqwest::Error) -> GrokInferenceTrans
         },
         UpstreamSendState::Sent,
     )
-    .with_diagnostic(inference_http_diagnostic(error))
+    .with_diagnostic(inference_http_diagnostic(&error));
+    with_inference_reqwest_source(failure, error)
 }
 
 async fn classify_inference_status(
@@ -1065,16 +1077,27 @@ async fn classify_inference_status(
     let http_version = upstream_http_version(response.version());
     let request_id = upstream_request_id(&response);
     let status_code = status.as_u16();
-    let body = match collect_bounded(response, MAX_ERROR_BODY_BYTES).await {
-        Ok(BoundedBody::Body(body)) => body,
-        Ok(BoundedBody::TooLarge) | Err(_) => {
+    let (body, body_error) = match collect_bounded(response, MAX_ERROR_BODY_BYTES).await {
+        Ok(BoundedBody::Body(body)) => (Some(body), None),
+        Ok(BoundedBody::TooLarge) => {
             trace.record(
                 "capture.gap",
-                serde_json::json!({"reason": "error_body_unavailable_or_too_large"}),
+                serde_json::json!({"reason": "error_body_too_large"}),
             );
-            Vec::new()
+            (None, None)
+        }
+        Err(source) => {
+            trace.record(
+                "capture.gap",
+                serde_json::json!({"reason": "error_body_read_failed"}),
+            );
+            (None, Some(source))
         }
     };
+    let raw = body.as_ref().map(|body| {
+        gateway_core::error::RawUpstreamError::new(String::from_utf8_lossy(body).into_owned())
+    });
+    let body = body.unwrap_or_default();
     trace.capture("upstream.error.body", &body);
     let metadata = inference_error_metadata(&body);
     let body_failure = classify_grok_body_failure(&metadata, &body);
@@ -1108,17 +1131,23 @@ async fn classify_inference_status(
     let credential_recovery_required = kind == GrokInferenceTransportErrorKind::Unauthorized;
     let mut error = GrokInferenceTransportError::new(kind, UpstreamSendState::Sent)
         .with_status(status_code)
-        .with_response_facts(http_version, request_id)
-        .redact_sensitive_context("upstream response body");
-    let upstream_code = if status == StatusCode::BAD_REQUEST && reasoning_decode_failed(&metadata) {
-        Some("reasoning_decode_failed".to_owned())
+        .with_response_facts(http_version, request_id);
+    if let Some(raw) = raw {
+        error = error.with_raw_upstream_error(raw);
+    }
+    let diagnostic_code = if status == StatusCode::BAD_REQUEST && reasoning_decode_failed(&metadata)
+    {
+        "reasoning_decode_failed"
     } else {
-        metadata
-            .code
-            .as_deref()
-            .and_then(normalize_failure_code)
-            .or_else(|| body_failure.map(GrokBodyFailure::marker).map(str::to_owned))
+        body_failure.map_or("upstream_failure", GrokBodyFailure::marker)
     };
+    error = error.with_diagnostic(
+        ProviderDiagnostic::new(format!(
+            "xAI upstream rejected request: status={status_code}"
+        ))
+        .with_classification("upstream", diagnostic_code),
+    );
+    let upstream_code = metadata.code;
     if let Some(message) = metadata.client_message.as_deref() {
         error = error.with_client_visible_upstream_error(ClientVisibleUpstreamError::new(
             scrub_account_fingerprints(message),
@@ -1134,6 +1163,9 @@ async fn classify_inference_status(
     }
     if let Some(retry_after) = retry_after {
         error = error.with_retry_after(retry_after);
+    }
+    if let Some(source) = body_error {
+        error = with_inference_reqwest_source(error, source);
     }
     error
 }
@@ -1287,8 +1319,7 @@ fn first_string(object: &serde_json::Map<String, Value>, fields: &[&str]) -> Opt
     fields
         .iter()
         .find_map(|field| object.get(*field).and_then(Value::as_str))
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
+        .filter(|value| !value.trim().is_empty())
         .map(ToOwned::to_owned)
 }
 
@@ -1454,22 +1485,6 @@ fn credential_rejected(value: &str) -> bool {
 
 fn contains_any(value: &str, signals: &[&str]) -> bool {
     signals.iter().any(|signal| value.contains(signal))
-}
-
-fn normalize_failure_code(value: &str) -> Option<String> {
-    let mut normalized = String::with_capacity(value.len().min(48));
-    for character in value.trim().to_ascii_lowercase().chars() {
-        if character.is_ascii_alphanumeric() {
-            normalized.push(character);
-        } else if matches!(character, '-' | '_' | '.' | ':') {
-            normalized.push('_');
-        }
-        if normalized.len() >= 48 {
-            break;
-        }
-    }
-    let normalized = normalized.trim_matches('_');
-    (!normalized.is_empty()).then(|| normalized.to_owned())
 }
 
 fn upstream_http_version(version: reqwest::Version) -> UpstreamHttpVersion {

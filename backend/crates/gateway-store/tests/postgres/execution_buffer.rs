@@ -561,34 +561,63 @@ async fn shutdown_drains_observations_already_accepted_by_the_queue() {
 
 #[tokio::test]
 async fn observation_byte_budget_drops_payload_without_waiting_for_the_database() {
+    for provider_error in [
+        ProviderError::new(ProviderErrorKind::Transport, UpstreamSendState::NotSent)
+            .with_source(std::io::Error::other("x".repeat(2_048))),
+        ProviderError::new(ProviderErrorKind::Transport, UpstreamSendState::NotSent)
+            .with_upstream_code(OpaqueUpstreamValue::new("x".repeat(2_048))),
+        ProviderError::new(ProviderErrorKind::Transport, UpstreamSendState::NotSent)
+            .with_raw_upstream_error(gateway_core::error::RawUpstreamError::new(
+                "x".repeat(2_048),
+            )),
+        ProviderError::new(ProviderErrorKind::Transport, UpstreamSendState::NotSent)
+            .with_diagnostic(gateway_core::error::ProviderDiagnostic::new(
+                "x".repeat(2_048),
+            )),
+    ] {
+        let inner = Arc::new(RecordingStore::default());
+        let (store, _writer) = BufferedExecutionStore::with_limits(
+            Arc::clone(&inner),
+            NonZeroUsize::new(8).expect("capacity"),
+            NonZeroUsize::new(1_024).expect("byte capacity"),
+        );
+        let failure = ProbeFailure {
+            provider_kind: ProviderKind::new("openai").expect("provider"),
+            account_id: ProviderAccountId::new("acct_byte_budget").expect("account"),
+            upstream_model_id: UpstreamModelId::new("gpt-byte-budget").expect("model"),
+            error: provider_error,
+            latency: Duration::from_millis(1),
+        };
+
+        tokio::time::timeout(
+            Duration::from_millis(50),
+            store.record_probe_failure(failure),
+        )
+        .await
+        .expect("byte budget must not wait")
+        .expect("byte budget is fail-open");
+
+        assert!(inner.operations.lock().expect("operations lock").is_empty());
+        assert_eq!(store.stats().queued_items, 0);
+        assert_eq!(store.stats().dropped_total, 1);
+    }
+}
+
+#[tokio::test]
+async fn final_error_body_counts_towards_the_observation_byte_budget() {
     let inner = Arc::new(RecordingStore::default());
     let (store, _writer) = BufferedExecutionStore::with_limits(
         Arc::clone(&inner),
-        NonZeroUsize::new(8).expect("capacity"),
-        NonZeroUsize::new(1_024).expect("byte capacity"),
+        NonZeroUsize::new(8).unwrap(),
+        NonZeroUsize::new(1_024).unwrap(),
     );
-    let provider_error =
-        ProviderError::new(ProviderErrorKind::Transport, UpstreamSendState::NotSent)
-            .with_upstream_code(OpaqueUpstreamValue::new("x".repeat(2_048)));
-    let failure = ProbeFailure {
-        provider_kind: ProviderKind::new("openai").expect("provider"),
-        account_id: ProviderAccountId::new("acct_byte_budget").expect("account"),
-        upstream_model_id: UpstreamModelId::new("gpt-byte-budget").expect("model"),
-        error: provider_error,
-        latency: Duration::from_millis(1),
-    };
-
-    tokio::time::timeout(
-        Duration::from_millis(50),
-        store.record_probe_failure(failure),
-    )
-    .await
-    .expect("byte budget must not wait")
-    .expect("byte budget is fail-open");
-
-    assert!(inner.operations.lock().expect("operations lock").is_empty());
-    assert_eq!(store.stats().queued_items, 0);
+    let request = accepted_request("req_error_body_budget");
+    let mut finalization = early_failure(&request);
+    finalization.error_details = Some("x".repeat(2_048));
+    store.finalize_model_request(finalization).await.unwrap();
     assert_eq!(store.stats().dropped_total, 1);
+    assert_eq!(store.stats().queued_bytes, 0);
+    assert!(inner.operations.lock().unwrap().is_empty());
 }
 
 #[tokio::test]

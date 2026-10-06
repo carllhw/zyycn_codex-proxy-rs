@@ -97,7 +97,9 @@ impl ProviderArtifactProfileCachePort for RedisProviderArtifactProfileRepository
                 .arg(ttl_ms)
                 .invoke_async::<i64>(&mut connection)
                 .await
-                .map_err(|_| provider_unavailable("replace artifact profile"))?;
+                .map_err(|source| {
+                    crate::provider_unavailable("replace artifact profile", source)
+                })?;
             match outcome {
                 1 => Ok(true),
                 0 => Ok(false),
@@ -126,7 +128,7 @@ impl ProviderArtifactProfileCachePort for RedisProviderArtifactProfileRepository
                 .arg("profile")
                 .query_async(&mut connection)
                 .await
-                .map_err(|_| provider_unavailable("read artifact profile"))?;
+                .map_err(|source| crate::provider_unavailable("read artifact profile", source))?;
             let (artifact_sequence, verified_at_ms, payload) = values;
             if artifact_sequence.is_none() && verified_at_ms.is_none() && payload.is_none() {
                 return Ok(None);
@@ -169,10 +171,6 @@ fn exact_positive_millis(
         .ok()
         .filter(|millis| *millis > 0 && *millis <= MAX_REDIS_EXACT_INTEGER)
         .ok_or_else(|| provider_invalid(operation))
-}
-
-fn provider_unavailable(operation: &'static str) -> ProviderStoreError {
-    ProviderStoreError::new(ProviderStoreErrorKind::Unavailable, operation)
 }
 
 fn provider_invalid(operation: &'static str) -> ProviderStoreError {

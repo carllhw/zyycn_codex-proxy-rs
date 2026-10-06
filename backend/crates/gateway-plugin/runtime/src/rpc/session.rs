@@ -69,6 +69,44 @@ pub enum RpcError {
     Remote(PluginFault),
 }
 
+impl RpcError {
+    /// 会话状态与请求错误共用安全分类，不展开插件返回正文
+    pub(crate) fn diagnostic(&self) -> (&'static str, &'static str) {
+        match self {
+            RpcError::Start(_) => ("process_start", "插件进程启动失败"),
+            RpcError::Handshake => ("handshake", "插件握手失败"),
+            RpcError::Protocol => ("protocol", "插件协议错误"),
+            RpcError::InvalidResponse(stage) => (
+                "invalid_response",
+                match stage {
+                    Stage::Registration => "注册阶段：插件返回了无效响应",
+                    Stage::Configuration => "配置阶段：插件返回了无效响应",
+                    Stage::Authentication => "认证阶段：插件返回了无效响应",
+                    Stage::Routing => "路由阶段：插件返回了无效响应",
+                    Stage::Scheduling => "调度阶段：插件返回了无效响应",
+                    Stage::Retry => "重试阶段：插件返回了无效响应",
+                    Stage::Http => "HTTP 中间件：插件返回了无效响应",
+                    Stage::Service => "服务中间件：插件返回了无效响应",
+                    Stage::WebSocket => "WebSocket 中间件：插件返回了无效响应",
+                    Stage::Request => "请求中间件：插件返回了无效响应",
+                    Stage::Attempt => "尝试中间件：插件返回了无效响应",
+                    Stage::Upstream => "上游适配阶段：插件返回了无效响应",
+                    Stage::Observation => "观察阶段：插件返回了无效响应",
+                    Stage::Management | Stage::PublicManagement => "管理阶段：插件返回了无效响应",
+                    Stage::CommandLine => "命令行阶段：插件返回了无效响应",
+                    Stage::Maintenance => "维护阶段：插件返回了无效响应",
+                },
+            ),
+            RpcError::Closed => ("closed", "插件进程或传输已停止"),
+            RpcError::Timeout => ("timeout", "插件调用超时"),
+            RpcError::Cancelled => ("cancelled", "插件会话已取消"),
+            RpcError::Capacity => ("capacity", "插件调用容量已耗尽"),
+            RpcError::Context => ("context", "插件调用上下文无效"),
+            RpcError::Remote(_) => ("remote", "插件返回错误"),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum RpcSessionDiagnostic {
     Ready,
@@ -657,40 +695,7 @@ impl RpcSession {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Some(error) = &state.failure {
-            let (code, message) = match error {
-                RpcError::Start(_) => ("process_start", "插件进程启动失败"),
-                RpcError::Handshake => ("handshake", "插件握手失败"),
-                RpcError::Protocol => ("protocol", "插件协议错误"),
-                RpcError::InvalidResponse(stage) => (
-                    "invalid_response",
-                    match stage {
-                        Stage::Registration => "注册阶段：插件返回了无效响应",
-                        Stage::Configuration => "配置阶段：插件返回了无效响应",
-                        Stage::Authentication => "认证阶段：插件返回了无效响应",
-                        Stage::Routing => "路由阶段：插件返回了无效响应",
-                        Stage::Scheduling => "调度阶段：插件返回了无效响应",
-                        Stage::Retry => "重试阶段：插件返回了无效响应",
-                        Stage::Http => "HTTP 中间件：插件返回了无效响应",
-                        Stage::Service => "服务中间件：插件返回了无效响应",
-                        Stage::WebSocket => "WebSocket 中间件：插件返回了无效响应",
-                        Stage::Request => "请求中间件：插件返回了无效响应",
-                        Stage::Attempt => "尝试中间件：插件返回了无效响应",
-                        Stage::Upstream => "上游适配阶段：插件返回了无效响应",
-                        Stage::Observation => "观察阶段：插件返回了无效响应",
-                        Stage::Management | Stage::PublicManagement => {
-                            "管理阶段：插件返回了无效响应"
-                        }
-                        Stage::CommandLine => "命令行阶段：插件返回了无效响应",
-                        Stage::Maintenance => "维护阶段：插件返回了无效响应",
-                    },
-                ),
-                RpcError::Closed => ("closed", "插件进程或传输已停止"),
-                RpcError::Timeout => ("timeout", "插件调用超时"),
-                RpcError::Cancelled => ("cancelled", "插件会话已取消"),
-                RpcError::Capacity => ("capacity", "插件调用容量已耗尽"),
-                RpcError::Context => ("context", "插件调用上下文无效"),
-                RpcError::Remote(_) => ("remote", "插件返回错误"),
-            };
+            let (code, message) = error.diagnostic();
             return RpcSessionDiagnostic::Failed { code, message };
         }
         if self.slots.is_closed() {

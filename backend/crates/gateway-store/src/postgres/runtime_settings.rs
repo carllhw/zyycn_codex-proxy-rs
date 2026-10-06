@@ -248,12 +248,12 @@ impl RuntimeSettingsRepository for PgRuntimeSettingsRepository {
             .pool
             .begin()
             .await
-            .map_err(|_| postgres_unavailable("begin runtime settings update"))?;
+            .map_err(|source| postgres_unavailable("begin runtime settings update", source))?;
         let revision = update_runtime_settings_in_transaction(&mut transaction, &update).await?;
         transaction
             .commit()
             .await
-            .map_err(|_| postgres_unavailable("commit runtime settings update"))?;
+            .map_err(|source| postgres_unavailable("commit runtime settings update", source))?;
         Ok(revision)
     }
 }
@@ -274,7 +274,7 @@ pub(crate) async fn load_runtime_settings_from_pool(pool: &PgPool) -> StoreResul
         )
     .fetch_optional(pool)
     .await
-    .map_err(|_| postgres_unavailable("load runtime settings"))?
+    .map_err(|source| postgres_unavailable("load runtime settings", source))?
     .ok_or_else(|| StoreError::NotFound {
         entity: "runtime settings",
         id: "1".to_owned(),
@@ -300,7 +300,7 @@ impl ProviderRuntimePolicyPort for PgRuntimeSettingsRepository {
             .bind(slot)
             .execute(&self.pool)
             .await
-            .map_err(|_| provider_unavailable("claim warmup slot"))?
+            .map_err(|source| crate::provider_unavailable("claim warmup slot", source))?
             .rows_affected()
                 == 1;
             Ok(claimed)
@@ -325,7 +325,7 @@ impl ProviderRuntimePolicyPort for PgRuntimeSettingsRepository {
             .bind(provider.as_str())
             .bind(sqlx::types::Json(initial.expose_to_provider()))
             .fetch_one(&self.pool).await
-            .map_err(|_| provider_unavailable("initialize Provider request profile"))?;
+            .map_err(|source| crate::provider_unavailable("initialize Provider request profile", source))?;
             Ok(gateway_core::account::OpaqueProviderData::new(document.0))
         })
     }
@@ -356,7 +356,9 @@ impl ProviderRuntimePolicyPort for PgRuntimeSettingsRepository {
             .bind(provider.as_str())
             .fetch_all(&self.pool)
             .await
-            .map_err(|_| provider_unavailable("load Provider request profile configurations"))?;
+            .map_err(|source| {
+                crate::provider_unavailable("load Provider request profile configurations", source)
+            })?;
             let expected_revision = i64::try_from(revision.get())
                 .map_err(|_| provider_invalid("validate Provider request profile revision"))?;
             if rows.is_empty()
@@ -386,7 +388,7 @@ impl ProviderRuntimePolicyPort for PgRuntimeSettingsRepository {
         Box::pin(async move {
             let settings = RuntimeSettingsRepository::load_runtime_settings(self)
                 .await
-                .map_err(|_| provider_unavailable("load refresh policy"))?;
+                .map_err(|source| crate::provider_unavailable("load refresh policy", source))?;
             let concurrency = NonZeroU32::new(settings.refresh_concurrency)
                 .ok_or_else(|| provider_invalid("decode refresh policy"))?;
             ProviderRefreshPolicy::try_new(
@@ -402,7 +404,7 @@ impl ProviderRuntimePolicyPort for PgRuntimeSettingsRepository {
         Box::pin(async move {
             let settings = RuntimeSettingsRepository::load_runtime_settings(self)
                 .await
-                .map_err(|_| provider_unavailable("load freeze policy"))?;
+                .map_err(|source| crate::provider_unavailable("load freeze policy", source))?;
             ProviderFreezePolicy::try_new(
                 settings.account_auto_freeze_enabled,
                 settings.account_auto_freeze_threshold,
@@ -421,7 +423,7 @@ impl ProviderRuntimePolicyPort for PgRuntimeSettingsRepository {
         Box::pin(async move {
             let settings = RuntimeSettingsRepository::load_runtime_settings(self)
                 .await
-                .map_err(|_| provider_unavailable("load warmup policy"))?;
+                .map_err(|source| crate::provider_unavailable("load warmup policy", source))?;
             ProviderWarmupPolicy::try_new(
                 settings.account_warmup_enabled,
                 settings.account_warmup_schedule_time,
@@ -449,7 +451,7 @@ pub(crate) async fn load_runtime_settings_in_transaction(
     )
     .fetch_optional(&mut **transaction)
     .await
-    .map_err(|_| postgres_unavailable("load runtime settings in transaction"))?
+    .map_err(|source| postgres_unavailable("load runtime settings in transaction", source))?
     .ok_or_else(|| StoreError::NotFound {
         entity: "runtime settings",
         id: "1".to_owned(),
@@ -564,7 +566,7 @@ pub(crate) async fn update_runtime_settings_in_transaction(
     .bind(i64::from(update.openai_guardian_reserved_concurrency))
     .fetch_optional(&mut **transaction)
     .await
-    .map_err(|_| postgres_unavailable("update runtime settings in transaction"))?
+    .map_err(|source| postgres_unavailable("update runtime settings in transaction", source))?
     .ok_or_else(|| StoreError::NotFound {
         entity: "runtime settings",
         id: "1".to_owned(),
@@ -583,7 +585,7 @@ pub(crate) async fn bump_config_revision_in_transaction(
     )
     .fetch_optional(&mut **transaction)
     .await
-    .map_err(|_| postgres_unavailable("bump config revision in transaction"))?
+    .map_err(|source| postgres_unavailable("bump config revision in transaction", source))?
     .ok_or_else(|| StoreError::NotFound {
         entity: "runtime settings",
         id: "1".to_owned(),
@@ -605,7 +607,7 @@ pub(crate) async fn update_admin_api_key_in_transaction(
     .bind(admin_api_key.as_deref())
     .execute(&mut **transaction)
     .await
-    .map_err(|_| postgres_unavailable("update admin api key in transaction"))?;
+    .map_err(|source| postgres_unavailable("update admin api key in transaction", source))?;
     Ok(())
 }
 
@@ -730,10 +732,6 @@ fn invalid_numeric() -> StoreError {
         entity: "runtime settings",
         message: "numeric field is outside its supported range".to_owned(),
     }
-}
-
-fn provider_unavailable(operation: &'static str) -> ProviderStoreError {
-    ProviderStoreError::new(ProviderStoreErrorKind::Unavailable, operation)
 }
 
 fn provider_invalid(operation: &'static str) -> ProviderStoreError {

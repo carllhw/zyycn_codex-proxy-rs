@@ -3,6 +3,8 @@
 use std::sync::Arc;
 use std::time::SystemTime;
 
+use gateway_core::error::ErrorSource;
+
 use gateway_core::account::{
     AccountErrorReason, AccountStateChange, CredentialCasOutcome, CredentialCasUpdate,
     CredentialRevision, CredentialState, LoadedCredential, ProviderAccount, ProviderAccountStore,
@@ -53,7 +55,7 @@ impl CodexCredentialRepository {
         let mut data = CodexCredentialCodec::decode_complete(&current.credential)?;
         let oauth = data
             .oauth_mut()
-            .ok_or(CredentialRepositoryError::InvalidCredentialData)?;
+            .ok_or(CredentialRepositoryError::InvalidCredentialData(None))?;
         oauth.access_token = secret.access_token.expose_secret().to_owned();
         oauth.refresh_token = secret
             .refresh_token
@@ -73,7 +75,9 @@ impl CodexCredentialRepository {
             access_token_expires_at,
             next_refresh_at,
         )
-        .map_err(|_| CredentialRepositoryError::InvalidCredentialData)?
+        .map_err(|source| {
+            CredentialRepositoryError::InvalidCredentialData(Some(ErrorSource::new(source)))
+        })?
         .preserving_profile()
         .with_account_state(
             oauth_account_state(account, CredentialState::Ready),
@@ -108,7 +112,9 @@ impl CodexCredentialRepository {
             account.access_token_expires_at(),
             Some(next_refresh_at),
         )
-        .map_err(|_| CredentialRepositoryError::InvalidCredentialData)?
+        .map_err(|source| {
+            CredentialRepositoryError::InvalidCredentialData(Some(ErrorSource::new(source)))
+        })?
         .preserving_profile();
         if let Some(error_reason) = error_reason {
             update = update.with_account_state(
@@ -124,8 +130,9 @@ impl CodexCredentialRepository {
     pub async fn list_for_provider(
         &self,
     ) -> Result<Vec<ProviderAccount>, CredentialRepositoryError> {
-        let provider = ProviderKind::new(PROVIDER_NAME)
-            .map_err(|_| CredentialRepositoryError::InvalidCredentialData)?;
+        let provider = ProviderKind::new(PROVIDER_NAME).map_err(|source| {
+            CredentialRepositoryError::InvalidCredentialData(Some(ErrorSource::new(source)))
+        })?;
         self.store
             .list_for_provider(&provider)
             .await
@@ -147,11 +154,11 @@ impl CodexCredentialRepository {
         loaded: &LoadedCredential,
     ) -> Result<CodexRuntimeCredential, CredentialRepositoryError> {
         if loaded.account.provider().as_str() != PROVIDER_NAME {
-            return Err(CredentialRepositoryError::InvalidCredentialData);
+            return Err(CredentialRepositoryError::InvalidCredentialData(None));
         }
         let data = CodexCredentialCodec::decode_complete(&loaded.credential)?;
         if data.authentication_kind() != loaded.account.authentication_kind() {
-            return Err(CredentialRepositoryError::InvalidCredentialData);
+            return Err(CredentialRepositoryError::InvalidCredentialData(None));
         }
         CodexCredentialCodec::decode(&loaded.credential).map_err(Into::into)
     }
@@ -161,14 +168,14 @@ impl CodexCredentialRepository {
         account: &ProviderAccount,
     ) -> Result<CodexRuntimeCredential, CredentialRepositoryError> {
         if account.provider().as_str() != PROVIDER_NAME {
-            return Err(CredentialRepositoryError::InvalidCredentialData);
+            return Err(CredentialRepositoryError::InvalidCredentialData(None));
         }
         let loaded = self
             .store
             .load_credential(account.id(), account.revision())
             .await?;
         if loaded.account != *account {
-            return Err(CredentialRepositoryError::RevisionConflict);
+            return Err(CredentialRepositoryError::RevisionConflict(None));
         }
         self.decode_runtime_credential(&loaded)
     }
@@ -205,7 +212,9 @@ impl CodexCredentialRepository {
             account.access_token_expires_at(),
             account.next_refresh_at(),
         )
-        .map_err(|_| CredentialRepositoryError::InvalidCredentialData)?
+        .map_err(|source| {
+            CredentialRepositoryError::InvalidCredentialData(Some(ErrorSource::new(source)))
+        })?
         .preserving_profile();
         cas_revision(self.store.compare_and_swap_credential(update).await?)
     }
@@ -270,35 +279,34 @@ fn cas_revision(
 ) -> Result<CredentialRevision, CredentialRepositoryError> {
     match outcome {
         CredentialCasOutcome::Updated(revision) => Ok(revision),
-        CredentialCasOutcome::Conflict => Err(CredentialRepositoryError::RevisionConflict),
+        CredentialCasOutcome::Conflict => Err(CredentialRepositoryError::RevisionConflict(None)),
     }
 }
 
 #[derive(Debug, Error)]
 pub enum CredentialRepositoryError {
     #[error("Codex credential data is invalid")]
-    InvalidCredentialData,
+    InvalidCredentialData(#[source] Option<ErrorSource>),
     #[error("Codex credential revision conflict")]
-    RevisionConflict,
+    RevisionConflict(#[source] Option<ErrorSource>),
     #[error("provider account store is unavailable")]
-    Store,
+    Store(#[source] gateway_core::error::StoreError),
 }
 
 impl From<gateway_core::error::StoreError> for CredentialRepositoryError {
     fn from(error: gateway_core::error::StoreError) -> Self {
         match error.kind() {
-            gateway_core::error::StoreErrorKind::Conflict => Self::RevisionConflict,
-            gateway_core::error::StoreErrorKind::Unavailable
-            | gateway_core::error::StoreErrorKind::InvalidState
-            | gateway_core::error::StoreErrorKind::InvalidData => Self::Store,
-            _ => Self::Store,
+            gateway_core::error::StoreErrorKind::Conflict => {
+                Self::RevisionConflict(Some(ErrorSource::new(error)))
+            }
+            _ => Self::Store(error),
         }
     }
 }
 
 impl From<CodexCredentialDataError> for CredentialRepositoryError {
-    fn from(_: CodexCredentialDataError) -> Self {
-        Self::InvalidCredentialData
+    fn from(error: CodexCredentialDataError) -> Self {
+        Self::InvalidCredentialData(Some(ErrorSource::new(error)))
     }
 }
 

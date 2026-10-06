@@ -178,7 +178,9 @@ impl OAuthPendingFlowPort for RedisOAuthPendingFlowRepository {
                 .arg(ttl_millis)
                 .invoke_async::<i64>(&mut connection)
                 .await
-                .map_err(|_| provider_unavailable("create OAuth pending flow"))?;
+                .map_err(|source| {
+                    crate::provider_unavailable("create OAuth pending flow", source)
+                })?;
             Ok(if stored == 1 {
                 OAuthPendingPutOutcome::Stored
             } else {
@@ -209,7 +211,9 @@ impl OAuthPendingFlowPort for RedisOAuthPendingFlowRepository {
                 .arg(claim_ttl)
                 .invoke_async(&mut connection)
                 .await
-                .map_err(|_| provider_unavailable("claim OAuth pending flow"))?;
+                .map_err(|source| {
+                    crate::provider_unavailable("claim OAuth pending flow", source)
+                })?;
             match status {
                 0 => Ok(OAuthPendingClaimOutcome::NotFound),
                 -1 => Ok(OAuthPendingClaimOutcome::OwnerMismatch),
@@ -248,7 +252,9 @@ impl OAuthPendingFlowPort for RedisOAuthPendingFlowRepository {
                 .arg(claim)
                 .invoke_async::<i64>(&mut connection)
                 .await
-                .map_err(|_| provider_unavailable("release OAuth pending claim"))?;
+                .map_err(|source| {
+                    crate::provider_unavailable("release OAuth pending claim", source)
+                })?;
             Ok(match status {
                 0 => OAuthPendingReleaseOutcome::NotFound,
                 -1 => OAuthPendingReleaseOutcome::OwnerMismatch,
@@ -282,7 +288,9 @@ impl OAuthPendingFlowPort for RedisOAuthPendingFlowRepository {
                 .arg(claim)
                 .invoke_async::<i64>(&mut connection)
                 .await
-                .map_err(|_| provider_unavailable("consume OAuth pending claim"))?;
+                .map_err(|source| {
+                    crate::provider_unavailable("consume OAuth pending claim", source)
+                })?;
             Ok(match status {
                 0 => OAuthPendingConsumeOutcome::NotFound,
                 -1 => OAuthPendingConsumeOutcome::OwnerMismatch,
@@ -317,10 +325,6 @@ fn ttl_millis(ttl: Duration) -> StoreResult<u64> {
             entity: "OAuth pending flow",
             message: "TTL is outside the supported range".to_owned(),
         })
-}
-
-fn provider_unavailable(operation: &'static str) -> ProviderStoreError {
-    ProviderStoreError::new(ProviderStoreErrorKind::Unavailable, operation)
 }
 
 fn provider_invalid(operation: &'static str) -> ProviderStoreError {

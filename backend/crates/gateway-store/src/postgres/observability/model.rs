@@ -259,7 +259,11 @@ pub struct PercentileMilliseconds(u64);
 impl PercentileMilliseconds {
     pub(crate) fn new(value: f64) -> StoreResult<Self> {
         if !value.is_finite() || value < 0.0 {
-            return Err(postgres_unavailable("decode latency percentile"));
+            return Err(crate::StoreError::Unavailable {
+                backend: crate::StoreBackend::PostgreSql,
+                message: "decode latency percentile".to_owned(),
+                source: None,
+            });
         }
         Ok(Self(value.to_bits()))
     }
@@ -740,7 +744,7 @@ pub struct OpsErrorRecord {
     pub upstream_request_id: Option<String>,
     pub latency_ms: Option<u64>,
     pub message: String,
-    pub raw_upstream_error: Option<String>,
+    pub error_details: Option<String>,
     pub client_ip: Option<String>,
     pub user_agent: Option<String>,
     pub reasoning_effort: Option<String>,

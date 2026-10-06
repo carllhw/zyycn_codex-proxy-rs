@@ -674,7 +674,7 @@ fn selector_does_not_retry_credential_store_unavailability() {
     }))
     .expect_err("unavailability is not an account snapshot conflict");
 
-    assert!(matches!(error, CredentialSelectionError::Store));
+    assert!(matches!(error, CredentialSelectionError::Store(_)));
     assert_eq!(store.credential_loads(), 1);
     assert!(leases.requests.lock().expect("lease requests").is_empty());
 }
@@ -704,7 +704,10 @@ fn selector_does_not_retry_invalid_credential_data() {
     }))
     .expect_err("invalid data is not an account snapshot conflict");
 
-    assert!(matches!(error, CredentialSelectionError::InvalidCredential));
+    assert!(matches!(
+        error,
+        CredentialSelectionError::InvalidCredential(_)
+    ));
     assert_eq!(store.credential_loads(), 1);
     assert!(leases.requests.lock().expect("lease requests").is_empty());
 }

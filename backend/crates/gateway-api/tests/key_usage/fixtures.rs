@@ -183,7 +183,7 @@ fn error_record() -> OpsError {
         upstream_request_id: Some("private-sentinel".to_owned()),
         latency_ms: Some(420),
         message: "private-sentinel".to_owned(),
-        raw_upstream_error: Some("private-sentinel".to_owned()),
+        error_details: Some("private-sentinel".to_owned()),
         client_ip: Some("192.0.2.42".to_owned()),
         user_agent: Some("key-usage-test/1.0".to_owned()),
         reasoning_effort: Some("xhigh".to_owned()),

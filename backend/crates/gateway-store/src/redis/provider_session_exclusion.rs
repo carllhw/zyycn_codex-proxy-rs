@@ -119,7 +119,9 @@ impl ProviderSessionExclusionPort for RedisProviderSessionExclusionRepository {
                 .arg(self.key(provider_kind, key)?)
                 .query_async::<Option<String>>(&mut connection)
                 .await
-                .map_err(|_| provider_unavailable("load provider session exclusion"))?;
+                .map_err(|source| {
+                    crate::provider_unavailable("load provider session exclusion", source)
+                })?;
             payload.map(decode_state).transpose()
         })
     }
@@ -144,7 +146,9 @@ impl ProviderSessionExclusionPort for RedisProviderSessionExclusionRepository {
                 .arg(ttl_seconds)
                 .invoke_async::<String>(&mut connection)
                 .await
-                .map_err(|_| provider_unavailable("record provider session exclusion"))?;
+                .map_err(|source| {
+                    crate::provider_unavailable("record provider session exclusion", source)
+                })?;
             decode_state(payload)
         })
     }
@@ -162,7 +166,9 @@ impl ProviderSessionExclusionPort for RedisProviderSessionExclusionRepository {
                 .arg(expected_revision)
                 .invoke_async::<u64>(&mut connection)
                 .await
-                .map_err(|_| provider_unavailable("clear provider session exclusion"))?;
+                .map_err(|source| {
+                    crate::provider_unavailable("clear provider session exclusion", source)
+                })?;
             Ok(removed > 0)
         })
     }
@@ -183,10 +189,6 @@ fn decode_state(payload: impl AsRef<str>) -> Result<ProviderSessionExclusions, P
         excluded_accounts,
         state.revision,
     ))
-}
-
-fn provider_unavailable(operation: &'static str) -> ProviderStoreError {
-    ProviderStoreError::new(ProviderStoreErrorKind::Unavailable, operation)
 }
 
 fn provider_invalid(operation: &'static str) -> ProviderStoreError {

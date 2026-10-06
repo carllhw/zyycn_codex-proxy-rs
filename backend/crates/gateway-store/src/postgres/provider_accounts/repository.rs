@@ -105,7 +105,7 @@ impl ProviderAccountRepository for PgProviderAccountRepository {
             .bind(id)
             .fetch_optional(&self.pool)
             .await
-            .map_err(|_| postgres_unavailable("load provider account"))?;
+            .map_err(|source| postgres_unavailable("load provider account", source))?;
         row.map(account_record_from_row).transpose()
     }
 
@@ -141,7 +141,7 @@ impl ProviderAccountRepository for PgProviderAccountRepository {
         .bind(limit)
         .fetch_all(&self.pool)
         .await
-        .map_err(|_| postgres_unavailable("list plugin accounts"))?;
+        .map_err(|source| postgres_unavailable("list plugin accounts", source))?;
         rows.into_iter().map(account_summary_from_row).collect()
     }
 
@@ -167,7 +167,7 @@ impl ProviderAccountRepository for PgProviderAccountRepository {
         .bind(include_disabled)
         .fetch_all(&self.pool)
         .await
-        .map_err(|_| postgres_unavailable("list provider accounts"))?;
+        .map_err(|source| postgres_unavailable("list provider accounts", source))?;
         rows.into_iter().map(account_summary_from_row).collect()
     }
 
@@ -178,7 +178,7 @@ impl ProviderAccountRepository for PgProviderAccountRepository {
             .pool
             .begin()
             .await
-            .map_err(|_| postgres_unavailable("begin provider account insert"))?;
+            .map_err(|source| postgres_unavailable("begin provider account insert", source))?;
         let proxy_id = match account.outbound_proxy.as_ref() {
             Some(proxy) => Some(
                 super::super::proxies::ensure_proxy_for_url(&mut transaction, proxy, None)
@@ -221,11 +221,11 @@ impl ProviderAccountRepository for PgProviderAccountRepository {
         .bind(account.model_access.as_ref().map(sqlx::types::Json))
         .execute(&mut *transaction)
         .await
-        .map_err(|_| postgres_unavailable("insert provider account"))?;
+        .map_err(|source| postgres_unavailable("insert provider account", source))?;
         transaction
             .commit()
             .await
-            .map_err(|_| postgres_unavailable("commit provider account insert"))?;
+            .map_err(|source| postgres_unavailable("commit provider account insert", source))?;
         Ok(())
     }
 
@@ -243,7 +243,7 @@ impl ProviderAccountRepository for PgProviderAccountRepository {
         .bind(account.plan_type)
         .execute(&self.pool)
         .await
-        .map_err(|_| postgres_unavailable("update provider account"))?;
+        .map_err(|source| postgres_unavailable("update provider account", source))?;
         Ok(result.rows_affected() == 1)
     }
 
@@ -279,7 +279,7 @@ impl ProviderAccountRepository for PgProviderAccountRepository {
         .bind(update.next_refresh_at)
         .fetch_optional(&self.pool)
         .await
-        .map_err(|_| postgres_unavailable("compare and swap provider credentials"))?
+        .map_err(|source| postgres_unavailable("compare and swap provider credentials", source))?
         .ok_or(StoreError::Conflict {
             entity: ENTITY,
             id: update.account_id,
@@ -311,7 +311,7 @@ impl ProviderAccountRepository for PgProviderAccountRepository {
         .bind(update.message.as_deref())
         .execute(&self.pool)
         .await
-        .map_err(|_| postgres_unavailable("apply provider account state"))?;
+        .map_err(|source| postgres_unavailable("apply provider account state", source))?;
         Ok(result.rows_affected() == 1)
     }
 
@@ -324,7 +324,7 @@ impl ProviderAccountRepository for PgProviderAccountRepository {
         .bind(enabled)
         .execute(&self.pool)
         .await
-        .map_err(|_| postgres_unavailable("set provider account enabled state"))?;
+        .map_err(|source| postgres_unavailable("set provider account enabled state", source))?;
         Ok(result.rows_affected() == 1)
     }
 
@@ -375,7 +375,7 @@ impl ProviderAccountRepository for PgProviderAccountRepository {
         .bind(plan_type)
         .execute(&self.pool)
         .await
-        .map_err(|_| postgres_unavailable("compare and swap provider quota"))?;
+        .map_err(|source| postgres_unavailable("compare and swap provider quota", source))?;
         Ok(result.rows_affected() == 1)
     }
 
@@ -406,7 +406,7 @@ impl ProviderAccountRepository for PgProviderAccountRepository {
         .bind(state.reset_at().map(DateTime::<Utc>::from))
         .execute(&self.pool)
         .await
-        .map_err(|_| postgres_unavailable("apply provider quota access"))?;
+        .map_err(|source| postgres_unavailable("apply provider quota access", source))?;
         Ok(result.rows_affected() == 1)
     }
 
@@ -429,7 +429,7 @@ impl ProviderAccountRepository for PgProviderAccountRepository {
         .bind(observed_at)
         .execute(&self.pool)
         .await
-        .map_err(|_| postgres_unavailable("touch provider quota observation"))?;
+        .map_err(|source| postgres_unavailable("touch provider quota observation", source))?;
         Ok(result.rows_affected() == 1)
     }
 
@@ -439,7 +439,7 @@ impl ProviderAccountRepository for PgProviderAccountRepository {
             .bind(id)
             .execute(&self.pool)
             .await
-            .map_err(|_| postgres_unavailable("delete disabled provider account"))?;
+            .map_err(|source| postgres_unavailable("delete disabled provider account", source))?;
         Ok(result.rows_affected() == 1)
     }
 }
@@ -458,7 +458,7 @@ impl ProviderAccountAdminRepository for PgProviderAccountRepository {
             .bind(&scope.provider_kind)
             .fetch_all(&self.pool)
             .await
-            .map_err(|_| postgres_unavailable("export provider accounts"))?;
+            .map_err(|source| postgres_unavailable("export provider accounts", source))?;
         let records = rows
             .into_iter()
             .map(account_record_from_row)
@@ -486,11 +486,9 @@ impl ProviderAccountAdminRepository for PgProviderAccountRepository {
         &self,
         command: ImportProviderAccounts,
     ) -> StoreResult<ProviderAccountAdminImport> {
-        let mut transaction = self
-            .pool
-            .begin()
-            .await
-            .map_err(|_| postgres_unavailable("begin provider account admin import"))?;
+        let mut transaction = self.pool.begin().await.map_err(|source| {
+            postgres_unavailable("begin provider account admin import", source)
+        })?;
         let result = import_provider_accounts_in_transaction(&mut transaction, command).await;
         finish_admin_transaction(transaction, result, "provider account admin import").await
     }
@@ -499,11 +497,9 @@ impl ProviderAccountAdminRepository for PgProviderAccountRepository {
         &self,
         command: RotateProviderAccount,
     ) -> StoreResult<ProviderAccountAdminRotation> {
-        let mut transaction = self
-            .pool
-            .begin()
-            .await
-            .map_err(|_| postgres_unavailable("begin provider account admin rotation"))?;
+        let mut transaction = self.pool.begin().await.map_err(|source| {
+            postgres_unavailable("begin provider account admin rotation", source)
+        })?;
         let result = rotate_provider_account_admin_in_transaction(&mut transaction, command).await;
         finish_admin_transaction(transaction, result, "provider account admin rotation").await
     }
@@ -516,11 +512,9 @@ impl ProviderAccountAdminRepository for PgProviderAccountRepository {
         if let Some(group_ids) = &command.group_ids {
             validate_batch_update_group_ids(group_ids)?;
         }
-        let mut transaction = self
-            .pool
-            .begin()
-            .await
-            .map_err(|_| postgres_unavailable("begin provider account admin state change"))?;
+        let mut transaction = self.pool.begin().await.map_err(|source| {
+            postgres_unavailable("begin provider account admin state change", source)
+        })?;
         let result = async {
             let revision = bump_config_revision_in_transaction(&mut transaction).await?;
             update_provider_accounts_scheduling_in_transaction(
@@ -562,11 +556,9 @@ impl ProviderAccountAdminRepository for PgProviderAccountRepository {
         command: RecoverProviderAccount,
     ) -> StoreResult<Revision> {
         validate_admin_account_ids(std::slice::from_ref(&command.account_id))?;
-        let mut transaction = self
-            .pool
-            .begin()
-            .await
-            .map_err(|_| postgres_unavailable("begin provider account admin recovery"))?;
+        let mut transaction = self.pool.begin().await.map_err(|source| {
+            postgres_unavailable("begin provider account admin recovery", source)
+        })?;
         let result = async {
             let revision = bump_config_revision_in_transaction(&mut transaction).await?;
             let recovered = sqlx::query_scalar::<_, String>(
@@ -593,7 +585,7 @@ impl ProviderAccountAdminRepository for PgProviderAccountRepository {
             .bind(&command.account_id)
             .fetch_optional(&mut *transaction)
             .await
-            .map_err(|_| postgres_unavailable("recover provider account state"))?
+            .map_err(|source| postgres_unavailable("recover provider account state", source))?
             .ok_or_else(|| StoreError::NotFound {
                 entity: ENTITY,
                 id: command.account_id.clone(),
@@ -614,11 +606,9 @@ impl ProviderAccountAdminRepository for PgProviderAccountRepository {
     ) -> StoreResult<Revision> {
         command.scope.validate()?;
         validate_admin_account_ids(&command.account_ids)?;
-        let mut transaction = self
-            .pool
-            .begin()
-            .await
-            .map_err(|_| postgres_unavailable("begin provider account admin deletion"))?;
+        let mut transaction = self.pool.begin().await.map_err(|source| {
+            postgres_unavailable("begin provider account admin deletion", source)
+        })?;
         let result = async {
             let revision = bump_config_revision_in_transaction(&mut transaction).await?;
             delete_provider_accounts_in_transaction(
@@ -646,7 +636,7 @@ async fn update_provider_account_notes_in_transaction(
         .bind(notes.trim())
         .execute(&mut **transaction)
         .await
-        .map_err(|_| postgres_unavailable("update provider account notes"))?;
+        .map_err(|source| postgres_unavailable("update provider account notes", source))?;
     Ok(())
 }
 
@@ -666,7 +656,7 @@ async fn replace_account_group_assignments_in_transaction(
         .bind(&group_ids)
         .fetch_one(&mut **transaction)
         .await
-        .map_err(|_| postgres_unavailable("validate account group assignment"))?;
+        .map_err(|source| postgres_unavailable("validate account group assignment", source))?;
         if usize::try_from(known_group_count).ok() != Some(group_ids.len()) {
             return Err(StoreError::NotFound {
                 entity: "account group",
@@ -678,7 +668,7 @@ async fn replace_account_group_assignments_in_transaction(
         .bind(account_ids)
         .execute(&mut **transaction)
         .await
-        .map_err(|_| postgres_unavailable("clear account group assignments"))?;
+        .map_err(|source| postgres_unavailable("clear account group assignments", source))?;
     if group_ids.is_empty() {
         return Ok(());
     }
@@ -693,7 +683,7 @@ async fn replace_account_group_assignments_in_transaction(
     .bind(account_ids)
     .execute(&mut **transaction)
     .await
-    .map_err(|_| postgres_unavailable("assign accounts to groups"))?;
+    .map_err(|source| postgres_unavailable("assign accounts to groups", source))?;
     Ok(())
 }
 
@@ -786,7 +776,7 @@ pub(crate) async fn upsert_provider_account_in_transaction(
                 kind: ConflictKind::InvalidTransition,
             }
         } else {
-            postgres_unavailable("upsert provider account in admin transaction")
+            postgres_unavailable("upsert provider account in admin transaction", error)
         }
     })?
     .ok_or_else(|| StoreError::Conflict {
@@ -865,7 +855,7 @@ pub(crate) async fn rotate_provider_account_in_transaction(
                 kind: ConflictKind::InvalidTransition,
             }
         } else {
-            postgres_unavailable("rotate provider account in admin transaction")
+            postgres_unavailable("rotate provider account in admin transaction", error)
         }
     })?
     .ok_or_else(|| StoreError::Conflict {
@@ -911,7 +901,7 @@ pub(crate) async fn update_provider_accounts_scheduling_in_transaction(
     .bind(concurrency_limit.is_some())
     .fetch_all(&mut **transaction)
     .await
-    .map_err(|_| postgres_unavailable("set provider accounts state in admin transaction"))?
+    .map_err(|source| postgres_unavailable("set provider accounts state in admin transaction", source))?
     .into_iter()
     .collect::<BTreeSet<_>>();
     let expected = account_ids.iter().cloned().collect::<BTreeSet<_>>();
@@ -939,7 +929,9 @@ pub(crate) async fn delete_provider_accounts_in_transaction(
     .bind(&scope.provider_kind)
     .fetch_all(&mut **transaction)
     .await
-    .map_err(|_| postgres_unavailable("delete provider account in admin transaction"))?;
+    .map_err(|source| {
+        postgres_unavailable("delete provider account in admin transaction", source)
+    })?;
     let deleted = deleted.into_iter().collect::<BTreeSet<_>>();
     let expected = account_ids.iter().cloned().collect::<BTreeSet<_>>();
     if deleted == expected {
@@ -1022,14 +1014,14 @@ pub(crate) async fn finish_admin_transaction<T>(
             transaction
                 .commit()
                 .await
-                .map_err(|_| postgres_unavailable(operation))?;
+                .map_err(|source| postgres_unavailable(operation, source))?;
             Ok(value)
         }
         Err(error) => {
             transaction
                 .rollback()
                 .await
-                .map_err(|_| postgres_unavailable(operation))?;
+                .map_err(|source| postgres_unavailable(operation, source))?;
             Err(error)
         }
     }

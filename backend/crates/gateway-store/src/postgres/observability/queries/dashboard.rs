@@ -99,7 +99,7 @@ pub(crate) async fn request_metrics(
         .build()
         .fetch_one(pool)
         .await
-        .map_err(|_| postgres_unavailable("load request metrics"))?;
+        .map_err(|source| postgres_unavailable("load request metrics", source))?;
     request_metrics_from_row(&row)
 }
 
@@ -121,7 +121,7 @@ pub(crate) async fn dashboard_totals(pool: &PgPool) -> StoreResult<DashboardTota
         .build()
         .fetch_one(pool)
         .await
-        .map_err(|_| postgres_unavailable("load dashboard totals"))?;
+        .map_err(|source| postgres_unavailable("load dashboard totals", source))?;
     Ok(DashboardTotals {
         request_count: unsigned(&row, "request_count")?,
         input_tokens: unsigned(&row, "input_tokens")?,
@@ -259,7 +259,7 @@ async fn request_metric_series_inner(
         .build()
         .fetch_all(pool)
         .await
-        .map_err(|_| postgres_unavailable("load request metric series"))?;
+        .map_err(|source| postgres_unavailable("load request metric series", source))?;
 
     let mut points = BTreeMap::new();
     for row in rows {
@@ -321,7 +321,7 @@ pub(crate) fn calculated_usage_billing_facts(
         // 费用逐条累加与行顺序无关，避免全量物化和不必要的数据库排序
         let mut rows = query.build().fetch(pool);
         while let Some(row) = rows.try_next().await
-            .map_err(|_| postgres_unavailable("load calculated usage billing facts"))?
+            .map_err(|source| postgres_unavailable("load calculated usage billing facts", source))?
         {
             yield calculated_usage_billing_fact_from_row(&row)?;
         }
@@ -354,7 +354,7 @@ pub(crate) async fn request_costs_by_bucket(
         .build()
         .fetch_all(pool)
         .await
-        .map_err(|_| postgres_unavailable("load request costs by bucket"))?;
+        .map_err(|source| postgres_unavailable("load request costs by bucket", source))?;
     let mut result = BTreeMap::<DateTime<Utc>, Vec<CurrencyCostTotal>>::new();
     for row in rows {
         result
@@ -470,7 +470,7 @@ pub(crate) async fn attempt_metrics(
         .build()
         .fetch_one(pool)
         .await
-        .map_err(|_| postgres_unavailable("load attempt metrics"))?;
+        .map_err(|source| postgres_unavailable("load attempt metrics", source))?;
     Ok(AttemptMetrics {
         attempt_count: unsigned(&row, "attempt_count")?,
         success_count: unsigned(&row, "success_count")?,
@@ -505,7 +505,7 @@ pub(crate) async fn request_costs(
         .build()
         .fetch_all(pool)
         .await
-        .map_err(|_| postgres_unavailable("load request costs"))?
+        .map_err(|source| postgres_unavailable("load request costs", source))?
         .iter()
         .map(cost_from_row)
         .collect()
@@ -537,7 +537,7 @@ pub(crate) async fn provider_observations(
         .build()
         .fetch_all(pool)
         .await
-        .map_err(|_| postgres_unavailable("load provider observations"))?;
+        .map_err(|source| postgres_unavailable("load provider observations", source))?;
     rows.iter()
         .map(|row| {
             Ok(ProviderObservation {
@@ -615,7 +615,7 @@ pub(crate) fn optional_percentile(
     column: &str,
 ) -> StoreResult<Option<PercentileMilliseconds>> {
     row.try_get::<Option<f64>, _>(column)
-        .map_err(|_| postgres_unavailable("decode latency percentile"))?
+        .map_err(|source| postgres_unavailable("decode latency percentile", source))?
         .map(PercentileMilliseconds::new)
         .transpose()
 }

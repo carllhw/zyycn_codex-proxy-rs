@@ -5,6 +5,8 @@ use std::fmt;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime};
 
+use gateway_core::error::ErrorSource;
+
 use gateway_core::account::{
     AccountCandidate, AccountCapacitySnapshot, AccountEligibilityPolicy, AccountErrorReason,
     AccountFeedbackStats, AccountRuntimeSignals, AccountSchedulingBlocker, AccountSelectionContext,
@@ -519,7 +521,7 @@ impl CodexCredentialSelector {
                     .store()
                     .get_account(required)
                     .await
-                    .map_err(|_| CredentialSelectionError::Store)?
+                    .map_err(|source| CredentialSelectionError::Store(ErrorSource::new(source)))?
             {
                 accounts.push(account);
             }
@@ -555,7 +557,7 @@ impl CodexCredentialSelector {
                 {
                     let runtime = match self.repository.load_runtime_credential(&account).await {
                         Ok(runtime) => runtime,
-                        Err(CredentialRepositoryError::RevisionConflict) => {
+                        Err(CredentialRepositoryError::RevisionConflict(_)) => {
                             retry_account_snapshot(
                                 request.attempt,
                                 &account,
@@ -564,7 +566,7 @@ impl CodexCredentialSelector {
                             continue 'capacity;
                         }
                         // 非固定账号的损坏凭据不能阻断其余账号的传输资格检查
-                        Err(CredentialRepositoryError::InvalidCredentialData)
+                        Err(CredentialRepositoryError::InvalidCredentialData(_))
                             if pinned_account.is_none() =>
                         {
                             continue;
@@ -839,12 +841,12 @@ impl CodexCredentialSelector {
                     .iter()
                     .find(|candidate| candidate.account.id() == selected.account.id())
                     .map(|candidate| candidate.account.clone())
-                    .ok_or(CredentialSelectionError::InvalidCredential)?;
+                    .ok_or(CredentialSelectionError::InvalidCredential(None))?;
                 // 额度观测等并发更新会使整个账号快照失效，必须重新选号并校验资格
                 // 在占用租约和请求间隔前完成校验，避免重读被自己的异步释放挡住
                 let runtime = match self.repository.load_runtime_credential(&account).await {
                     Ok(runtime) => runtime,
-                    Err(CredentialRepositoryError::RevisionConflict) => {
+                    Err(CredentialRepositoryError::RevisionConflict(_)) => {
                         retry_account_snapshot(request.attempt, &account, &mut snapshot_retries)?;
                         continue 'capacity;
                     }
@@ -971,8 +973,8 @@ impl CodexCredentialSelector {
             ),
         )
         .await
-        .map_err(|_| binding_store_error())?
-        .map_err(|_| binding_store_error())?;
+        .map_err(binding_store_error)?
+        .map_err(binding_store_error)?;
         if !applied {
             return Err(CredentialSelectionError::SessionBound(Box::new(
                 CredentialSelectionError::NoEligibleCredential,
@@ -990,8 +992,8 @@ impl CodexCredentialSelector {
             self.session_affinity.load_alias(&self.provider_kind, turn),
         )
         .await
-        .map_err(|_| binding_store_error())?
-        .map_err(|_| binding_store_error())
+        .map_err(binding_store_error)?
+        .map_err(binding_store_error)
         .map(|key| key.map(CodexSessionAffinity::from_turn_alias))
     }
 
@@ -1004,8 +1006,8 @@ impl CodexCredentialSelector {
             self.session_affinity.load(&self.provider_kind, key),
         )
         .await
-        .map_err(|_| binding_store_error())?
-        .map_err(|_| binding_store_error())
+        .map_err(binding_store_error)?
+        .map_err(binding_store_error)
     }
 
     async fn admit_session(
@@ -1025,9 +1027,9 @@ impl CodexCredentialSelector {
             ),
         )
         .await
-        .map_err(|_| binding_store_error())?
+        .map_err(binding_store_error)?
         .map(|binding| binding.is_some())
-        .map_err(|_| binding_store_error())
+        .map_err(binding_store_error)
     }
 
     async fn prepare_cyber_policy_scope(
@@ -1190,7 +1192,7 @@ impl CodexCredentialSelector {
                 .quota
                 .record_confirmed_exhaustion(account, QuotaEvidence::PaymentRequired, None, now)
                 .await
-                .map_err(|_| CredentialSelectionError::Store),
+                .map_err(|source| CredentialSelectionError::Store(ErrorSource::new(source))),
             CodexAccountFailure::UsageLimitExhausted { reset_at } => self
                 .quota
                 .record_confirmed_exhaustion(
@@ -1200,13 +1202,13 @@ impl CodexCredentialSelector {
                     now,
                 )
                 .await
-                .map_err(|_| CredentialSelectionError::Store),
+                .map_err(|source| CredentialSelectionError::Store(ErrorSource::new(source))),
             // 429：临时限流只写运行时冷却，不改变凭据或额度事实
             CodexAccountFailure::RateLimited { retry_after } => {
                 self.quota
                     .apply_rate_limit_429(account, retry_after, now)
                     .await
-                    .map_err(|_| CredentialSelectionError::Store)?;
+                    .map_err(|source| CredentialSelectionError::Store(ErrorSource::new(source)))?;
                 Ok(())
             }
             // Cloudflare 挑战：内存退避表（记录风险计数），不写账号事实
@@ -1311,8 +1313,8 @@ impl CodexCredentialSelector {
             .store()
             .get_account(account_id)
             .await
-            .map_err(|_| CredentialSelectionError::Store)?
-            .ok_or(CredentialSelectionError::InvalidCredential)
+            .map_err(|source| CredentialSelectionError::Store(ErrorSource::new(source)))?
+            .ok_or(CredentialSelectionError::InvalidCredential(None))
     }
 
     pub async fn capture_response_cookies(
@@ -1440,8 +1442,12 @@ impl CodexCredentialSelector {
     }
 }
 
-fn binding_store_error() -> CredentialSelectionError {
-    CredentialSelectionError::SessionBound(Box::new(CredentialSelectionError::Store))
+fn binding_store_error(
+    source: impl std::error::Error + Send + Sync + 'static,
+) -> CredentialSelectionError {
+    CredentialSelectionError::SessionBound(Box::new(CredentialSelectionError::Store(
+        ErrorSource::new(source),
+    )))
 }
 
 fn affinity_selection_for_bound_account(
@@ -1641,7 +1647,7 @@ pub enum CredentialSelectionError {
     #[error("session account changed during native continuation")]
     ContinuationOwnerChanged,
     #[error("session account binding cannot be bypassed: {0}")]
-    SessionBound(Box<CredentialSelectionError>),
+    SessionBound(#[source] Box<CredentialSelectionError>),
     #[error(transparent)]
     QueueRejected(#[from] QueueRejection),
     #[error("no eligible Codex account")]
@@ -1651,15 +1657,15 @@ pub enum CredentialSelectionError {
     #[error("Codex account capacity is unavailable")]
     CapacityUnavailable { retry_after: Option<Duration> },
     #[error("Codex account data is invalid")]
-    InvalidCredential,
+    InvalidCredential(#[source] Option<ErrorSource>),
     #[error("Codex account changed repeatedly during selection")]
     AccountSnapshotChanged,
     #[error("Codex account store is unavailable")]
-    Store,
+    Store(#[source] ErrorSource),
     #[error("Codex account lease runtime is unavailable")]
-    Coordinator,
+    Coordinator(#[source] ProviderStoreError),
     #[error("Codex Cookie policy rejected the value")]
-    CookiePolicy,
+    CookiePolicy(#[source] super::cookie::CookiePolicyError),
     #[error("account scheduling policy rejected the request")]
     PolicyRejected,
     #[error("account scheduling policy is unavailable")]
@@ -1668,24 +1674,25 @@ pub enum CredentialSelectionError {
 
 impl From<CredentialRepositoryError> for CredentialSelectionError {
     fn from(error: CredentialRepositoryError) -> Self {
-        match error {
-            CredentialRepositoryError::InvalidCredentialData => Self::InvalidCredential,
-            CredentialRepositoryError::RevisionConflict | CredentialRepositoryError::Store => {
-                Self::Store
+        match &error {
+            CredentialRepositoryError::InvalidCredentialData(_) => {
+                Self::InvalidCredential(Some(ErrorSource::new(error)))
             }
+            CredentialRepositoryError::RevisionConflict(_)
+            | CredentialRepositoryError::Store(_) => Self::Store(ErrorSource::new(error)),
         }
     }
 }
 
 impl From<ProviderStoreError> for CredentialSelectionError {
-    fn from(_: ProviderStoreError) -> Self {
-        Self::Coordinator
+    fn from(error: ProviderStoreError) -> Self {
+        Self::Coordinator(error)
     }
 }
 
 impl From<super::cookie::CookiePolicyError> for CredentialSelectionError {
-    fn from(_: super::cookie::CookiePolicyError) -> Self {
-        Self::CookiePolicy
+    fn from(error: super::cookie::CookiePolicyError) -> Self {
+        Self::CookiePolicy(error)
     }
 }
 

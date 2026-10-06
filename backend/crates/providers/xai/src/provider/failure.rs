@@ -6,12 +6,13 @@ use gateway_core::error::ProviderDiagnostic;
 pub(super) fn is_invalid_encrypted_content_failure(error: &GrokInferenceTransportError) -> bool {
     error.kind() == GrokInferenceTransportErrorKind::InvalidRequest
         && error.status() == Some(400)
-        && error.upstream_code().is_some_and(|code| {
-            matches!(
-                code.as_str(),
-                REASONING_DECODE_FAILED_CODE | "invalid_encrypted_content"
-            )
-        })
+        && (error.diagnostic().and_then(ProviderDiagnostic::code)
+            == Some(REASONING_DECODE_FAILED_CODE)
+            || error.upstream_code().is_some_and(|code| {
+                [REASONING_DECODE_FAILED_CODE, "invalid_encrypted_content"]
+                    .iter()
+                    .any(|known| code.as_str().trim().eq_ignore_ascii_case(known))
+            }))
 }
 
 pub(super) enum InferenceBoundary {
@@ -279,15 +280,20 @@ pub(super) fn transport_error_contains_any(
     let code = error
         .upstream_code()
         .map(|code| code.as_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    let classification = error
+        .diagnostic()
+        .and_then(ProviderDiagnostic::code)
         .unwrap_or_default();
     let message = error
         .client_visible_upstream_error()
         .map(ClientVisibleUpstreamError::message)
         .unwrap_or_default()
         .to_ascii_lowercase();
-    signals
-        .iter()
-        .any(|signal| code.contains(signal) || message.contains(signal))
+    signals.iter().any(|signal| {
+        classification.contains(signal) || code.contains(signal) || message.contains(signal)
+    })
 }
 
 pub(super) async fn map_and_record_stream_transport_failure(
@@ -313,15 +319,21 @@ pub(super) fn map_continuation_failure(
     let is_reasoning_decode_failure = context.continuation_attempt() == ContinuationAttempt::Native
         && error.kind() == ProviderErrorKind::InvalidRequest
         && error.upstream_status() == Some(400)
-        && error
-            .upstream_code()
-            .is_some_and(|code| code.as_str() == REASONING_DECODE_FAILED_CODE);
+        && (error.diagnostic().and_then(ProviderDiagnostic::code)
+            == Some(REASONING_DECODE_FAILED_CODE)
+            || error.upstream_code().is_some_and(|code| {
+                code.as_str()
+                    .trim()
+                    .eq_ignore_ascii_case(REASONING_DECODE_FAILED_CODE)
+            }));
     let is_missing_native_response = context.continuation_attempt() == ContinuationAttempt::Native
         && error.kind() == ProviderErrorKind::InvalidRequest
         && error.upstream_status() == Some(404)
-        && error
-            .upstream_code()
-            .is_some_and(|code| code.as_str() == RESPONSE_NOT_FOUND_CODE);
+        && error.upstream_code().is_some_and(|code| {
+            code.as_str()
+                .trim()
+                .eq_ignore_ascii_case(RESPONSE_NOT_FOUND_CODE)
+        });
     if is_reasoning_decode_failure || is_missing_native_response {
         error
             .with_continuation_failure(ContinuationFailure::HistoryUnavailable)
@@ -519,6 +531,9 @@ pub(super) fn map_transport_error_with_state(
     if let Some(code) = error.upstream_code().cloned() {
         mapped = mapped.with_upstream_code(code);
     }
+    if let Some(raw) = error.raw_upstream_error().cloned() {
+        mapped = mapped.with_raw_upstream_error(raw);
+    }
     if let Some(detail) = error.client_visible_upstream_error().cloned() {
         mapped = mapped.with_client_visible_upstream_error(detail);
     }
@@ -538,6 +553,9 @@ pub(super) fn map_transport_error_with_state(
     }
     if error.sensitive_context_was_redacted() {
         mapped = mapped.redact_sensitive_context("upstream transport context");
+    }
+    if std::error::Error::source(&error).is_some() {
+        mapped = mapped.with_source(error);
     }
     mapped
 }

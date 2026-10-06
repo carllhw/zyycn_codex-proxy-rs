@@ -1702,6 +1702,12 @@ request/response/upstream ID、outcome 与搜索文本。诊断 `dimension` 可�
 
 Key 已删除或未关联时为 `null`，不影响记录返回，不包含密钥原文
 
+运维错误记录的 `errorDetails` 为受控诊断文本，无详情时为 `null`。
+错误来源快照以 JSON 文本保存：`causes.messages` 按外层到内层排列本地原因，`causes.truncated`
+标记来源链截断，`upstream` 保存上游正文原文，`redacted` 标记敏感上下文移除；没有对应来源时为 `null`。
+稳定错误分类、原始上游 code 和该详情分别保留，不以公共错误文案代替原始原因。
+详情不出现在 Key 用量接口、普通错误信封和诊断包导出中；记录仍受异步观测写入与保留周期约束
+
 管理端请求列表与详情分别保留 `requestedModel`（客户端请求）、`upstreamModel`（网关发送）与
 `upstreamResponseModel`（上游返回）。返回模型缺失时为 `null`，不使用请求或映射模型补齐。
 OpenAI 优先采用服务端 `openai-model` / `x-openai-model` 报告（流内报告可覆盖初始响应头），
@@ -1751,9 +1757,13 @@ OpenAI 优先采用服务端 `openai-model` / `x-openai-model` 报告（流内�
 未知名称的 `{ bytes, sha256 }` 摘要，或缺失时的 `null`。已保存的 trace 不自动清理或回填，
 其中的 `sanitized` 标记不能作为可直接公开的保证
 
-管理端下载的诊断包 `schemaVersion: 2` 用于人工反馈，不是备份或导入格式。它包含关联 ID、错误分类摘要、
-请求与错误事件各自的状态、attempt、时间线阶段和计时；不自动导出 message/raw error、任意 metadata、
-trace event data、请求响应正文和头部。`availability` 与 `omitted` 明示未采集、不完整或主动省略的内容，
+`attempt.failed.data` 的 `kind / sendState / upstreamStatus` 与 `diagnostic.stage / diagnostic.code`
+由 Core 错误类型与 Provider 静态诊断生成；`diagnostic.message` 保存安全摘要。展示与导出共用这些字段，
+`sendState` 为 `not_sent / sent / ambiguous`，摘要被截断时带有 `truncated` 标记
+
+管理端下载的诊断包 `schemaVersion: 3` 用于人工反馈，不是备份或导入格式。它包含关联 ID、错误分类摘要、
+请求与错误事件各自的状态、attempt、时间线阶段、计时和上述失败分类；不自动导出 message/raw error、任意 metadata、
+其他 trace event data、请求响应正文和头部。`availability` 与 `omitted` 明示未采集、不完整或主动省略的内容，
 `null` 不代表没有发生错误。版本、环境及原始错误片段仍需操作者另行补充并审阅脱敏
 
 错误记录中的“已自动恢复”表示系统关联到了后续成功请求，不会把原来的失败记录改为成功。

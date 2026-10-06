@@ -103,7 +103,9 @@ impl ProviderSessionAffinityPort for RedisProviderSessionAffinityRepository {
                 .arg(self.key(provider_kind, key)?)
                 .query_async::<Option<String>>(&mut self.connection.clone())
                 .await
-                .map_err(|_| provider_unavailable("load provider session binding"))?;
+                .map_err(|source| {
+                    crate::provider_unavailable("load provider session binding", source)
+                })?;
             raw.as_deref().map(BindingRecord::decode).transpose()
         })
     }
@@ -138,7 +140,9 @@ impl ProviderSessionAffinityPort for RedisProviderSessionAffinityRepository {
                 .arg(ttl_millis)
                 .invoke_async::<bool>(&mut self.connection.clone())
                 .await
-                .map_err(|_| provider_unavailable("admit provider session binding"))?;
+                .map_err(|source| {
+                    crate::provider_unavailable("admit provider session binding", source)
+                })?;
             Ok(applied.then_some(binding))
         })
     }
@@ -155,7 +159,7 @@ impl ProviderSessionAffinityPort for RedisProviderSessionAffinityRepository {
                 .arg(format!("{}:alias", self.key(provider, alias)?))
                 .query_async::<Option<String>>(&mut self.connection.clone())
                 .await
-                .map_err(|_| provider_unavailable("load session alias"))?;
+                .map_err(|source| crate::provider_unavailable("load session alias", source))?;
             value
                 .map(|raw| {
                     let record: AliasRecord = serde_json::from_str(&raw)
@@ -189,7 +193,7 @@ impl ProviderSessionAffinityPort for RedisProviderSessionAffinityRepository {
                 .arg(&record)
                 .arg(session_affinity_ttl_millis(ttl)?)
                 .invoke_async::<bool>(&mut self.connection.clone()).await
-                .map_err(|_| provider_unavailable("bind session alias"))
+                .map_err(|source| crate::provider_unavailable("bind session alias", source))
         })
     }
 }
@@ -200,10 +204,6 @@ fn session_affinity_ttl_millis(ttl: Duration) -> Result<u64, ProviderStoreError>
     }
     u64::try_from(ttl.as_millis())
         .map_err(|_| provider_invalid("validate provider session affinity TTL"))
-}
-
-fn provider_unavailable(operation: &'static str) -> ProviderStoreError {
-    ProviderStoreError::new(ProviderStoreErrorKind::Unavailable, operation)
 }
 
 fn provider_invalid(operation: &'static str) -> ProviderStoreError {

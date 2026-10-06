@@ -777,7 +777,7 @@ async fn ops_should_include_incomplete_upstream_errors() {
                 client_transport = 'websocket', upstream_transport = 'websocket',
                 downstream_committed_at = completed_at,
                 client_status_code = null, upstream_status_code = 400,
-                provider_error_code = null, raw_upstream_error = $1
+                provider_error_code = null, error_details = $1
           where id = 'req_observe_failed'",
     )
     .bind(raw_error)
@@ -810,7 +810,7 @@ async fn ops_should_include_incomplete_upstream_errors() {
     assert_eq!(error.failure_kind, "invalid_request");
     assert_eq!(error.upstream_status_code, Some(400));
     assert_eq!(error.client_status_code, None);
-    assert_eq!(error.raw_upstream_error.as_deref(), Some(raw_error));
+    assert_eq!(error.error_details.as_deref(), Some(raw_error));
 }
 
 #[tokio::test]

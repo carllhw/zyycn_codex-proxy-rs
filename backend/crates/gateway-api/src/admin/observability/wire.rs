@@ -814,8 +814,8 @@ pub struct OpsErrorView {
     pub subagent_kind: Option<String>,
     pub compact: Option<bool>,
     pub message: String,
-    /// 上游错误正文或 WebSocket close/error frame 原文；不做脱敏
-    pub raw_upstream_error: Option<String>,
+    /// 受控错误详情，分别承载本地原因链与上游错误正文
+    pub error_details: Option<String>,
     pub metadata: OpsErrorMetadataView,
     pub created_at: DateTime<Utc>,
     pub created_at_display: String,

@@ -259,7 +259,13 @@ impl ProviderAccountStore for MemoryAccountStore {
         provider: &ProviderKind,
     ) -> Result<Vec<ProviderAccount>, StoreError> {
         if self.fail_provider_listing.load(Ordering::SeqCst) {
-            return Err(store_error(StoreErrorKind::Unavailable));
+            return Err(StoreError::caused_by(
+                StoreErrorKind::Unavailable,
+                std::io::Error::new(
+                    std::io::ErrorKind::ConnectionRefused,
+                    "PRIVATE_DATABASE_CAUSE",
+                ),
+            ));
         }
         // 与 Postgres 实现的调度列表语义一致：停用账号不进入常规候选
         Ok(self

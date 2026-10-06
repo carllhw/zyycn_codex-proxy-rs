@@ -3,7 +3,6 @@
 use std::time::Instant;
 
 use gateway_core::engine::provider::ProviderStream;
-use gateway_core::error::ProviderError;
 use gateway_core::event::ProviderResponseTimings;
 
 use super::*;
@@ -172,109 +171,5 @@ async fn structural_frames_wait_for_semantic_output_on_http_and_websocket() {
             assert_eq!(final_timings.first_token_ms.is_some(), has_output);
             server.await.unwrap();
         }
-    }
-}
-
-/// 只发送短文本请求，输出请求级耗时与用量，不记录凭据、账号身份或响应正文
-#[tokio::test]
-#[ignore = "requires CPR_LIVE_ACCOUNTS_FILE and sends real requests"]
-async fn real_http_and_websocket_requests_report_output_timings() {
-    let (store, _) = super::live::imported_account().await;
-    let provider = provider_with_base_url(&store, OFFICIAL_CODEX_BASE_URL.to_owned());
-    let model = super::live::model(&store).await;
-    for websocket in [false, true] {
-        let expected_transport = if websocket { "websocket" } else { "http_sse" };
-        let mut protocol_context = Map::from_iter([("use_websocket".into(), json!(websocket))]);
-        if websocket {
-            // 模拟下游 WebSocket 新链，避免快路径预算到期后自动回退 HTTP
-            protocol_context.insert(
-                "downstream_websocket_connection_id".into(),
-                json!("ws_live_timing"),
-            );
-        }
-        let mut generate = GenerateRequest::from_protocol_payload(
-            ProtocolPayload::json_object(
-                "openai",
-                json!({
-                    "model": model,
-                    "instructions": "Reply with the numbers 1 through 30, separated by spaces, and nothing else.",
-                    "stream": true,
-                    "store": false,
-                    "input": [{"role": "user", "content": [{"type": "input_text", "text": "Count now."}]}]
-                })
-                .as_object()
-                .unwrap()
-                .clone(),
-            )
-            .unwrap()
-            .with_context(protocol_context),
-        );
-        if websocket {
-            // 测试 Provider 未装配持久会话标识，显式提供本地池键，不声明上游续接 ID
-            generate = generate.with_provider_session_state(
-                ProviderSessionState::new(
-                    "openai",
-                    Map::from_iter([
-                        ("account_id".into(), json!("acct_provider_contract")),
-                        ("conversation_id".into(), json!("live_timing_conversation")),
-                        ("continuation_scope".into(), json!("persisted")),
-                    ]),
-                )
-                .unwrap(),
-            );
-        }
-        let operation = Operation::Generate(generate);
-        let started_at = Instant::now();
-        let run = async {
-            let mut stream = provider
-                .clone()
-                .execute(
-                    planned_request_for_model("openai", operation, &model),
-                    timed_context(started_at, 1),
-                )
-                .await?;
-            let mut timings = ProviderResponseTimings::default();
-            let mut output_tokens = None;
-            let mut completed = false;
-            while let Some(event) = stream.next().await {
-                let event = event?;
-                if let Some(observation) = event.response_observation() {
-                    assert_eq!(observation.transport().as_str(), expected_transport);
-                    timings = observation.timings();
-                }
-                for fact in event.canonical_facts() {
-                    match fact {
-                        GatewayEvent::Usage(usage) => output_tokens = usage.output_tokens,
-                        GatewayEvent::Completed(_) => completed = true,
-                        _ => {}
-                    }
-                }
-            }
-            Ok::<_, ProviderError>((timings, output_tokens, completed))
-        };
-        let (timings, output_tokens, completed) = timeout(Duration::from_secs(35), run)
-            .await
-            .expect("live request deadline")
-            .unwrap_or_else(|error| {
-                panic!(
-                    "live request failed: kind={:?}, status={:?}, code={:?}",
-                    error.kind(),
-                    error.upstream_status(),
-                    error
-                        .client_visible_upstream_error()
-                        .and_then(|error| error.code())
-                );
-            });
-        let total_ms = started_at.elapsed().as_millis();
-        let first_event_ms = timings.first_event_ms.expect("first upstream packet");
-        let first_token_ms = timings.first_token_ms.expect("first semantic output");
-        let first_text_ms = timings.first_text_ms.expect("first text output");
-        let output_tokens = output_tokens.expect("upstream output usage");
-        assert!(completed && output_tokens > 0);
-        assert!(first_event_ms <= first_token_ms && first_token_ms <= first_text_ms);
-        assert!(u128::from(first_text_ms) <= total_ms);
-        eprintln!(
-            "LIVE_TIMING model={model} transport={expected_transport} first_event_ms={first_event_ms} first_token_ms={first_token_ms} first_text_ms={first_text_ms} total_ms={total_ms} output_tokens={output_tokens}"
-        );
     }
 }

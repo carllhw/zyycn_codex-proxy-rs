@@ -8,7 +8,7 @@ use sqlx::{
 
 use crate::{
     POSTGRES_IDLE_TRANSACTION_TIMEOUT, POSTGRES_LOCK_TIMEOUT, POSTGRES_STATEMENT_TIMEOUT, Revision,
-    StoreBackend, StoreError, StorePoolConfig, StoreResult, postgres_unavailable,
+    StoreError, StorePoolConfig, StoreResult, postgres_unavailable,
 };
 
 mod account_groups;
@@ -59,12 +59,15 @@ pub async fn connect_and_migrate(
     pool_config: StorePoolConfig,
 ) -> StoreResult<PgPool> {
     if database_url.trim().is_empty() {
-        return Err(postgres_unavailable("connect PostgreSQL"));
+        return Err(StoreError::InvalidData {
+            entity: "PostgreSQL configuration",
+            message: "database URL is empty".to_owned(),
+        });
     }
     pool_config.validate()?;
     let connect_options = database_url
         .parse::<PgConnectOptions>()
-        .map_err(|_| postgres_unavailable("parse PostgreSQL connection options"))?;
+        .map_err(|source| postgres_unavailable("parse PostgreSQL connection options", source))?;
     let migration_pool = PgPoolOptions::new()
         .max_connections(1)
         .connect_with(
@@ -73,13 +76,10 @@ pub async fn connect_and_migrate(
                 .application_name("codex-proxy-rs:migration"),
         )
         .await
-        .map_err(|_| postgres_unavailable("connect PostgreSQL for migrations"))?;
+        .map_err(|source| postgres_unavailable("connect PostgreSQL for migrations", source))?;
     if let Err(error) = MIGRATOR.run(&migration_pool).await {
         migration_pool.close().await;
-        return Err(StoreError::Unavailable {
-            backend: StoreBackend::PostgreSql,
-            message: format!("apply PostgreSQL migrations: {error}"),
-        });
+        return Err(postgres_unavailable("apply PostgreSQL migrations", error));
     }
     migration_pool.close().await;
 
@@ -94,7 +94,7 @@ pub(crate) async fn connect_read_only(
     pool_config.validate()?;
     let options = database_url
         .parse::<PgConnectOptions>()
-        .map_err(|_| postgres_unavailable("parse PostgreSQL connection options"))?;
+        .map_err(|source| postgres_unavailable("parse PostgreSQL connection options", source))?;
     connect_pool(options, pool_config, true).await
 }
 
@@ -135,7 +135,7 @@ async fn connect_pool(
         })
         .connect_with(connect_options.application_name("codex-proxy-rs"))
         .await
-        .map_err(|_| postgres_unavailable("connect PostgreSQL"))?;
+        .map_err(|source| postgres_unavailable("connect PostgreSQL", source))?;
     Ok(pool)
 }
 
@@ -221,11 +221,10 @@ impl ControlPlaneRepository for PgControlPlaneRepository {
         replacement: ControlPlaneReplacement,
     ) -> StoreResult<ControlPlaneSnapshot> {
         replacement.settings.validate()?;
-        let mut transaction = self
-            .pool
-            .begin()
-            .await
-            .map_err(|_| postgres_unavailable("begin control plane replacement"))?;
+        let mut transaction =
+            self.pool.begin().await.map_err(|source| {
+                postgres_unavailable("begin control plane replacement", source)
+            })?;
         let result = async {
             // 锁住所有配置写入共同使用的行，版本检查与修改不能被其他事务穿插
             let current = sqlx::query_scalar::<_, i64>(
@@ -233,7 +232,7 @@ impl ControlPlaneRepository for PgControlPlaneRepository {
             )
             .fetch_one(&mut *transaction)
             .await
-            .map_err(|_| postgres_unavailable("lock control plane revision"))?;
+            .map_err(|source| postgres_unavailable("lock control plane revision", source))?;
             if u64::try_from(current).ok() != Some(replacement.expected_revision.get()) {
                 return Err(StoreError::Conflict {
                     entity: "runtime settings",
@@ -251,17 +250,15 @@ impl ControlPlaneRepository for PgControlPlaneRepository {
         .await;
         match result {
             Ok(snapshot) => {
-                transaction
-                    .commit()
-                    .await
-                    .map_err(|_| postgres_unavailable("commit control plane replacement"))?;
+                transaction.commit().await.map_err(|source| {
+                    postgres_unavailable("commit control plane replacement", source)
+                })?;
                 Ok(snapshot)
             }
             Err(error) => {
-                transaction
-                    .rollback()
-                    .await
-                    .map_err(|_| postgres_unavailable("rollback control plane replacement"))?;
+                transaction.rollback().await.map_err(|source| {
+                    postgres_unavailable("rollback control plane replacement", source)
+                })?;
                 Err(error)
             }
         }
@@ -337,11 +334,9 @@ impl PgControlPlaneRepository {
         mutation: ControlPlaneMutation,
         mut audit: AdminAuditEvent,
     ) -> StoreResult<Revision> {
-        let mut transaction = self
-            .pool
-            .begin()
-            .await
-            .map_err(|_| postgres_unavailable("begin targeted control plane mutation"))?;
+        let mut transaction = self.pool.begin().await.map_err(|source| {
+            postgres_unavailable("begin targeted control plane mutation", source)
+        })?;
         let result = async {
             let revision = bump_config_revision_in_transaction(&mut transaction).await?;
             match mutation {
@@ -362,8 +357,8 @@ impl PgControlPlaneRepository {
                     .bind(&key.id)
                     .fetch_one(&mut *transaction)
                     .await
-                    .map_err(|_| {
-                        postgres_unavailable("load client API key routing scope for audit")
+                    .map_err(|source| {
+                        postgres_unavailable("load client API key routing scope for audit", source)
                     })?;
                     if previously_restricted && key.group_ids.is_empty() {
                         audit
@@ -393,15 +388,14 @@ impl PgControlPlaneRepository {
         .await;
         match result {
             Ok(revision) => {
-                transaction
-                    .commit()
-                    .await
-                    .map_err(|_| postgres_unavailable("commit targeted control plane mutation"))?;
+                transaction.commit().await.map_err(|source| {
+                    postgres_unavailable("commit targeted control plane mutation", source)
+                })?;
                 Ok(revision)
             }
             Err(error) => {
-                transaction.rollback().await.map_err(|_| {
-                    postgres_unavailable("rollback targeted control plane mutation")
+                transaction.rollback().await.map_err(|source| {
+                    postgres_unavailable("rollback targeted control plane mutation", source)
                 })?;
                 Err(error)
             }

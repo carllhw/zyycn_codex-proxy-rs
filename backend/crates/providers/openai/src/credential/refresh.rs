@@ -7,6 +7,8 @@ use std::time::{Duration, SystemTime};
 
 use chrono::{DateTime, Utc};
 use futures::{StreamExt as _, stream};
+use gateway_core::error::ErrorSource;
+
 use gateway_core::account::{
     AccountErrorReason, CredentialState, ProviderAccount, ProviderAccountId, ProviderRefreshQuery,
 };
@@ -393,10 +395,11 @@ impl CodexCredentialRefreshService {
         CodexCredentialRefreshError,
     > {
         let now = SystemTime::now();
-        let provider = ProviderKind::new(PROVIDER_NAME)
-            .map_err(|_| CredentialRepositoryError::InvalidCredentialData)?;
+        let provider = ProviderKind::new(PROVIDER_NAME).map_err(|source| {
+            CredentialRepositoryError::InvalidCredentialData(Some(ErrorSource::new(source)))
+        })?;
         let limit = NonZeroU32::new(MAX_REFRESH_BATCH)
-            .ok_or(CredentialRepositoryError::InvalidCredentialData)?;
+            .ok_or(CredentialRepositoryError::InvalidCredentialData(None))?;
         // 查询窗口按错峰上界（2×margin）放宽，先取回候选超集，
         // 再在内存中按账号稳定偏移收窄；存储层谓词保持通用窗口语义。
         let query = ProviderRefreshQuery::new(
@@ -520,7 +523,7 @@ impl CodexCredentialRefreshService {
                     credential_revision: revision.get(),
                 })
             }
-            Err(CredentialRepositoryError::RevisionConflict) => {
+            Err(CredentialRepositoryError::RevisionConflict(_)) => {
                 Ok(CodexCredentialRefreshOutcome::Stale {
                     account_id: due.account.id().to_string(),
                 })
@@ -544,7 +547,7 @@ impl CodexCredentialRefreshService {
         } = failure;
         match self.repository.load_runtime_credential(account).await {
             Ok(_) => {}
-            Err(CredentialRepositoryError::RevisionConflict) => {
+            Err(CredentialRepositoryError::RevisionConflict(_)) => {
                 return Ok(CodexCredentialRefreshOutcome::Stale {
                     account_id: account.id().to_string(),
                 });
@@ -586,7 +589,7 @@ impl CodexCredentialRefreshService {
                 );
                 Ok(outcome)
             }
-            Err(CredentialRepositoryError::RevisionConflict) => {
+            Err(CredentialRepositoryError::RevisionConflict(_)) => {
                 Ok(CodexCredentialRefreshOutcome::Stale {
                     account_id: account.id().to_string(),
                 })
@@ -640,7 +643,7 @@ impl CodexCredentialRefreshService {
                 );
                 Ok(true)
             }
-            Err(CredentialRepositoryError::RevisionConflict) => Ok(false),
+            Err(CredentialRepositoryError::RevisionConflict(_)) => Ok(false),
             Err(error) => Err(error.into()),
         }
     }

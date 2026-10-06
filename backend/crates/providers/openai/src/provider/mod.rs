@@ -236,8 +236,16 @@ impl CodexProvider {
             return Ok(self.client.clone());
         };
         let profile = serde_json::from_value(Value::Object(profile.expose_to_provider().clone()))
-            .map_err(|_| {
+            .map_err(|error: serde_json::Error| {
+            let diagnostic = ProviderDiagnostic::new(format!(
+                "OpenAI request profile decoding failed: {:?}, line={}, column={}",
+                error.classify(),
+                error.line(),
+                error.column(),
+            ))
+            .with_classification("prepare", "request_profile_decode_failed");
             provider_error(ProviderErrorKind::Protocol, UpstreamSendState::NotSent)
+                .with_diagnostic(diagnostic)
         })?;
         Ok(self.client.clone().with_request_profile(profile))
     }
@@ -332,19 +340,23 @@ impl Provider for CodexProvider {
     ) -> Result<gateway_core::account::OpaqueProviderData, ProviderError> {
         let selection =
             crate::transport::profile::identity::RequestProfileSelection::parse(configuration)
-                .map_err(|_| {
+                .map_err(|error| {
                     provider_error(
                         ProviderErrorKind::InvalidRequest,
                         UpstreamSendState::NotSent,
                     )
+                    .with_diagnostic(profile_diagnostic(&error))
                 })?;
         let profile = selection
             .resolve(self.client.profile_state())
-            .map_err(|_| {
+            .map_err(|error| {
                 provider_error(ProviderErrorKind::Unavailable, UpstreamSendState::NotSent)
+                    .with_diagnostic(profile_diagnostic(&error))
             })?;
-        crate::transport::profile::selection::object(&profile)
-            .map_err(|_| provider_error(ProviderErrorKind::Protocol, UpstreamSendState::NotSent))
+        crate::transport::profile::selection::object(&profile).map_err(|error| {
+            provider_error(ProviderErrorKind::Protocol, UpstreamSendState::NotSent)
+                .with_diagnostic(profile_diagnostic(&error))
+        })
     }
 
     fn name(&self) -> &'static str {
@@ -984,9 +996,7 @@ impl CodexProvider {
             client: self
                 .client_for_request(&context)?
                 .for_account(lease.account())
-                .map_err(|_| {
-                    provider_error(ProviderErrorKind::Unavailable, UpstreamSendState::NotSent)
-                })?
+                .map_err(|error| map_client_error(error, UpstreamSendState::NotSent, false).error)?
                 .with_authentication(lease.authentication())
                 .with_connection_budget(context.connection_budget().clone())
                 .with_response_control(context.response_control().cloned())

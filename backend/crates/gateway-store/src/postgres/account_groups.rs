@@ -90,10 +90,9 @@ impl PgAccountGroupRepository {
     where
         F: for<'a> FnOnce(&'a mut Transaction<'_, Postgres>) -> BoxFuture<'a, StoreResult<()>>,
     {
-        let mut transaction =
-            self.pool.begin().await.map_err(|_| {
-                admin_store_error(ENTITY, unavailable("begin account group mutation"))
-            })?;
+        let mut transaction = self.pool.begin().await.map_err(|source| {
+            admin_store_error(ENTITY, unavailable("begin account group mutation", source))
+        })?;
         let result = async {
             let revision = bump_config_revision_in_transaction(&mut transaction).await?;
             mutation(&mut transaction).await?;
@@ -103,14 +102,17 @@ impl PgAccountGroupRepository {
         .await;
         match result {
             Ok(revision) => {
-                transaction.commit().await.map_err(|_| {
-                    admin_store_error(ENTITY, unavailable("commit account group mutation"))
+                transaction.commit().await.map_err(|source| {
+                    admin_store_error(ENTITY, unavailable("commit account group mutation", source))
                 })?;
                 admin_revision(revision)
             }
             Err(error) => {
-                transaction.rollback().await.map_err(|_| {
-                    admin_store_error(ENTITY, unavailable("rollback account group mutation"))
+                transaction.rollback().await.map_err(|source| {
+                    admin_store_error(
+                        ENTITY,
+                        unavailable("rollback account group mutation", source),
+                    )
                 })?;
                 Err(admin_store_error(ENTITY, error))
             }
@@ -139,7 +141,9 @@ impl AccountGroupStore for PgAccountGroupRepository {
             .build()
             .fetch_all(&self.pool)
             .await
-            .map_err(|_| admin_store_error(ENTITY, unavailable("list account groups")))?;
+            .map_err(|source| {
+                admin_store_error(ENTITY, unavailable("list account groups", source))
+            })?;
         let mut items = rows
             .iter()
             .map(group_record)
@@ -201,7 +205,7 @@ impl AccountGroupStore for PgAccountGroupRepository {
         .bind(group_ids)
         .fetch_all(&self.pool)
         .await
-        .map_err(|_| admin_store_error(ENTITY, unavailable("load account group members")))?;
+        .map_err(|source| admin_store_error(ENTITY, unavailable("load account group members", source)))?;
         rows.into_iter()
             .map(|row| {
                 let group_id = AccountGroupId::new(
@@ -336,7 +340,7 @@ impl AccountGroupStore for PgAccountGroupRepository {
                     .bind(command.enabled)
                     .execute(&mut **transaction)
                     .await
-                    .map_err(|_| unavailable("set account group state"))?;
+                    .map_err(|source| unavailable("set account group state", source))?;
                     require_one(result.rows_affected(), command.id.as_str())
                 })
             })
@@ -373,7 +377,7 @@ impl AccountGroupStore for PgAccountGroupRepository {
                     .bind(command.id.as_str())
                     .execute(&mut **transaction)
                     .await
-                    .map_err(|_| unavailable("delete account group"))?;
+                    .map_err(|source| unavailable("delete account group", source))?;
                     if result.rows_affected() == 1 {
                         return Ok(());
                     }
@@ -383,7 +387,7 @@ impl AccountGroupStore for PgAccountGroupRepository {
                     .bind(command.id.as_str())
                     .fetch_one(&mut **transaction)
                     .await
-                    .map_err(|_| unavailable("check account group delete conflict"))?;
+                    .map_err(|source| unavailable("check account group delete conflict", source))?;
                     if exists {
                         Err(conflict(command.id.as_str()))
                     } else {
@@ -454,7 +458,7 @@ async fn count_groups(pool: &PgPool, query: &AccountGroupListQuery) -> StoreResu
         .build_query_scalar::<i64>()
         .fetch_one(pool)
         .await
-        .map_err(|_| unavailable("count account groups"))?;
+        .map_err(|source| unavailable("count account groups", source))?;
     u64::try_from(count).map_err(|_| invalid("negative account group count"))
 }
 
@@ -466,7 +470,7 @@ async fn load_record(pool: &PgPool, id: &str) -> StoreResult<Option<AccountGroup
         .build()
         .fetch_optional(pool)
         .await
-        .map_err(|_| unavailable("load account group"))?
+        .map_err(|source| unavailable("load account group", source))?
         .as_ref()
         .map(group_record)
         .transpose()
@@ -571,7 +575,7 @@ async fn group_costs(
         )
         .fetch_all(pool)
         .await
-        .map_err(|_| unavailable("load account group costs"))?;
+        .map_err(|source| unavailable("load account group costs", source))?;
     rows.into_iter()
         .map(|row| {
             let group_id: String = row
@@ -644,7 +648,7 @@ fn map_group_write_error(error: sqlx::Error, id: &str) -> StoreError {
     {
         conflict(id)
     } else {
-        unavailable("write account group")
+        unavailable("write account group", error)
     }
 }
 
@@ -678,8 +682,11 @@ fn invalid(message: &str) -> StoreError {
     }
 }
 
-fn unavailable(message: &'static str) -> StoreError {
-    postgres_unavailable(message)
+fn unavailable(
+    message: &'static str,
+    source: impl std::error::Error + Send + Sync + 'static,
+) -> StoreError {
+    postgres_unavailable(message, source)
 }
 
 /// 原生管理与插件自有分组共用字段校验和写入规则

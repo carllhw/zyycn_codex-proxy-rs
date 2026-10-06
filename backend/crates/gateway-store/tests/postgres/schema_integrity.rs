@@ -2,6 +2,44 @@
 
 use super::TestDatabase;
 
+#[tokio::test]
+async fn error_details_migration_preserves_existing_request_and_event_text() {
+    let Some(db) = TestDatabase::create_through("error_details_upgrade", 22).await else {
+        return;
+    };
+    seed_request(&db.pool).await;
+    let raw = "{ \"error\": {\"code\":\"Vendor.Unknown\",\"message\":\"原始错误\"} }";
+    sqlx::query("update model_requests set raw_upstream_error = $1 where id = 'req_integrity'")
+        .bind(raw)
+        .execute(&db.pool)
+        .await
+        .unwrap();
+    sqlx::query(
+        "insert into ops_events (id, level, component, operation, failure_kind, message, created_at, raw_upstream_error)
+         values ('error_details_upgrade', 'error', 'provider', 'generate', 'unavailable', 'safe message', now(), $1)",
+    ).bind(raw).execute(&db.pool).await.unwrap();
+
+    super::TEST_MIGRATOR.run(&db.pool).await.unwrap();
+    let details: Vec<String> = sqlx::query_scalar(
+        "select error_details from model_requests where id = 'req_integrity'
+         union all select error_details from ops_events where id = 'error_details_upgrade'",
+    )
+    .fetch_all(&db.pool)
+    .await
+    .unwrap();
+    assert_eq!(details, vec![raw.to_owned(), raw.to_owned()]);
+    let old_columns: i64 = sqlx::query_scalar(
+        "select count(*) from information_schema.columns
+         where table_schema = current_schema() and table_name in ('model_requests', 'ops_events')
+         and column_name = 'raw_upstream_error'",
+    )
+    .fetch_one(&db.pool)
+    .await
+    .unwrap();
+    assert_eq!(old_columns, 0);
+    db.close().await;
+}
+
 async fn seed_request(pool: &sqlx::PgPool) {
     sqlx::query(
         "insert into model_requests (

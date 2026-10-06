@@ -23,12 +23,13 @@ pub enum ConflictKind {
 }
 
 /// Store adapter 的稳定错误边界
-#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[derive(Debug, Clone, thiserror::Error)]
 pub enum StoreError {
     #[error("{backend:?} store is unavailable: {message}")]
     Unavailable {
         backend: StoreBackend,
         message: String,
+        source: Option<gateway_core::error::ErrorSource>,
     },
     #[error("{entity} {id} was not found")]
     NotFound { entity: &'static str, id: String },
@@ -101,7 +102,7 @@ pub(crate) fn admin_store_error(resource: &'static str, error: StoreError) -> Ad
         StoreError::InvalidData { .. } => AdminStoreErrorKind::Invalid,
         StoreError::Unavailable { .. } => AdminStoreErrorKind::Unavailable,
     };
-    AdminStoreError::new(kind, resource, "store operation failed")
+    AdminStoreError::new(kind, resource, "store operation failed").with_source(error)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -240,16 +241,46 @@ pub(crate) fn require_nonempty(
     }
 }
 
-pub(crate) fn postgres_unavailable(operation: &'static str) -> StoreError {
+pub(crate) fn postgres_unavailable(
+    operation: &'static str,
+    source: impl std::error::Error + Send + Sync + 'static,
+) -> StoreError {
     StoreError::Unavailable {
         backend: StoreBackend::PostgreSql,
         message: operation.to_owned(),
+        source: Some(gateway_core::error::ErrorSource::new(source)),
     }
 }
 
-pub(crate) fn redis_unavailable(operation: &'static str) -> StoreError {
+pub(crate) fn redis_unavailable(
+    operation: &'static str,
+    source: impl std::error::Error + Send + Sync + 'static,
+) -> StoreError {
     StoreError::Unavailable {
         backend: StoreBackend::Redis,
         message: operation.to_owned(),
+        source: Some(gateway_core::error::ErrorSource::new(source)),
     }
+}
+
+/// Provider 存储端口共用不可用分类，实际后端及原因由来源链保留
+pub(crate) fn provider_unavailable(
+    operation: &'static str,
+    source: impl std::error::Error + Send + Sync + 'static,
+) -> gateway_core::provider_ports::ProviderStoreError {
+    gateway_core::provider_ports::ProviderStoreError::caused_by(
+        gateway_core::provider_ports::ProviderStoreErrorKind::Unavailable,
+        operation,
+        source,
+    )
+}
+
+pub(crate) fn core_store_error(error: StoreError) -> gateway_core::error::StoreError {
+    use gateway_core::error::{StoreError as CoreStoreError, StoreErrorKind};
+    let kind = match error {
+        StoreError::Unavailable { .. } => StoreErrorKind::Unavailable,
+        StoreError::Conflict { .. } => StoreErrorKind::Conflict,
+        StoreError::NotFound { .. } | StoreError::InvalidData { .. } => StoreErrorKind::InvalidData,
+    };
+    CoreStoreError::caused_by(kind, error)
 }

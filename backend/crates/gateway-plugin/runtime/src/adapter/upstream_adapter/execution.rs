@@ -10,7 +10,7 @@ use gateway_core::{
     upstream::UpstreamSendState,
 };
 use gateway_plugin_sdk::{
-    CallContext, ErrorCode, PluginFault, Stage,
+    CallContext, Stage,
     call::upstream_adapter::{
         ContinuationScope, EXECUTE_METHOD, UpstreamAdapterRequest, UpstreamContinuation,
         UpstreamTransport,
@@ -20,10 +20,11 @@ use serde::{Deserialize, Serialize};
 
 use super::{
     PluginUpstreamAdapter,
-    event::{DecodedEvent, EventDecodeError, EventDecoder, invalid},
+    event::{DecodedEvent, EventDecodeError, EventDecoder},
+    failure::{fault_error, invalid, rpc_error},
 };
 use crate::{
-    RpcError, RpcStream,
+    RpcStream,
     callback::{
         CallbackScope,
         upstream::{ConnectionOwner, ManagedUpstream},
@@ -240,10 +241,10 @@ impl Execution {
             invocation
                 .operation
                 .middleware_body()
-                .map_err(|_| invalid())?
+                .map_err(|source| invalid().with_source(source))?
                 .to_vec(),
         )
-        .map_err(|_| invalid())?;
+        .map_err(|source| invalid().with_source(source))?;
         invocation.context.trace().record("plugin.upstream", serde_json::json!({ "instanceId": self.adapter.instance_id, "adapterId": declaration.id, "generation": context.generation, "transport": declaration.transport.as_str() }));
         let stream = tokio::select! {
             biased;
@@ -252,7 +253,7 @@ impl Execution {
         };
         if stream.initial.result != serde_json::json!({}) || !stream.initial.payload.is_empty() {
             self.adapter.session.invalid_response(Stage::Upstream);
-            return Err(super::event::invalid(managed.send_state.get()));
+            return Err(super::failure::invalid(managed.send_state.get()));
         }
         Ok(ActiveCall {
             context,
@@ -292,7 +293,7 @@ fn previous_continuation(
     }
     let stored: StoredContinuation =
         serde_json::from_value(serde_json::Value::Object(state.payload().clone()))
-            .map_err(|_| invalid())?;
+            .map_err(|source| invalid().with_source(source))?;
     if stored.client_key_id != owner.client_key_id
         || stored.account_id != owner.account_id
         || stored.credential_revision != owner.credential_revision
@@ -325,7 +326,7 @@ async fn attach_continuation(
     if continuation.upstream_response_id.is_empty()
         || continuation.upstream_response_id.len() > 512
         || serde_json::to_vec(&continuation)
-            .map_err(|_| invalid())?
+            .map_err(|source| invalid().with_source(source))?
             .len()
             > 32 * 1024
     {
@@ -350,12 +351,13 @@ async fn attach_continuation(
         account_id: invocation.account.account_id().as_str().to_owned(),
         credential_revision: invocation.account.credential_revision().get(),
     };
-    let serde_json::Value::Object(payload) = serde_json::to_value(state).map_err(|_| invalid())?
+    let serde_json::Value::Object(payload) =
+        serde_json::to_value(state).map_err(|source| invalid().with_source(source))?
     else {
         return Err(invalid());
     };
     let state = ProviderSessionState::new(adapter.declaration.provider.as_str(), payload)
-        .map_err(|_| invalid())?
+        .map_err(|source| invalid().with_source(source))?
         .with_extension_owner(extension_owner(adapter, &active.context, local));
     decoded.event.attach_session_update(state);
     Ok(())
@@ -374,26 +376,4 @@ fn extension_owner(
         incarnation: context.incarnation.clone(),
         connection_local,
     }
-}
-
-fn rpc_error(error: RpcError, sent: UpstreamSendState) -> ProviderError {
-    match error {
-        RpcError::Remote(fault) => fault_error(fault, sent),
-        RpcError::Timeout => ProviderError::new(ProviderErrorKind::Timeout, sent),
-        RpcError::Cancelled => ProviderError::new(ProviderErrorKind::Cancelled, sent),
-        _ => ProviderError::new(ProviderErrorKind::Unavailable, sent),
-    }
-}
-
-fn fault_error(fault: PluginFault, sent: UpstreamSendState) -> ProviderError {
-    let kind = match fault.code {
-        ErrorCode::Timeout => ProviderErrorKind::Timeout,
-        ErrorCode::Cancelled => ProviderErrorKind::Cancelled,
-        ErrorCode::Unsupported => ProviderErrorKind::Unsupported,
-        ErrorCode::InvalidInput | ErrorCode::Rejected | ErrorCode::PermissionDenied => {
-            ProviderErrorKind::InvalidRequest
-        }
-        _ => ProviderErrorKind::Unavailable,
-    };
-    ProviderError::new(kind, sent)
 }

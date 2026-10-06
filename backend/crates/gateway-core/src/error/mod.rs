@@ -1,5 +1,9 @@
 //! 网关核心使用的稳定错误分类
 
+mod source;
+
+pub use source::ErrorSource;
+
 use std::fmt;
 use std::num::NonZeroU32;
 use std::time::Duration;
@@ -231,6 +235,8 @@ impl ProviderDiagnostic {
         while let Some(error) = source {
             if let Some(error) = error.downcast_ref::<std::io::Error>() {
                 let code = match error.kind() {
+                    std::io::ErrorKind::NotFound => Some("io_not_found"),
+                    std::io::ErrorKind::PermissionDenied => Some("io_permission_denied"),
                     std::io::ErrorKind::ConnectionRefused => Some("connection_refused"),
                     std::io::ErrorKind::ConnectionReset => Some("tcp_reset"),
                     std::io::ErrorKind::ConnectionAborted => Some("connection_aborted"),
@@ -244,6 +250,15 @@ impl ProviderDiagnostic {
                 if let Some(code) = code {
                     self.message.push_str("; I/O cause: ");
                     self.message.push_str(code);
+                    if let Some(os_code) = error.raw_os_error() {
+                        // 只重建操作系统错误，不能格式化可能包含 URL、路径或正文的自定义 I/O 错误
+                        use std::fmt::Write as _;
+                        let _ = write!(
+                            self.message,
+                            "; OS cause: {}",
+                            std::io::Error::from_raw_os_error(os_code)
+                        );
+                    }
                     self.code = Some(code);
                     break;
                 }
@@ -277,7 +292,7 @@ impl fmt::Debug for ProviderDiagnostic {
 
 /// 运维错误详情中按原样展示的上游错误返回
 ///
-/// 该值只接收响应方向的错误正文或 WebSocket close/error frame；不得放入请求
+/// 该值只接收响应方向的错误正文、WebSocket close/error frame 或上游适配插件 fault；不得放入请求
 /// Authorization、Cookie 或客户端输入
 /// 它会被持久化并由管理端显式返回，但普通
 /// `Debug`/`Display` 不输出正文，避免在非运维日志中重复扩散
@@ -427,8 +442,9 @@ impl fmt::Debug for ClientVisibleUpstreamResponse {
 ///
 /// 稳定诊断字段不接收原始响应正文，也不会在 `Debug` 或 `Display` 中打印上游
 /// code/request ID/response ID
-/// Adapter 若捕获到可能含 secret 的上下文，只能调用
-/// [`ProviderError::redact_sensitive_context`] 丢弃正文并留下脱敏标记
+/// 原始错误来源与上游响应正文仅由 [`ProviderError::error_details`] 提取到受控运维详情
+/// 请求方向的凭据等敏感上下文必须先移除，并通过
+/// [`ProviderError::redact_sensitive_context`] 留下脱敏标记
 ///
 /// 唯一例外是 [`ProviderError::with_atomic_client_events`]：它只承载尚未交付客户端、
 /// 必须与本错误一起完成重试判断的协议事件
@@ -450,6 +466,7 @@ pub struct ProviderError {
     retry_same_account: bool,
     sensitive_context_redacted: bool,
     diagnostic: Option<Box<ProviderDiagnostic>>,
+    source: Option<ErrorSource>,
     raw_upstream_error: Option<Box<RawUpstreamError>>,
     client_visible_upstream_error: Option<Box<ClientVisibleUpstreamError>>,
     client_visible_upstream_response: Option<Box<ClientVisibleUpstreamResponse>>,
@@ -491,6 +508,7 @@ impl ProviderError {
             retry_same_account: false,
             sensitive_context_redacted: false,
             diagnostic: None,
+            source: None,
             raw_upstream_error: None,
             client_visible_upstream_error: None,
             client_visible_upstream_response: None,
@@ -507,7 +525,7 @@ impl ProviderError {
         self
     }
 
-    /// 附加 adapter 已分类为安全的上游错误 code
+    /// 保留原始上游错误 code，不参与普通格式化或替代稳定分类
     #[must_use]
     pub fn with_upstream_code(mut self, code: OpaqueUpstreamValue) -> Self {
         self.upstream_values_mut().code = Some(code);
@@ -845,6 +863,29 @@ impl ProviderError {
         self.diagnostic.as_deref()
     }
 
+    /// 包装底层失败；来源只供显式诊断访问，不改变分类和发送事实
+    #[must_use]
+    pub fn with_source(mut self, source: impl std::error::Error + Send + Sync + 'static) -> Self {
+        self.source = Some(ErrorSource::new(source));
+        self
+    }
+
+    /// 运维详情的唯一投影入口，来源链与上游正文分别保留，不进入公共响应或诊断包
+    #[must_use]
+    pub fn error_details(&self) -> Option<String> {
+        if self.source.is_none() && self.raw_upstream_error.is_none() {
+            return None;
+        }
+        Some(
+            serde_json::json!({
+                "causes": self.source.as_ref().map(ErrorSource::snapshot),
+                "upstream": self.raw_upstream_error().map(RawUpstreamError::as_str),
+                "redacted": self.sensitive_context_was_redacted(),
+            })
+            .to_string(),
+        )
+    }
+
     /// 返回将由运维错误详情原样展示的上游错误返回
     #[must_use]
     pub fn raw_upstream_error(&self) -> Option<&RawUpstreamError> {
@@ -882,7 +923,7 @@ impl ProviderError {
 
     /// 复制可安全进入诊断和持久化边界的稳定错误事实
     ///
-    /// 请求局部的原始上游响应与尚未提交的客户端事件不会进入快照
+    /// 保留原因链和上游错误详情；供协议透传的完整响应与尚未提交的客户端事件不进入快照
     #[must_use]
     pub fn stable_snapshot(&self) -> Self {
         Self {
@@ -901,6 +942,7 @@ impl ProviderError {
             retry_same_account: self.retry_same_account,
             sensitive_context_redacted: self.sensitive_context_redacted,
             diagnostic: self.diagnostic.clone(),
+            source: self.source.clone(),
             raw_upstream_error: self.raw_upstream_error.clone(),
             client_visible_upstream_error: self.client_visible_upstream_error.clone(),
             client_visible_upstream_response: None,
@@ -916,10 +958,7 @@ impl fmt::Debug for ProviderError {
             .field("kind", &self.kind)
             .field("send_state", &self.send_state)
             .field("upstream_status", &self.upstream_status)
-            .field(
-                "upstream_code",
-                &self.upstream_code().map(|_| "<classified-safe>"),
-            )
+            .field("upstream_code", &self.upstream_code().map(|_| "<opaque>"))
             .field(
                 "upstream_request_id",
                 &self.upstream_request_id().map(|_| "<classified-safe>"),
@@ -986,7 +1025,11 @@ impl fmt::Display for ProviderError {
     }
 }
 
-impl std::error::Error for ProviderError {}
+impl std::error::Error for ProviderError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        self.source.as_deref().map(|source| source as _)
+    }
+}
 
 /// 对客户端协议稳定的网关错误分类
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -1277,18 +1320,31 @@ pub enum StoreErrorKind {
     InvalidData,
 }
 
-/// Core port 返回的脱敏存储错误
-#[derive(Debug, Clone, PartialEq, Eq, Error)]
+/// Core port 返回的存储错误，普通格式化不展开原始来源
+#[derive(Debug, Clone, Error)]
 #[error("execution store failed: {kind:?}")]
 pub struct StoreError {
     kind: StoreErrorKind,
+    source: Option<ErrorSource>,
 }
 
 impl StoreError {
-    /// 创建不携带数据库正文的 store 错误
+    /// 创建只有分类的本地存储错误；包装实际异常使用 caused_by
     #[must_use]
     pub const fn new(kind: StoreErrorKind) -> Self {
-        Self { kind }
+        Self { kind, source: None }
+    }
+
+    /// 包装已有存储错误并保留来源
+    #[must_use]
+    pub fn caused_by(
+        kind: StoreErrorKind,
+        source: impl std::error::Error + Send + Sync + 'static,
+    ) -> Self {
+        Self {
+            kind,
+            source: Some(ErrorSource::new(source)),
+        }
     }
 
     /// 返回稳定错误分类

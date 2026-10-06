@@ -1,5 +1,5 @@
 import type { OpsError, UsageRecordDetail } from '@/api'
-import { opsErrorSummary } from './opsErrorPresentation'
+import { failureClassText } from './opsErrorPresentation'
 
 export function requestDiagnosticsBundle(
   requestId: string,
@@ -14,7 +14,7 @@ export function requestDiagnosticsBundle(
   const request = record ?? error
 
   return {
-    schemaVersion: 2,
+    schemaVersion: 3,
     source: 'usage.request_diagnostics',
     exportPolicy: 'allowlisted_fields_without_payloads',
     request: {
@@ -40,10 +40,9 @@ export function requestDiagnosticsBundle(
           requestId: error.requestId,
           source: error.metadata.source,
           component: error.metadata.component,
-          summary: opsErrorSummary(error),
-          summarySource: 'failure_class_or_provider_error_code',
+          summary: failureClassText(error.failureClass),
+          summarySource: 'failure_class',
           failureClass: error.failureClass,
-          providerErrorCode: error.providerErrorCode,
           upstreamSendState: error.upstreamSendState,
           attemptIndex: error.attemptIndex,
           clientStatusCode: error.clientStatusCode,
@@ -54,7 +53,7 @@ export function requestDiagnosticsBundle(
           createdAt: error.createdAt,
         }
       : null,
-    // 旧 trace 的 sanitized 标记不是安全保证；不遍历或复制任何 event.data。
+    // 只导出 Core 从错误类型生成的分类，正文与其他事件 data 不进入诊断包
     trace: trace
       ? {
           schemaVersion: trace.schemaVersion,
@@ -70,6 +69,15 @@ export function requestDiagnosticsBundle(
             exchangeId: event.exchangeId,
             stage: event.stage,
             count: event.count,
+            failure: event.stage === 'attempt.failed'
+              ? {
+                  kind: event.data.kind,
+                  sendState: event.data.sendState,
+                  stage: event.data.diagnostic?.stage ?? null,
+                  code: event.data.diagnostic?.code ?? null,
+                  upstreamStatus: event.data.upstreamStatus,
+                }
+              : null,
           })),
         }
       : null,
@@ -83,7 +91,6 @@ export function requestDiagnosticsBundle(
       outcome: attempt.outcome,
       downstreamCommitted: attempt.downstreamCommitted,
       statusCode: attempt.statusCode,
-      providerErrorCode: attempt.providerErrorCode,
       failureClass: attempt.failureClass,
       accountId: attempt.accountId,
       firstTokenMs: attempt.firstTokenMs,
@@ -100,7 +107,13 @@ export function requestDiagnosticsBundle(
     availability: {
       requestDetail: record ? 'available' : 'unavailable',
       errorSummary: error ? 'available' : 'not_available_for_selected_request',
-      trace: !record ? 'unknown' : trace ? 'stages_only' : 'not_recorded',
+      trace: !record
+        ? 'unknown'
+        : !trace
+            ? 'not_recorded'
+            : trace.events.some(event => event.stage === 'attempt.failed')
+              ? 'stages_and_failure_classifications'
+              : 'stages_only',
       traceEventsDropped: trace?.droppedEvents ?? null,
       attemptsComplete: record?.attemptsComplete ?? null,
       relatedRequests: record ? 'available' : 'unknown',
@@ -108,19 +121,21 @@ export function requestDiagnosticsBundle(
     },
     omitted: [
       'error.message',
-      'error.rawUpstreamError',
+      'error.errorDetails',
+      'error.providerErrorCode',
+      'attempts.providerErrorCode',
       'request.message',
       'request.metadata',
-      'trace.events.data',
+      'trace.events.data_except_failure_classification',
       'request_and_response_headers_and_bodies',
       'user_supplied_model_names',
       'account_names_emails_and_credential_names',
       'client_ip_user_agent_and_api_key',
     ],
     notes: [
-      'schemaVersion 2 仅供人工排障，null 表示未知或未采集，不代表没有发生错误',
-      '错误摘要复用列表的分类展示，不是上游错误原文，error 为 null 时请结合 attempts 的分类与状态',
-      '时间线仅导出阶段、顺序和计时，不含事件 data，历史 sanitized 标记不作为安全依据',
+      'schemaVersion 3 仅供人工排障，null 表示未知或未采集，不代表没有发生错误',
+      '错误摘要只使用稳定分类，不含上游错误码或原文，error 为 null 时请结合 attempts 的分类与状态',
+      '时间线导出阶段、顺序、计时及 Core 记录的失败分类，不含错误原文和其他事件 data',
       'attemptsComplete 不为 true 时，尝试列表不完整，没有时间线的旧记录无法补回未采集事件',
       '未自动采集网关版本、客户端版本、部署环境和故障发生时区，请另行补充',
       '关联 ID 仍可能属于内部信息，分享前请审阅，原始错误、正文和日志需另行审阅脱敏，勿直接公开',

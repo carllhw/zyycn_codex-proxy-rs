@@ -52,12 +52,13 @@ pub enum AdminStoreErrorKind {
 }
 
 /// 隐藏数据库实现细节的持久化错误
-#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[derive(Debug, Clone, thiserror::Error)]
 #[error("{resource} store operation failed: {message}")]
 pub struct AdminStoreError {
     kind: AdminStoreErrorKind,
     resource: &'static str,
     message: String,
+    source: Option<gateway_core::error::ErrorSource>,
 }
 
 impl AdminStoreError {
@@ -71,7 +72,15 @@ impl AdminStoreError {
             kind,
             resource,
             message: message.into(),
+            source: None,
         }
+    }
+
+    /// 来源留在内部诊断链，公开消息不展开基础设施错误
+    #[must_use]
+    pub fn with_source(mut self, source: impl std::error::Error + Send + Sync + 'static) -> Self {
+        self.source = Some(gateway_core::error::ErrorSource::new(source));
+        self
     }
 
     #[must_use]

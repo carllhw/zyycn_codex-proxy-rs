@@ -20,7 +20,7 @@ const REQUEST_ERROR_SELECT: &str = "select 'model_request'::text as source,
        mr.provider_error_code, mr.client_response_id, mr.upstream_request_id,
        mr.latency_ms,
        coalesce(mr.error_message, mr.error_kind) as message,
-       mr.raw_upstream_error,
+       mr.error_details,
        host(mr.client_ip) as client_ip, mr.user_agent,
        mr.reasoning_effort, mr.reasoning_preset, mr.request_kind,
        mr.subagent_kind, mr.compact,
@@ -51,7 +51,7 @@ const OPS_EVENT_SELECT: &str = "select 'ops_event'::text as source,
        oe.upstream_send_state,
        null::integer as client_status_code, oe.status_code as upstream_status_code,
        oe.provider_error_code, mr.client_response_id, oe.upstream_request_id,
-       oe.latency_ms, oe.message, oe.raw_upstream_error,
+       oe.latency_ms, oe.message, oe.error_details,
        host(mr.client_ip) as client_ip, mr.user_agent,
        mr.reasoning_effort, mr.reasoning_preset, mr.request_kind,
        mr.subagent_kind, mr.compact,
@@ -93,7 +93,7 @@ pub(crate) async fn list_ops_errors(
         .build()
         .fetch_all(pool)
         .await
-        .map_err(|_| postgres_unavailable("list ops errors"))?;
+        .map_err(|source| postgres_unavailable("list ops errors", source))?;
     let items = rows
         .iter()
         .map(ops_error_from_row)
@@ -124,7 +124,7 @@ pub(crate) async fn count_ops_errors(
         .build_query_scalar::<i64>()
         .fetch_one(pool)
         .await
-        .map_err(|_| postgres_unavailable("count ops errors"))?;
+        .map_err(|source| postgres_unavailable("count ops errors", source))?;
     to_u64(total)
 }
 

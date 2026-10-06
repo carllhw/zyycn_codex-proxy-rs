@@ -677,7 +677,7 @@ fn successful_core_finalization(id: &str) -> CoreModelRequestFinalization {
         provider_metadata_json: None,
         error: None,
         provider_error_code: None,
-        raw_upstream_error: None,
+        error_details: None,
         failure_observation: Default::default(),
         retry_after_ms: None,
         usage: Usage::new(),
@@ -829,8 +829,8 @@ async fn core_adapter_persists_opaque_response_ids_as_bytes() {
 }
 
 #[tokio::test]
-async fn core_adapter_persists_raw_upstream_error_verbatim() {
-    let Some(database) = TestDatabase::create("execution_raw_upstream_error").await else {
+async fn core_adapter_persists_native_causes_and_verbatim_upstream_details() {
+    let Some(database) = TestDatabase::create("execution_error_details").await else {
         return;
     };
     seed_running_request(&database.pool, "req_raw_upstream_error")
@@ -838,6 +838,12 @@ async fn core_adapter_persists_raw_upstream_error_verbatim() {
         .expect("seed model request");
     let store = PgExecutionStore::new(database.pool.clone());
     let raw = r#"{"error":{"message":"raw upstream body","opaque":"\u0000"}}"#;
+    let provider_error = gateway_core::error::ProviderError::new(
+        gateway_core::error::ProviderErrorKind::Unavailable,
+        UpstreamSendState::Sent,
+    )
+    .with_source(std::io::Error::other("original local cause"))
+    .with_raw_upstream_error(gateway_core::error::RawUpstreamError::new(raw));
     let mut finalization = successful_core_finalization("req_raw_upstream_error");
     finalization.outcome = ExecutionOutcome::Failed;
     finalization.client_status_code = Some(502);
@@ -846,19 +852,25 @@ async fn core_adapter_persists_raw_upstream_error_verbatim() {
         GatewayErrorKind::UpstreamUnavailable,
         "upstream service is unavailable",
     ));
-    finalization.raw_upstream_error = Some(raw.to_owned());
+    finalization.error_details = provider_error.error_details();
 
     ExecutionStore::finalize_model_request(&store, finalization)
         .await
-        .expect("persist raw upstream error");
+        .expect("persist restricted error details");
 
     let persisted: Option<String> = sqlx::query_scalar(
-        "select raw_upstream_error from model_requests where id = 'req_raw_upstream_error'",
+        "select error_details from model_requests where id = 'req_raw_upstream_error'",
     )
     .fetch_one(&database.pool)
     .await
-    .expect("load raw upstream error");
-    assert_eq!(persisted.as_deref(), Some(raw));
+    .expect("load restricted error details");
+    let persisted: Value = serde_json::from_str(persisted.as_deref().unwrap()).unwrap();
+    assert_eq!(persisted["upstream"], raw);
+    assert_eq!(
+        persisted["causes"]["messages"],
+        json!(["original local cause"])
+    );
+    assert_eq!(persisted["causes"]["truncated"], false);
 
     database.close().await;
 }
@@ -1527,7 +1539,7 @@ pub(super) fn early_failure(request: &CoreNewModelRequest) -> CoreModelRequestFi
             "no available provider",
         )),
         provider_error_code: None,
-        raw_upstream_error: None,
+        error_details: None,
         failure_observation: Default::default(),
         retry_after_ms: None,
         usage: Usage::new(),
@@ -1622,7 +1634,7 @@ async fn zero_attempt_failure_is_queryable_without_fabricating_upstream_facts() 
         "downstream_committed_at",
         "service_tier",
         "provider_observation_json",
-        "raw_upstream_error",
+        "error_details",
         "input_tokens",
         "output_tokens",
         "total_tokens",
@@ -1675,7 +1687,7 @@ async fn zero_attempt_failure_is_queryable_without_fabricating_upstream_facts() 
     assert_eq!(error.upstream_transport, None);
     assert_eq!(error.upstream_status_code, None);
     assert_eq!(error.upstream_request_id, None);
-    assert_eq!(error.raw_upstream_error, None);
+    assert_eq!(error.error_details, None);
 
     // 路由入口不等于已选择 Provider；没有平台事实时不能被平台/attempt 筛选命中
     for filter in [

@@ -30,10 +30,10 @@ pub(super) async fn reset_client_key_budget(
     context: &MutationContext,
 ) -> AdminStoreResult<()> {
     let mut tx = match &origin {
-        ClientKeyBudgetMutationOrigin::Admin => pool.begin().await.map_err(|_| {
+        ClientKeyBudgetMutationOrigin::Admin => pool.begin().await.map_err(|source| {
             crate::admin_store_error(
                 "client API key budget",
-                postgres_unavailable("begin budget reset"),
+                postgres_unavailable("begin budget reset", source),
             )
         })?,
         ClientKeyBudgetMutationOrigin::Plugin(owner) => {
@@ -43,10 +43,10 @@ pub(super) async fn reset_client_key_budget(
     reset_client_key_budget_in_transaction(&mut tx, &command, context)
         .await
         .map_err(|error| crate::admin_store_error("client API key budget", error))?;
-    tx.commit().await.map_err(|_| {
+    tx.commit().await.map_err(|source| {
         crate::admin_store_error(
             "client API key budget",
-            postgres_unavailable("commit budget reset"),
+            postgres_unavailable("commit budget reset", source),
         )
     })
 }
@@ -62,7 +62,7 @@ async fn reset_client_key_budget_in_transaction(
             .bind(command.id.as_str())
             .fetch_optional(&mut **tx)
             .await
-            .map_err(|_| postgres_unavailable("lock budget reset key"))?;
+            .map_err(|source| postgres_unavailable("lock budget reset key", source))?;
     if exists.is_none() {
         return Err(StoreError::NotFound {
             entity: "client API key",
@@ -95,7 +95,7 @@ async fn reset_client_key_budget_in_transaction(
     .bind(reset_at)
     .execute(&mut **tx)
     .await
-    .map_err(|_| postgres_unavailable("reset client budget"))?;
+    .map_err(|source| postgres_unavailable("reset client budget", source))?;
     let mut fields = Vec::new();
     if daily {
         fields.extend([
@@ -361,13 +361,13 @@ pub(super) async fn load_client_key_budgets(
     .bind(ids)
     .fetch_all(pool)
     .await
-    .map_err(|_| postgres_unavailable("load client budgets"))?;
+    .map_err(|source| postgres_unavailable("load client budgets", source))?;
     let mut budgets = BTreeMap::new();
     for row in rows {
         let parse = |field| -> StoreResult<Decimal> {
             row.get::<String, _>(field)
                 .parse()
-                .map_err(|_| postgres_unavailable("decode client budget"))
+                .map_err(|source| postgres_unavailable("decode client budget", source))
         };
         budgets.insert(
             row.get::<String, _>("id"),
@@ -388,9 +388,14 @@ pub(super) async fn load_client_key_budgets(
         );
     }
     for record in records {
-        record.budget = budgets
-            .remove(&record.id)
-            .ok_or_else(|| postgres_unavailable("load client budget policy"))?;
+        record.budget =
+            budgets
+                .remove(&record.id)
+                .ok_or_else(|| crate::StoreError::Unavailable {
+                    backend: crate::StoreBackend::PostgreSql,
+                    message: "load client budget policy".to_owned(),
+                    source: None,
+                })?;
     }
     Ok(())
 }

@@ -18,7 +18,7 @@ fn request_scoped_ops_event_requires_attempt_index() {
         upstream_model_id: None,
         failure_kind: "timeout".to_owned(),
         upstream_send_state: Some("not_sent".to_owned()),
-        raw_upstream_error: None,
+        error_details: None,
         status_code: None,
         provider_error_code: None,
         retry_after_ms: None,

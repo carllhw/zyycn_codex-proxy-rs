@@ -710,7 +710,7 @@ fn log_pump_exit(
     observation: &WebSocketConnectionObservation,
     backpressure_events: u64,
 ) {
-    let detail = reason.detail().unwrap_or_default();
+    let detail = reason.metric_reason();
     let account_id = context.account_id.as_deref().unwrap_or("unknown");
     let conversation_id_hash = context.conversation_id_hash.as_deref().unwrap_or("unknown");
     if reason.is_unexpected() {
@@ -728,9 +728,6 @@ fn log_pump_exit(
         );
     } else if matches!(reason, PumpExitReason::UpstreamCloseFrame { .. }) {
         let upstream_close = reason.upstream_close();
-        let upstream_error_raw = upstream_close
-            .and_then(CodexWebSocketCloseError::reason)
-            .unwrap_or_default();
         tracing::info!(
             websocket_connection_id = %connection_id,
             account_id = %account_id,
@@ -741,7 +738,7 @@ fn log_pump_exit(
             connection_idle_ms = observation.idle_ms(),
             pump_exit_detail = detail,
             upstream_close_code = ?upstream_close.and_then(CodexWebSocketCloseError::code),
-            upstream_error_raw,
+            upstream_close_reason_bytes = upstream_close.and_then(CodexWebSocketCloseError::reason).map_or(0, str::len),
             upstream_error_raw_present = upstream_close.is_some_and(|close| close.reason().is_some()),
             backpressure_events,
             "Responses WebSocket pump received close frame"

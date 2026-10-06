@@ -384,7 +384,7 @@ impl RedisCredentialLeaseRepository {
             .arg(SIGNAL_TTL_MILLIS)
             .invoke_async::<String>(&mut connection)
             .await
-            .map_err(|_| redis_unavailable("advance provider scheduling cursor"))?;
+            .map_err(|source| redis_unavailable("advance provider scheduling cursor", source))?;
         cursor
             .parse::<u64>()
             .map_err(|_| invalid("Redis returned an invalid scheduling cursor"))
@@ -458,7 +458,7 @@ impl RedisCredentialLeaseRepository {
                 .arg(signal_ttl)
                 .invoke_async(&mut connection)
                 .await
-                .map_err(|_| redis_unavailable("acquire credential lease"))?;
+                .map_err(|source| redis_unavailable("acquire credential lease", source))?;
         if acquired == 0 {
             return Ok(LeaseAttempt {
                 grant: None,
@@ -485,7 +485,7 @@ impl RedisCredentialLeaseRepository {
             .key(&keys[2])
             .invoke_async(&mut connection)
             .await
-            .map_err(|_| redis_unavailable("load credential runtime signal"))?;
+            .map_err(|source| redis_unavailable("load credential runtime signal", source))?;
         let in_flight = in_flight
             .parse::<u32>()
             .map_err(|_| invalid("Redis returned an invalid in-flight count"))?;
@@ -532,7 +532,7 @@ impl RedisProviderLeaseCoordinator {
         self.repository
             .advance_scheduling_cursor(client_api_key_id, provider_kind)
             .await
-            .map_err(|_| provider_unavailable("advance scheduling cursor"))
+            .map_err(|source| crate::provider_unavailable("advance scheduling cursor", source))
     }
 
     async fn load_signals(
@@ -547,7 +547,7 @@ impl RedisProviderLeaseCoordinator {
             .repository
             .credential_runtime_signals(&ids)
             .await
-            .map_err(|_| provider_unavailable("load scheduling signals"))?;
+            .map_err(|source| crate::provider_unavailable("load scheduling signals", source))?;
         signals
             .into_iter()
             .map(|signal| {
@@ -579,7 +579,10 @@ impl RedisProviderLeaseCoordinator {
     ) -> Result<ProviderLeaseAcquisition, ProviderStoreError> {
         let ttl = request.deadline().bounded(REQUEST_LEASE_TTL);
         if ttl.is_zero() {
-            return Err(provider_unavailable("acquire expired scheduling lease"));
+            return Err(ProviderStoreError::new(
+                ProviderStoreErrorKind::Unavailable,
+                "acquire expired scheduling lease",
+            ));
         }
         let acquisition = self
             .repository
@@ -592,13 +595,15 @@ impl RedisProviderLeaseCoordinator {
                 ttl,
             })
             .await
-            .map_err(|_| provider_unavailable("acquire scheduling lease"))?;
+            .map_err(|source| crate::provider_unavailable("acquire scheduling lease", source))?;
         Ok(match acquisition {
             CredentialBoundedLeaseAcquisition::Acquired(guard) => {
                 ProviderLeaseAcquisition::Acquired(Box::new(
                     guard
                         .maintain(request.deadline(), request.cancellation())
-                        .map_err(|_| provider_unavailable("maintain scheduling lease"))?,
+                        .map_err(|source| {
+                            crate::provider_unavailable("maintain scheduling lease", source)
+                        })?,
                 ))
             }
             CredentialBoundedLeaseAcquisition::Busy { retry_after } => {
@@ -622,7 +627,7 @@ impl RedisProviderLeaseCoordinator {
                 ttl: OAUTH_REFRESH_LEASE_TTL,
             })
             .await
-            .map_err(|_| provider_unavailable("acquire refresh capacity"))?;
+            .map_err(|source| crate::provider_unavailable("acquire refresh capacity", source))?;
         Ok(match acquisition {
             CredentialBoundedLeaseAcquisition::Acquired(guard) => {
                 ProviderLeaseAcquisition::Acquired(Box::new(guard))
@@ -676,7 +681,9 @@ impl ProviderLeasePort for RedisProviderLeaseCoordinator {
                             Some(guard) => ProviderLeaseAcquisition::Acquired(Box::new(guard)),
                             None => ProviderLeaseAcquisition::Busy { retry_after: None },
                         })
-                        .map_err(|_| provider_unavailable("acquire refresh lease"))
+                        .map_err(|source| {
+                            crate::provider_unavailable("acquire refresh lease", source)
+                        })
                 }
             }
         })
@@ -701,7 +708,9 @@ impl ProviderLeasePort for RedisProviderLeaseCoordinator {
                 .repository
                 .credential_runtime_signals(&ids)
                 .await
-                .map_err(|_| provider_unavailable("load account in-flight signals"))?;
+                .map_err(|source| {
+                    crate::provider_unavailable("load account in-flight signals", source)
+                })?;
             Ok(signals
                 .into_iter()
                 .filter_map(|signal| {
@@ -711,10 +720,6 @@ impl ProviderLeasePort for RedisProviderLeaseCoordinator {
                 .collect())
         })
     }
-}
-
-fn provider_unavailable(operation: &'static str) -> ProviderStoreError {
-    ProviderStoreError::new(ProviderStoreErrorKind::Unavailable, operation)
 }
 
 #[async_trait]
@@ -743,7 +748,7 @@ impl CredentialLeaseRepository for RedisCredentialLeaseRepository {
             .arg(duration_millis(request.ttl)?)
             .invoke_async(&mut connection)
             .await
-            .map_err(|_| redis_unavailable("renew credential lease"))?;
+            .map_err(|source| redis_unavailable("renew credential lease", source))?;
         if renewed == 0 {
             return Ok(None);
         }
@@ -768,7 +773,7 @@ impl CredentialLeaseRepository for RedisCredentialLeaseRepository {
             .arg(member)
             .invoke_async::<i64>(&mut connection)
             .await
-            .map_err(|_| redis_unavailable("release credential lease"))?;
+            .map_err(|source| redis_unavailable("release credential lease", source))?;
         Ok(released == 1)
     }
 

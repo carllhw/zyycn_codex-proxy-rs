@@ -32,7 +32,7 @@ pub(super) async fn load_history(
                 .bind(MAX_FORECAST_HISTORY_POINTS as i32)
                 .fetch_all(pool)
                 .await
-                .map_err(|_| postgres_unavailable("load quota forecast history"))
+                .map_err(|source| postgres_unavailable("load quota forecast history", source))
         })
         .await
         .map_err(|error| admin_store_error(ENTITY, error))?;

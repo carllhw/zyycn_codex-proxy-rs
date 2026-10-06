@@ -5,7 +5,7 @@ use gateway_core::diagnostics::TraceContext;
 
 /// OpenAI 失败对 Smart 账号分数的结构化 reason 闭集
 ///
-/// 已归一的上游 code 优先；code 缺失时才读取结构化客户端错误的 code/type
+/// 原始上游 code 优先；code 缺失时才读取结构化客户端错误的 code/type
 /// 新增错误、裸 HTTP 状态和内部错误 kind 默认都不会进入该闭集
 /// 容量拒绝影响短期调度健康度，但不证明账号凭据或额度失效
 const OPENAI_ACCOUNT_SCORE_FAILURE_REASONS: &[&str] = &[
@@ -273,7 +273,7 @@ pub(super) fn log_client_upstream_error(
             body,
             transport,
             ..
-        } => log_raw_upstream_body(
+        } => log_upstream_error_summary(
             context,
             *transport,
             "http_error_response",
@@ -283,7 +283,7 @@ pub(super) fn log_client_upstream_error(
             body,
         ),
         CodexClientError::WebSocket(CodexWebSocketExchangeError::Upstream(upstream)) => {
-            log_raw_upstream_body(
+            log_upstream_error_summary(
                 context,
                 CodexBackendTransport::WebSocket,
                 "websocket_opening_response",
@@ -303,7 +303,7 @@ pub(super) fn log_client_upstream_error(
                 .map(|connection_id| connection_id.to_string())
                 .unwrap_or_default();
             let close_reason_bytes = close.reason().map_or(0, str::len);
-            tracing::warn!(
+            tracing::debug!(
                 request_id = %context.request_id,
                 account_id = %context.account_id,
                 attempt_index = context.attempt_index,
@@ -333,7 +333,7 @@ pub(super) fn log_canonical_upstream_error(
     let CodexCanonicalError::Upstream(failure) = error else {
         return;
     };
-    log_raw_upstream_body(
+    log_upstream_error_summary(
         context,
         transport,
         "responses_error_event",
@@ -344,7 +344,7 @@ pub(super) fn log_canonical_upstream_error(
     );
 }
 
-pub(super) fn log_raw_upstream_body(
+pub(super) fn log_upstream_error_summary(
     context: UpstreamErrorLogContext<'_>,
     transport: CodexBackendTransport,
     error_kind: &'static str,
@@ -357,7 +357,7 @@ pub(super) fn log_raw_upstream_body(
         .websocket_connection_id
         .map(|connection_id| connection_id.to_string())
         .unwrap_or_default();
-    tracing::warn!(
+    tracing::debug!(
         request_id = %context.request_id,
         account_id = %context.account_id,
         attempt_index = context.attempt_index,
@@ -366,11 +366,8 @@ pub(super) fn log_raw_upstream_body(
         upstream_error_kind = error_kind,
         upstream_status_code = status_code.unwrap_or_default(),
         upstream_status_code_present = status_code.is_some(),
-        upstream_error_code = upstream_code.unwrap_or_default(),
         upstream_error_code_present = upstream_code.is_some(),
-        upstream_error_type = upstream_type.unwrap_or_default(),
         upstream_error_type_present = upstream_type.is_some(),
-        upstream_error_raw,
         upstream_error_raw_bytes = upstream_error_raw.len(),
         "OpenAI upstream returned an error payload"
     );
@@ -568,8 +565,9 @@ pub(super) fn apply_websocket_recovery_policy(
             websocket_failure_kind = failure.error.kind().as_str(),
             websocket_failure_code = failure
                 .error
-                .upstream_code()
-                .map_or("", OpaqueUpstreamValue::as_str),
+                .diagnostic()
+                .and_then(ProviderDiagnostic::code)
+                .unwrap_or(""),
             upstream_status_code = failure.error.upstream_status().unwrap_or_default(),
             upstream_status_code_present = failure.error.upstream_status().is_some(),
             transport_requirement = context.requirement.as_str(),
@@ -598,8 +596,9 @@ pub(super) fn apply_websocket_recovery_policy(
             websocket_failure_kind = failure.error.kind().as_str(),
             websocket_failure_code = failure
                 .error
-                .upstream_code()
-                .map_or("", OpaqueUpstreamValue::as_str),
+                .diagnostic()
+                .and_then(ProviderDiagnostic::code)
+                .unwrap_or(""),
             upstream_send_state = ?send_state,
             transport_requirement = context.requirement.as_str(),
             continuation_recovery_action = "client_replay_required",
@@ -642,8 +641,9 @@ pub(super) fn apply_websocket_recovery_policy(
             websocket_failure_kind = failure.error.kind().as_str(),
             websocket_failure_code = failure
                 .error
-                .upstream_code()
-                .map_or("", OpaqueUpstreamValue::as_str),
+                .diagnostic()
+                .and_then(ProviderDiagnostic::code)
+                .unwrap_or(""),
             upstream_status_code = failure.error.upstream_status().unwrap_or_default(),
             upstream_status_code_present = failure.error.upstream_status().is_some(),
             websocket_retry_count = retry_index.get(),
@@ -669,8 +669,9 @@ pub(super) fn apply_websocket_recovery_policy(
         websocket_failure_kind = failure.error.kind().as_str(),
         websocket_failure_code = failure
             .error
-            .upstream_code()
-            .map_or("", OpaqueUpstreamValue::as_str),
+            .diagnostic()
+            .and_then(ProviderDiagnostic::code)
+            .unwrap_or(""),
         upstream_status_code = failure.error.upstream_status().unwrap_or_default(),
         upstream_status_code_present = failure.error.upstream_status().is_some(),
         websocket_retry_count = context.retry_count,
@@ -897,7 +898,7 @@ pub(super) fn map_client_error(
     }
     let connect_retry = !local_connection_capacity
         && matches!(&error, CodexClientError::Http(error) if transient_http_connect(error));
-    let mut failure = match error {
+    let mut failure = match &error {
         CodexClientError::ConnectionBudgetExhausted => MappedProviderFailure::plain(
             provider_error(ProviderErrorKind::Timeout, UpstreamSendState::NotSent)
                 .with_connection_retry(gateway_core::engine::AttemptTransport::Fallback),
@@ -940,8 +941,9 @@ pub(super) fn map_client_error(
                 uncertain_state,
             )
             .with_status(status.as_u16());
-            if let Some(request_id) = diagnostics.request_id {
-                error = error.with_upstream_request_id(OpaqueUpstreamValue::new(request_id));
+            if let Some(request_id) = &diagnostics.request_id {
+                error =
+                    error.with_upstream_request_id(OpaqueUpstreamValue::new(request_id.clone()));
             }
             MappedProviderFailure::plain(error)
         }
@@ -964,7 +966,7 @@ pub(super) fn map_client_error(
             let mut failure = MappedProviderFailure::plain(continuation_replay_required_error(
                 continuation_unavailable_reason.unwrap_or("scope_unavailable"),
             ));
-            if let Some(client_visible_error) = websocket_client_visible_error(&error) {
+            if let Some(client_visible_error) = websocket_client_visible_error(error) {
                 failure.error = failure
                     .error
                     .with_client_visible_upstream_error(client_visible_error);
@@ -973,10 +975,10 @@ pub(super) fn map_client_error(
         }
         CodexClientError::WebSocket(error) => {
             let close_code = error.close_before_terminal().and_then(|close| close.code());
-            let client_visible_error = websocket_client_visible_error(&error);
+            let client_visible_error = websocket_client_visible_error(error);
             let mut failure = MappedProviderFailure::plain(provider_error(
-                websocket_error_kind(&error),
-                websocket_send_state(&error),
+                websocket_error_kind(error),
+                websocket_send_state(error),
             ));
             if let Some(close_code) = close_code {
                 failure.error =
@@ -1042,6 +1044,39 @@ pub(super) fn map_client_error(
         failure.error = failure
             .error
             .with_connection_observation(connection_observation);
+    }
+    // Reqwest 的请求 URL 可能携带认证参数；原因链保留，请求方向的 URL 不进入运维详情
+    let mut request_url_redacted = false;
+    let error = match error {
+        CodexClientError::Http(source) => {
+            request_url_redacted = source.url().is_some();
+            CodexClientError::Http(source.without_url())
+        }
+        CodexClientError::HttpJson(source) => {
+            request_url_redacted = source.url().is_some();
+            CodexClientError::HttpJson(source.without_url())
+        }
+        CodexClientError::ErrorBodyRead {
+            source,
+            status,
+            diagnostics,
+            transport,
+            transport_metrics,
+        } => {
+            request_url_redacted = source.url().is_some();
+            CodexClientError::ErrorBodyRead {
+                source: source.without_url(),
+                status,
+                diagnostics,
+                transport,
+                transport_metrics,
+            }
+        }
+        error => error,
+    };
+    failure.error = failure.error.with_source(error);
+    if request_url_redacted {
+        failure.error = failure.error.redact_sensitive_context("request URL");
     }
     failure.observation = observation;
     failure
@@ -1119,11 +1154,7 @@ fn client_diagnostic(error: &CodexClientError) -> Option<ProviderDiagnostic> {
             "request_compression_failed",
             "OpenAI request compression failed".to_owned(),
         ),
-        CodexClientError::CustomCa(_) => (
-            "prepare",
-            "custom_ca_invalid",
-            "OpenAI custom CA configuration is invalid".to_owned(),
-        ),
+        CodexClientError::CustomCa(error) => return Some(custom_ca_diagnostic(error)),
         CodexClientError::ModelCatalog(_) => (
             "prepare",
             "model_catalog_invalid",
@@ -1132,6 +1163,63 @@ fn client_diagnostic(error: &CodexClientError) -> Option<ProviderDiagnostic> {
         CodexClientError::Upstream { .. } => return None,
     };
     Some(ProviderDiagnostic::new(message).with_classification(stage, code))
+}
+
+pub(super) fn profile_diagnostic(
+    error: &crate::transport::profile::selection::ClientProfileError,
+) -> ProviderDiagnostic {
+    use crate::transport::profile::selection::ClientProfileError;
+    let code = match error {
+        ClientProfileError::Invalid => "request_profile_invalid",
+        ClientProfileError::InvalidUserAgent => "request_profile_user_agent_invalid",
+        ClientProfileError::CompanionHeadersRequired => "request_profile_headers_required",
+        ClientProfileError::CompanionHeadersConflict => "request_profile_headers_conflict",
+        ClientProfileError::ReleaseUnavailable => "request_profile_release_unavailable",
+    };
+    // 此类型的 Display 全部由本地固定文案组成，不包含配置字段
+    ProviderDiagnostic::new(error.to_string()).with_classification("prepare", code)
+}
+
+fn custom_ca_diagnostic(error: &crate::transport::tls::CustomCaError) -> ProviderDiagnostic {
+    use crate::transport::tls::CustomCaError;
+    let (code, message) = match error {
+        CustomCaError::ProxyConfiguration => (
+            "account_proxy_invalid",
+            "OpenAI account proxy configuration is invalid".to_owned(),
+        ),
+        CustomCaError::ReadCaFile { source_env, .. } => (
+            "custom_ca_read_failed",
+            format!("OpenAI CA certificate file selected by {source_env} could not be read"),
+        ),
+        CustomCaError::InvalidCaFile { source_env, .. } => (
+            "custom_ca_invalid",
+            format!("OpenAI CA certificate file selected by {source_env} is not valid PEM"),
+        ),
+        CustomCaError::RegisterCertificate {
+            certificate_index, ..
+        }
+        | CustomCaError::RegisterRustlsCertificate {
+            certificate_index, ..
+        } => (
+            "custom_ca_registration_failed",
+            format!("OpenAI CA certificate #{certificate_index} could not be registered"),
+        ),
+        CustomCaError::BuildClientWithCustomCa { .. } => (
+            "custom_ca_client_build_failed",
+            "OpenAI HTTP client with custom CA certificates could not be built".to_owned(),
+        ),
+        CustomCaError::BuildClientWithSystemRoots(_) => (
+            "system_tls_client_build_failed",
+            "OpenAI HTTP client with system root certificates could not be built".to_owned(),
+        ),
+        CustomCaError::LoadNativeRoots(_) => (
+            "system_tls_roots_unavailable",
+            "OpenAI system root certificates could not be loaded".to_owned(),
+        ),
+    };
+    ProviderDiagnostic::new(message)
+        .with_classification("prepare", code)
+        .with_io_cause(error)
 }
 
 fn websocket_diagnostic(error: &CodexWebSocketExchangeError) -> ProviderDiagnostic {
@@ -1349,7 +1437,7 @@ pub(super) fn map_upstream_failure(
         .is_some_and(|status| status.is_client_error())
         && is_cyber_policy_code(failure.code.as_deref());
     let continuation_failure = failure
-        .persistable_code()
+        .upstream_code()
         .filter(|code| is_history_failure_code(code))
         .map(|_| ContinuationFailure::HistoryUnavailable);
     let send_state = upstream_send_state(failure.send_phase);
@@ -1414,7 +1502,7 @@ pub(super) fn map_upstream_failure(
             max_delay,
         );
     }
-    if let Some(code) = failure.persistable_code() {
+    if let Some(code) = failure.upstream_code() {
         error = error.with_upstream_code(OpaqueUpstreamValue::new(code.to_owned()));
     }
     if let Some(request_id) = failure.request_id.as_deref() {
@@ -1423,13 +1511,10 @@ pub(super) fn map_upstream_failure(
     let status = error
         .upstream_status()
         .map_or_else(|| "none".to_owned(), |status| status.to_string());
-    let code = error
-        .upstream_code()
-        .map_or_else(|| "none".to_owned(), |code| code.as_str().to_owned());
     let kind = error.kind().as_str();
     error = error.with_diagnostic(
         ProviderDiagnostic::new(format!(
-            "OpenAI upstream failure: kind={}, status={status}, code={code}",
+            "OpenAI upstream failure: kind={}, status={status}",
             kind
         ))
         .with_classification("upstream", "upstream_rejected"),
@@ -1461,13 +1546,14 @@ pub(super) fn is_cyber_policy_code(code: Option<&str>) -> bool {
 }
 
 pub(super) fn is_history_failure_code(code: &str) -> bool {
-    matches!(
-        code,
-        "previous_response_not_found"
-            | "invalid_encrypted_content"
-            | "missing_tool_output"
-            | "no_tool_output"
-    )
+    [
+        "previous_response_not_found",
+        "invalid_encrypted_content",
+        "missing_tool_output",
+        "no_tool_output",
+    ]
+    .iter()
+    .any(|known| code.trim().eq_ignore_ascii_case(known))
 }
 
 pub(super) const fn provider_error_kind(category: CodexFailureCategory) -> ProviderErrorKind {

@@ -34,7 +34,7 @@ impl RetentionStore for PgRetentionRepository {
         )
         .fetch_optional(&self.pool)
         .await
-        .map_err(|_| unavailable("load retention settings"))?
+        .map_err(|source| unavailable("load retention settings", source))?
         .ok_or_else(|| {
             AdminStoreError::new(
                 AdminStoreErrorKind::NotFound,
@@ -89,12 +89,15 @@ impl RetentionStore for PgRetentionRepository {
             .execute(&self.pool)
             .await
             .map(|result| result.rows_affected())
-            .map_err(|_| unavailable("delete expired records"))
+            .map_err(|source| unavailable("delete expired records", source))
     }
 }
 
-fn unavailable(operation: &'static str) -> AdminStoreError {
-    admin_store_error("retention", postgres_unavailable(operation))
+fn unavailable(
+    operation: &'static str,
+    source: impl std::error::Error + Send + Sync + 'static,
+) -> AdminStoreError {
+    admin_store_error("retention", postgres_unavailable(operation, source))
 }
 
 fn invalid_policy() -> AdminStoreError {

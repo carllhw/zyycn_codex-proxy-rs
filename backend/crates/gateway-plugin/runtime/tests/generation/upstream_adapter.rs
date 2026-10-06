@@ -378,6 +378,15 @@ async fn adapter_failure_preserves_upstream_diagnostics_and_native_feedback() {
         "rate_limit_exceeded"
     );
     assert_eq!(error.retry_after(), Some(Duration::from_millis(1500)));
+    let snapshot = error.stable_snapshot();
+    let raw: Value = serde_json::from_str(snapshot.raw_upstream_error().unwrap().as_str()).unwrap();
+    assert_eq!(raw["message"], "fixture rate limit");
+    assert_eq!(raw["code"], "rate_limit_exceeded");
+    assert_eq!(raw["status"], 429);
+    let diagnostic = snapshot.diagnostic().unwrap();
+    assert_eq!(diagnostic.code(), Some("plugin_upstream_failure"));
+    assert!(!diagnostic.as_str().contains("fixture rate limit"));
+    assert!(!format!("{snapshot:?}").contains("fixture rate limit"));
     assert!(generation.is_ready(), "上游 429 不能停止插件");
     assert!(generation.can_serve());
     assert_eq!(account.failures.load(Ordering::SeqCst), 1);
@@ -464,6 +473,18 @@ async fn adapter_does_not_publish_completed_when_rpc_fails_after_terminal_frame(
     assert_eq!(error.kind(), ProviderErrorKind::Unavailable);
     assert_eq!(error.send_state(), UpstreamSendState::Sent);
     let mut error = error;
+    let raw: Value = serde_json::from_str(error.raw_upstream_error().unwrap().as_str()).unwrap();
+    assert_eq!(raw["source"], "plugin_upstream_adapter");
+    assert_eq!(raw["fault"]["message"], "fixture terminal fault");
+    assert_eq!(error.diagnostic().unwrap().stage(), Some("plugin_rpc"));
+    assert!(
+        !error
+            .diagnostic()
+            .unwrap()
+            .as_str()
+            .contains("fixture terminal fault")
+    );
+    assert!(!format!("{error:?}").contains("fixture terminal fault"));
     let facts = error
         .take_atomic_client_events()
         .into_iter()
@@ -960,38 +981,56 @@ async fn upstream_adapter_can_dispatch_http_after_its_instance_entered_the_scope
 #[tokio::test]
 async fn malformed_adapter_events_stop_only_the_plugin_session() {
     use gateway_admin::ports::plugins::PluginRuntimeDiagnostics as _;
-    let server = MockServer::start().await;
-    Mock::given(method("POST"))
-        .respond_with(ResponseTemplate::new(200).set_body_string("{}"))
-        .mount(&server)
-        .await;
-    let mut config = configuration(&server.uri(), false);
-    config["upstream_events"] = json!([{
-        "event":{"facts":[{"type":"completed","id":"never-started","model":"native-model","reason":"stop"}]}
-    }]);
-    let (cache, store, runtime) = setup(config).await;
-    let generation = ExtensionPreparationPort::prepare(&runtime, ConfigRevision::new(1).unwrap())
-        .await
-        .unwrap();
-    let mut stream = execute(&generation, Account::new(), "key-one", None);
-    assert_eq!(
-        stream.next().await.unwrap().unwrap_err().kind(),
-        ProviderErrorKind::Protocol
-    );
-    assert!(!generation.is_ready());
-    assert!(generation.can_serve());
-    let snapshot = store.snapshot.lock().unwrap().clone();
-    assert!(snapshot.instances[0].enabled);
-    let diagnostics = runtime
-        .runtime_diagnostics(&snapshot, Some(1), Some(&generation))
-        .await
-        .unwrap();
-    assert_eq!(
-        diagnostics["instance-one"].failure.as_ref().unwrap().code,
-        "invalid_response"
-    );
-    drop(stream);
-    drop(generation);
-    runtime.shutdown().await;
-    super::wait_until_empty(cache.path()).await;
+    use std::error::Error as _;
+    for (fact, has_sequence_error) in [
+        (
+            json!({"type":"completed","id":"never-started","model":"native-model","reason":"stop"}),
+            false,
+        ),
+        (
+            json!({"type":"text_delta","index":0,"text":"delta before start"}),
+            true,
+        ),
+    ] {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("{}"))
+            .mount(&server)
+            .await;
+        let mut config = configuration(&server.uri(), false);
+        config["upstream_events"] = json!([{"event":{"facts":[fact]}}]);
+        let (cache, store, runtime) = setup(config).await;
+        let generation =
+            ExtensionPreparationPort::prepare(&runtime, ConfigRevision::new(1).unwrap())
+                .await
+                .unwrap();
+        let mut stream = execute(&generation, Account::new(), "key-one", None);
+        let error = stream.next().await.unwrap().unwrap_err();
+        assert_eq!(error.kind(), ProviderErrorKind::Protocol);
+        if has_sequence_error {
+            assert!(
+                error
+                    .source()
+                    .unwrap()
+                    .is::<gateway_core::event::EventSequenceError>()
+            );
+        }
+        assert_eq!(error.diagnostic().unwrap().code(), Some("invalid_event"));
+        assert!(!generation.is_ready());
+        assert!(generation.can_serve());
+        let snapshot = store.snapshot.lock().unwrap().clone();
+        assert!(snapshot.instances[0].enabled);
+        let diagnostics = runtime
+            .runtime_diagnostics(&snapshot, Some(1), Some(&generation))
+            .await
+            .unwrap();
+        assert_eq!(
+            diagnostics["instance-one"].failure.as_ref().unwrap().code,
+            "invalid_response"
+        );
+        drop(stream);
+        drop(generation);
+        runtime.shutdown().await;
+        super::wait_until_empty(cache.path()).await;
+    }
 }

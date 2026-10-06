@@ -934,7 +934,7 @@ pub struct ModelRequestFinalization {
     pub error: Option<GatewayError>,
     pub provider_error_code: Option<String>,
     /// Provider 返回的原始错误正文或 WebSocket close/error frame
-    pub raw_upstream_error: Option<String>,
+    pub error_details: Option<String>,
     pub failure_observation: ModelRequestFailureObservation,
     pub retry_after_ms: Option<u64>,
     pub usage: Usage,

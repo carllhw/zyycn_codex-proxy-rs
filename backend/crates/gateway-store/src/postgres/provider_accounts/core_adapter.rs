@@ -1,6 +1,7 @@
 //! Core `ProviderAccountStore` 端口适配与 core 投影映射
 
 use super::*;
+use crate::core_store_error;
 
 fn loaded_credential_from_record(
     record: ProviderAccountRecord,
@@ -105,7 +106,7 @@ impl ProviderAccountStore for PgProviderAccountRepository {
             .bind(i64::from(query.limit().get()))
             .fetch_all(&self.pool)
             .await
-            .map_err(|_| CoreStoreError::new(CoreStoreErrorKind::Unavailable))?;
+            .map_err(|source| CoreStoreError::caused_by(CoreStoreErrorKind::Unavailable, source))?;
         rows.into_iter()
             .map(account_record_from_row)
             .map(|record| {
@@ -218,11 +219,12 @@ impl ProviderAccountStore for PgProviderAccountRepository {
         .bind(preserve_profile)
         .fetch_optional(&self.pool)
         .await
-        .map_err(|_| CoreStoreError::new(CoreStoreErrorKind::Unavailable))?;
+        .map_err(|source| CoreStoreError::caused_by(CoreStoreErrorKind::Unavailable, source))?;
         match next {
             Some(next) => Ok(CredentialCasOutcome::Updated(
-                CoreCredentialRevision::new(to_u64(next).map_err(core_store_error)?)
-                    .map_err(|_| CoreStoreError::new(CoreStoreErrorKind::InvalidData))?,
+                CoreCredentialRevision::new(to_u64(next).map_err(core_store_error)?).map_err(
+                    |source| CoreStoreError::caused_by(CoreStoreErrorKind::InvalidData, source),
+                )?,
             )),
             None => Ok(CredentialCasOutcome::Conflict),
         }
@@ -248,12 +250,12 @@ impl ProviderAccountStore for PgProviderAccountRepository {
         .bind(account_ids)
         .fetch_all(&self.pool)
         .await
-        .map_err(|_| CoreStoreError::new(CoreStoreErrorKind::Unavailable))?;
+        .map_err(|source| CoreStoreError::caused_by(CoreStoreErrorKind::Unavailable, source))?;
         rows.into_iter()
             .map(|row| {
-                let account_id = row
-                    .try_get::<String, _>("id")
-                    .map_err(|_| CoreStoreError::new(CoreStoreErrorKind::InvalidData))?;
+                let account_id = row.try_get::<String, _>("id").map_err(|source| {
+                    CoreStoreError::caused_by(CoreStoreErrorKind::InvalidData, source)
+                })?;
                 let revision = row
                     .try_get::<i64, _>("credential_revision")
                     .ok()
@@ -262,21 +264,27 @@ impl ProviderAccountStore for PgProviderAccountRepository {
                     .ok_or_else(|| CoreStoreError::new(CoreStoreErrorKind::InvalidData))?;
                 let quota = row
                     .try_get::<Option<serde_json::Value>, _>("provider_quota_json")
-                    .map_err(|_| CoreStoreError::new(CoreStoreErrorKind::InvalidData))?
+                    .map_err(|source| {
+                        CoreStoreError::caused_by(CoreStoreErrorKind::InvalidData, source)
+                    })?
                     .and_then(|value| value.as_object().cloned())
                     .map(OpaqueProviderData::new)
                     .unwrap_or_else(|| OpaqueProviderData::new(serde_json::Map::new()));
                 let observed_at = row
                     .try_get::<DateTime<Utc>, _>("quota_observed_at")
-                    .map_err(|_| CoreStoreError::new(CoreStoreErrorKind::InvalidData))?;
+                    .map_err(|source| {
+                        CoreStoreError::caused_by(CoreStoreErrorKind::InvalidData, source)
+                    })?;
                 let access = row
                     .try_get::<String, _>("quota_access_state")
                     .ok()
                     .and_then(|value| QuotaAccessState::parse(&value))
                     .ok_or_else(|| CoreStoreError::new(CoreStoreErrorKind::InvalidData))?;
-                let evidence = row
-                    .try_get::<Option<String>, _>("quota_evidence")
-                    .map_err(|_| CoreStoreError::new(CoreStoreErrorKind::InvalidData))?;
+                let evidence =
+                    row.try_get::<Option<String>, _>("quota_evidence")
+                        .map_err(|source| {
+                            CoreStoreError::caused_by(CoreStoreErrorKind::InvalidData, source)
+                        })?;
                 let evidence = match evidence {
                     Some(value) => Some(
                         QuotaEvidence::parse(&value)
@@ -286,10 +294,14 @@ impl ProviderAccountStore for PgProviderAccountRepository {
                 };
                 let reset_at = row
                     .try_get::<Option<DateTime<Utc>>, _>("quota_reset_at")
-                    .map_err(|_| CoreStoreError::new(CoreStoreErrorKind::InvalidData))?;
+                    .map_err(|source| {
+                        CoreStoreError::caused_by(CoreStoreErrorKind::InvalidData, source)
+                    })?;
                 let access_observed_at = row
                     .try_get::<Option<DateTime<Utc>>, _>("quota_access_observed_at")
-                    .map_err(|_| CoreStoreError::new(CoreStoreErrorKind::InvalidData))?;
+                    .map_err(|source| {
+                        CoreStoreError::caused_by(CoreStoreErrorKind::InvalidData, source)
+                    })?;
                 let state = QuotaState::from_persisted(
                     access,
                     evidence,
@@ -298,11 +310,12 @@ impl ProviderAccountStore for PgProviderAccountRepository {
                 )
                 .ok_or_else(|| CoreStoreError::new(CoreStoreErrorKind::InvalidData))?;
                 Ok(QuotaObservation {
-                    plan_type: row
-                        .try_get("plan_type")
-                        .map_err(|_| CoreStoreError::new(CoreStoreErrorKind::InvalidData))?,
-                    account_id: CoreProviderAccountId::new(account_id)
-                        .map_err(|_| CoreStoreError::new(CoreStoreErrorKind::InvalidData))?,
+                    plan_type: row.try_get("plan_type").map_err(|source| {
+                        CoreStoreError::caused_by(CoreStoreErrorKind::InvalidData, source)
+                    })?,
+                    account_id: CoreProviderAccountId::new(account_id).map_err(|source| {
+                        CoreStoreError::caused_by(CoreStoreErrorKind::InvalidData, source)
+                    })?,
                     expected_revision: revision,
                     quota,
                     observed_at: observed_at.into(),

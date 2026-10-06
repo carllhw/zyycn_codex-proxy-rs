@@ -617,7 +617,7 @@ pub(crate) fn ops_error_view(
         subagent_kind: error.subagent_kind,
         compact: error.compact,
         message: error.message,
-        raw_upstream_error: error.raw_upstream_error,
+        error_details: error.error_details,
         metadata: OpsErrorMetadataView {
             source: error.source,
             component: error.component,
