@@ -479,7 +479,11 @@ impl UpstreamHttpVersion {
     }
 }
 
-/// Provider transport 边界测得的阶段耗时
+/// Provider transport 边界测得的时间
+///
+/// `first_*_ms` 是相对 `AttemptContext::timing_started_at()` 的请求级偏移，
+/// 与 Core 总耗时使用同一起点并包含选号与重试等待；其余字段是各阶段独立耗时
+/// 首字要求语义输出，缺失时保留 `None`，不使用首包或空结构帧代替
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct ProviderResponseTimings {
     pub transport_decision_wait_ms: Option<u64>,

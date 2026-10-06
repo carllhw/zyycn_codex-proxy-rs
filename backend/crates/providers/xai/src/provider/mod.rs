@@ -477,8 +477,6 @@ impl GrokBuildProvider {
         if let Some(previous) = previous_session.as_ref() {
             upstream_request.inherit_session(previous.session_id.as_deref());
         }
-        // 首字计时的起点：账号选择完成之后、上游建立之前
-        let output_started_at = Instant::now();
         apply_continuation(
             &mut upstream_request,
             previous_session.as_ref(),
@@ -554,7 +552,6 @@ impl GrokBuildProvider {
                 upstream_model: wire_upstream_model,
                 context,
                 session: Arc::clone(&selected),
-                output_started_at,
                 native_response_boundary: true,
                 session_capture,
                 reasoning_replay_capture,

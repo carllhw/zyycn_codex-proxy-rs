@@ -12,7 +12,6 @@ pub(super) struct GrokStreamAttempt {
     pub(super) upstream_model: UpstreamModelId,
     pub(super) context: AttemptContext,
     pub(super) session: Arc<SelectedGrokSession>,
-    pub(super) output_started_at: Instant,
     pub(super) native_response_boundary: bool,
     pub(super) session_capture: Option<GrokSessionCapture>,
     pub(super) reasoning_replay_capture: Option<GrokReasoningReplayCapture>,
@@ -410,7 +409,6 @@ pub(super) fn cold_http_sse_stream(
         upstream_model,
         context,
         session,
-        output_started_at,
         native_response_boundary,
         mut session_capture,
         mut reasoning_replay_capture,
@@ -499,8 +497,6 @@ pub(super) fn cold_http_sse_stream(
         };
 
         let mut observation = xai_response_observation(&response)?;
-        let base_timings = observation.timings();
-        let mut first_token_ms: Option<u64> = None;
         yield ProviderEvent::observation(observation.clone());
 
         let mut body = response.into_body();
@@ -559,36 +555,17 @@ pub(super) fn cold_http_sse_stream(
                     return;
                 }
             };
-            // 首个非前导输出事件（结构帧也算）即上报携带 first_token_ms 的观测，
-            // 供 Core 覆盖会话级兜底值
-            if decoder.take_output_start() && first_token_ms.is_none() {
-                first_token_ms = Some(
-                    u64::try_from(output_started_at.elapsed().as_millis()).unwrap_or(u64::MAX),
-                );
-                yield ProviderEvent::observation(
-                    observation
-                        .clone()
-                        .with_timings(ProviderResponseTimings {
-                            first_token_ms,
-                            ..base_timings
-                        }),
-                );
-            }
             if let Some(model) = decoder.response_model()
                 && observation.upstream_response_model() != Some(model)
             {
                 observation = observation.with_upstream_response_model_if_valid(model);
-                yield ProviderEvent::observation(observation.clone().with_timings(
-                    ProviderResponseTimings { first_token_ms, ..base_timings },
-                ));
+                yield ProviderEvent::observation(observation.clone());
             }
             if let Some(tier) = decoder.response_service_tier()
                 && observation.service_tier() != Some(tier)
             {
                 observation = observation.with_service_tier_if_valid(tier.to_owned());
-                yield ProviderEvent::observation(observation.clone().with_timings(
-                    ProviderResponseTimings { first_token_ms, ..base_timings },
-                ));
+                yield ProviderEvent::observation(observation.clone());
             }
             let completed = events
                 .iter()
@@ -636,35 +613,17 @@ pub(super) fn cold_http_sse_stream(
             .iter()
             .flat_map(ProviderEvent::canonical_facts)
             .any(|event| matches!(event, GatewayEvent::Completed(_)));
-        // 尾部 finish 补全缓冲中的首个输出帧时，同样上报首字
-        if decoder.take_output_start() && first_token_ms.is_none() {
-            first_token_ms = Some(
-                u64::try_from(output_started_at.elapsed().as_millis()).unwrap_or(u64::MAX),
-            );
-            yield ProviderEvent::observation(
-                observation
-                    .clone()
-                    .with_timings(ProviderResponseTimings {
-                        first_token_ms,
-                        ..base_timings
-                    }),
-            );
-        }
         if let Some(model) = decoder.response_model()
             && observation.upstream_response_model() != Some(model)
         {
             observation = observation.with_upstream_response_model_if_valid(model);
-            yield ProviderEvent::observation(observation.clone().with_timings(
-                ProviderResponseTimings { first_token_ms, ..base_timings },
-            ));
+            yield ProviderEvent::observation(observation.clone());
         }
         if let Some(tier) = decoder.response_service_tier()
             && observation.service_tier() != Some(tier)
         {
             observation = observation.with_service_tier_if_valid(tier.to_owned());
-            yield ProviderEvent::observation(observation.clone().with_timings(
-                ProviderResponseTimings { first_token_ms, ..base_timings },
-            ));
+            yield ProviderEvent::observation(observation.clone());
         }
         attach_grok_response_state(
             &mut final_events,

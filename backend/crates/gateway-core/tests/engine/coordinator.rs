@@ -1455,6 +1455,63 @@ fn empty_tool_call_delta_should_not_preempt_provider_first_token_timing() {
 }
 
 #[test]
+fn empty_content_deltas_do_not_create_first_token_timings() {
+    let operation = generate_operation();
+    let route_plan = plan(&operation);
+    let mut items = complete_stream(None);
+    items.splice(
+        1..1,
+        [
+            Ok(GatewayEvent::ContentAdded(ContentItem::new(
+                0,
+                ContentKind::Text,
+            ))),
+            Ok(GatewayEvent::TextDelta(gateway_core::event::TextDelta {
+                content_index: 0,
+                text: String::new(),
+            })),
+            Ok(GatewayEvent::ContentAdded(ContentItem::new(
+                1,
+                ContentKind::Reasoning,
+            ))),
+            Ok(GatewayEvent::ReasoningDelta(
+                gateway_core::event::ReasoningDelta {
+                    content_index: 1,
+                    text: String::new(),
+                },
+            )),
+        ],
+    );
+    let (coordinator, store, _) = coordinator(vec![Script::Stream {
+        account_id: "acct_observed",
+        items,
+    }]);
+    let mut session = block_on(coordinator.start(
+        model_request(&operation, SystemTime::now() + Duration::from_secs(30)),
+        operation,
+        route_plan,
+        None,
+        None,
+        CancellationToken::new(),
+    ))
+    .unwrap();
+    block_on(session.collect_uncommitted()).unwrap();
+    block_on(session.commit_downstream(Some(200))).unwrap();
+
+    let state = store.state.lock().unwrap();
+    let timings = &state.finalizations[0];
+    assert!(timings.first_event_ms.is_some());
+    assert_eq!(
+        (
+            timings.first_token_ms,
+            timings.first_text_ms,
+            timings.first_reasoning_ms
+        ),
+        (None, None, None)
+    );
+}
+
+#[test]
 fn unknown_wire_event_before_response_identity_is_discarded_with_retried_attempt() {
     let operation = generate_operation();
     let route_plan = plan(&operation);
@@ -1531,7 +1588,7 @@ fn discarded_attempt_observation_does_not_leak_into_retry_result() {
             .into_iter()
             .map(canonical_provider_event),
     );
-    let (coordinator, store, _) = coordinator(vec![
+    let (coordinator, store, provider) = coordinator(vec![
         Script::ObservedStream {
             account_id: "acct_first",
             items: vec![
@@ -1607,6 +1664,12 @@ fn discarded_attempt_observation_does_not_leak_into_retry_result() {
     assert_eq!(finalization.connect_ms, None);
     assert_eq!(finalization.headers_ms, None);
     assert_eq!(finalization.provider_processing_ms, None);
+    let contexts = provider.contexts.lock().unwrap();
+    assert_eq!(contexts.len(), 2);
+    assert_eq!(
+        contexts[0].timing_started_at(),
+        contexts[1].timing_started_at()
+    );
     assert!(
         finalization
             .first_event_ms

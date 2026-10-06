@@ -744,7 +744,6 @@ impl CodexProvider {
         }) {
             return Err(continuation_replay_required_error("scope_unavailable"));
         }
-        let output_started_at = Instant::now();
         let provider_kind = ProviderKind::new(PROVIDER_NAME)
             .map_err(|_| provider_error(ProviderErrorKind::Protocol, UpstreamSendState::NotSent))?;
         let native_owner = context.continuation().and_then(ContinuationBinding::pinned);
@@ -1001,7 +1000,6 @@ impl CodexProvider {
             quota: Arc::clone(&self.quota),
             catalog: Arc::clone(&self.catalog),
             lease: Arc::clone(&lease),
-            output_started_at,
             session_transport_key,
             session_transport_key_hash,
             session_transport_recovery: self.session_transport_recovery.clone(),

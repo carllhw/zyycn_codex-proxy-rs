@@ -94,7 +94,6 @@ fn raw_sse_passthrough_should_drop_rate_limit_control_without_timing_side_effect
 
     assert!(events.is_empty());
     assert!(!signals.protocol_progress);
-    assert!(!signals.output_start);
     assert!(!signals.semantic_output);
 }
 

@@ -840,11 +840,11 @@ impl ResponseObservation {
 fn observe_event_timing(timings: &mut ModelRequestTimings, event: &GatewayEvent, elapsed_ms: u64) {
     timings.first_event_ms.get_or_insert(elapsed_ms);
     match event {
-        GatewayEvent::ReasoningDelta(_) => {
+        GatewayEvent::ReasoningDelta(delta) if !delta.text.is_empty() => {
             timings.first_reasoning_ms.get_or_insert(elapsed_ms);
             timings.first_token_ms.get_or_insert(elapsed_ms);
         }
-        GatewayEvent::TextDelta(_) => {
+        GatewayEvent::TextDelta(delta) if !delta.text.is_empty() => {
             timings.first_text_ms.get_or_insert(elapsed_ms);
             timings.first_token_ms.get_or_insert(elapsed_ms);
         }
