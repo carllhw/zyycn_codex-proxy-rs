@@ -1,5 +1,5 @@
 import type { RequestOptions } from '../request'
-import type { AccountGroupRef } from './account-groups'
+import type { AccountGroupRef } from './groups'
 import request from '../request'
 
 export type AccountStatus

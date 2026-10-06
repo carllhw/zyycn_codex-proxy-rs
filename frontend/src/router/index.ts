@@ -41,8 +41,8 @@ router.beforeEach(async (to) => {
       await authStore.checkAuth()
     }
     catch {
-      // 暂时无法确认会话时不进入受保护页面，也不缓存成“已退出”。
-      return login
+      // 短暂故障已由请求层重试；阻止导航并保留已有页面，等待恢复连接
+      return false
     }
   }
 

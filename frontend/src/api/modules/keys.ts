@@ -1,6 +1,6 @@
 import type { RequestOptions } from '../request'
-import type { AccountGroupRef } from './account-groups'
-import type { ClientProfileSelection, ProviderRequestProfile, ProviderRequestProfiles, XaiClientProfileSelection } from './client-profiles'
+import type { AccountGroupRef } from './groups'
+import type { ClientProfileSelection, ProviderRequestProfile, ProviderRequestProfiles, XaiClientProfileSelection } from './settings/profiles'
 import request from '../request'
 
 export type ApiKeyRoutingScope = 'all' | 'groups'

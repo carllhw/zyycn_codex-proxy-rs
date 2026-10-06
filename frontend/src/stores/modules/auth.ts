@@ -3,7 +3,7 @@ import type { AuthSession } from '@/api'
 import { defineStore } from 'pinia'
 import { computed, shallowRef } from 'vue'
 
-import { login as apiLogin, logout as apiLogout, getAuthStatus } from '@/api'
+import { login as apiLogin, logout as apiLogout, refreshAuthSession } from '@/api'
 import { resetUnauthorizedHandling } from '@/api/request'
 
 export const useAuthStore = defineStore('auth', () => {
@@ -13,26 +13,29 @@ export const useAuthStore = defineStore('auth', () => {
   const sessionChecked = shallowRef(false)
   const loading = shallowRef(false)
   let revision = 0
-  let pendingCheck: Promise<boolean> | undefined
+  const pendingCheck = shallowRef<Promise<boolean>>()
+  const checking = computed(() => pendingCheck.value !== undefined)
 
   function checkAuth(): Promise<boolean> {
-    if (pendingCheck)
-      return pendingCheck
+    if (pendingCheck.value)
+      return pendingCheck.value
     const currentRevision = revision
-    const check = getAuthStatus().then((status) => {
+    const check = refreshAuthSession().then((status) => {
       // 登录或退出之后到达的旧状态响应，不覆盖新会话。
       if (currentRevision === revision) {
+        const wasAuthenticated = isAuthenticated.value
         session.value = status.session
         sessionChecked.value = true
-        if (status.authenticated)
+        if (status.authenticated && !wasAuthenticated)
           resetUnauthorizedHandling()
       }
       return isAuthenticated.value
     }).finally(() => {
-      if (pendingCheck === check)
-        pendingCheck = undefined
+      if (pendingCheck.value === check) {
+        pendingCheck.value = undefined
+      }
     })
-    pendingCheck = check
+    pendingCheck.value = check
     return check
   }
 
@@ -40,12 +43,12 @@ export const useAuthStore = defineStore('auth', () => {
     if (loading.value)
       return null
     revision += 1
-    pendingCheck = undefined
+    pendingCheck.value = undefined
     loading.value = true
     try {
       const result = await apiLogin(payload)
       revision += 1
-      pendingCheck = undefined
+      pendingCheck.value = undefined
       session.value = result
       sessionChecked.value = true
       resetUnauthorizedHandling()
@@ -64,7 +67,7 @@ export const useAuthStore = defineStore('auth', () => {
       return false
     loading.value = true
     revision += 1
-    pendingCheck = undefined
+    pendingCheck.value = undefined
     try {
       await apiLogout()
       invalidateSession()
@@ -81,11 +84,11 @@ export const useAuthStore = defineStore('auth', () => {
 
   function invalidateSession() {
     revision += 1
-    pendingCheck = undefined
+    pendingCheck.value = undefined
     session.value = null
     sessionChecked.value = true
     resetUnauthorizedHandling()
   }
 
-  return { session, isAuthenticated, isAdmin, sessionChecked, loading, checkAuth, login, logout, invalidateSession }
+  return { session, isAuthenticated, isAdmin, sessionChecked, loading, checking, checkAuth, login, logout, invalidateSession }
 })

@@ -683,6 +683,15 @@ impl AuthStore for FakeAuthStore {
     ) -> AdminStoreResult<()> {
         Ok(())
     }
+    async fn renew_session(
+        &self,
+        _: &str,
+        _: &gateway_admin::model::auth::AuthSession,
+        _: chrono::DateTime<chrono::Utc>,
+    ) -> AdminStoreResult<Option<gateway_admin::model::auth::AuthSession>> {
+        Ok(None)
+    }
+
     async fn delete_session(
         &self,
         _session_id: &str,

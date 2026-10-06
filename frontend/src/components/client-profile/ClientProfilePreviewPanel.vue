@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import type { ClientProfilePreview } from '@/api/modules/client-profiles'
+import type { ClientProfilePreview } from '@/api/modules/settings/profiles'
 import { BaseSkeleton } from '@codex-proxy/ui'
 
 defineProps<{

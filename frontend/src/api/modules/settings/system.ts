@@ -1,5 +1,5 @@
-import type { RequestOptions } from '../request'
-import request from '../request'
+import type { RequestOptions } from '../../request'
+import request from '../../request'
 
 export type SystemUpdateChannel = 'stable' | 'rc' | 'beta' | 'alpha' | 'exp'
 

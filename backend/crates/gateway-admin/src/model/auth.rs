@@ -138,11 +138,12 @@ impl std::fmt::Debug for ChangePassword {
     }
 }
 
-/// 两种登录方式共用的固定有效期会话
+/// 会话有效期与管理员续期上限；没有上限字段的旧会话保持固定有效期
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AuthSession {
     pub subject: SessionSubject,
     pub expires_at: DateTime<Utc>,
+    pub absolute_expires_at: Option<DateTime<Utc>>,
 }
 
 /// 安全审计事件类型

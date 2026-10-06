@@ -1,7 +1,17 @@
-import type { RequestOptions } from '../request'
-import type { RequestLocation } from '../types/request-location'
-import type { ClientProfileSelection, ProviderRequestProfiles, ProviderRequestProfileUpdates, XaiClientProfileSelection } from './client-profiles'
-import request from '../request'
+import type { RequestOptions } from '../../request'
+import type { ClientProfileSelection, ProviderRequestProfiles, ProviderRequestProfileUpdates, XaiClientProfileSelection } from './profiles'
+import request from '../../request'
+
+export * from './backups'
+export * from './pricing'
+export * from './system'
+
+export interface RequestLocation {
+  country: string
+  region: string
+  city: string
+  timezone: string
+}
 
 export type RotationStrategy = 'smart' | 'quota_reset_priority' | 'round_robin' | 'sticky'
 

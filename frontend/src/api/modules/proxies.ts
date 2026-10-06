@@ -1,6 +1,6 @@
 import type { RequestOptions } from '../request'
-import type { RequestLocation } from '../types/request-location'
-import type { AccountGroupRef } from './account-groups'
+import type { AccountGroupRef } from './groups'
+import type { RequestLocation } from './settings'
 import request from '../request'
 
 export type ProxyLocationDetection

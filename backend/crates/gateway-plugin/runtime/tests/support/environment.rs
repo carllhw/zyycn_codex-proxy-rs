@@ -525,6 +525,7 @@ impl Environment {
             .expect("runtime account access");
         gateway_admin::initialize_with_plugin_accounts(
             AdminConfig {
+                session_absolute_ttl_minutes: 30 * 24 * 60,
                 session_ttl_minutes: 60,
                 default_username: "plugin-test-admin".to_owned(),
                 default_password: InitialAdminPassword::new("plugin-test-password"),

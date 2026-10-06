@@ -1,5 +1,5 @@
-import type { RequestOptions } from '../request'
-import request from '../request'
+import type { RequestOptions } from '../../request'
+import request from '../../request'
 
 export type PriceBand = 'standard' | 'fast' | 'flex' | 'long_standard' | 'long_fast' | 'long_flex' | 'image'
 

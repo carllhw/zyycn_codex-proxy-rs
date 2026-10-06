@@ -185,6 +185,7 @@ impl AdminTestFixture {
         ];
         let bundle = gateway_admin::initialize(
             AdminConfig {
+                session_absolute_ttl_minutes: 30 * 24 * 60,
                 session_ttl_minutes: 60,
                 default_username: "admin_1".to_owned(),
                 default_password: InitialAdminPassword::new("strong-admin-password"),
@@ -313,6 +314,7 @@ impl MemoryAuthStore {
                     },
                     admin_user_id: "admin_1".to_owned(),
                 },
+                absolute_expires_at: None,
                 expires_at: Utc::now() + Duration::hours(1),
             },
         );
@@ -324,6 +326,15 @@ impl MemoryAuthStore {
 
     pub fn fail_audit(&self, fail: bool) {
         self.fail_audit.store(fail, Ordering::SeqCst);
+    }
+
+    pub fn set_session_expiry(&self, session_id: &str, expires_at: chrono::DateTime<Utc>) {
+        self.sessions
+            .lock()
+            .unwrap()
+            .get_mut(session_id)
+            .unwrap()
+            .expires_at = expires_at;
     }
 
     pub fn session_count(&self) -> usize {
@@ -395,6 +406,25 @@ impl AuthStore for MemoryAuthStore {
             .expect("sessions")
             .insert(session_id.to_owned(), session.clone());
         Ok(())
+    }
+
+    async fn renew_session(
+        &self,
+        session_id: &str,
+        expected: &AuthSession,
+        expires_at: chrono::DateTime<chrono::Utc>,
+    ) -> AdminStoreResult<Option<AuthSession>> {
+        let mut sessions = self.sessions.lock().unwrap();
+        if let Some(session) = sessions.get_mut(session_id) {
+            if session.expires_at <= chrono::Utc::now() {
+                return Ok(None);
+            }
+            if session == expected {
+                session.expires_at = expires_at;
+            }
+            return Ok(Some(session.clone()));
+        }
+        Ok(None)
     }
 
     async fn delete_session(&self, session_id: &str) -> AdminStoreResult<Option<AuthSession>> {

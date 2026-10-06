@@ -114,6 +114,7 @@ where
     Router::new()
         .route("/api/auth/login", post(login::<S>))
         .route("/api/auth/status", get(session_status::<S>))
+        .route("/api/auth/refresh", post(refresh_session::<S>))
         .route("/api/auth/logout", post(logout::<S>))
         .route("/api/auth/password", post(change_password::<S>))
         .route("/api/auth", any(not_found))
@@ -141,32 +142,16 @@ where
         )
         .await
         .map_err(map_login_error)?;
-    let max_age = result
-        .session
-        .expires_at
-        .signed_duration_since(chrono::Utc::now())
-        .num_seconds()
-        .max(1);
-    let expires = result
-        .session
-        .expires_at
-        .format("%a, %d %b %Y %H:%M:%S GMT");
-    let cookie = format!(
-        "{}={}; {}; Max-Age={max_age}; Expires={expires}",
-        session_cookie::NAME,
-        result.session_id,
-        session_cookie::attributes(&headers)
-    );
-    let mut response = AdminResponse::new(
-        StatusCode::OK,
-        AdminEnvelope::ok(SessionData::from(&result.session)),
+    set_session_cookie(
+        AdminResponse::new(
+            StatusCode::OK,
+            AdminEnvelope::ok(SessionData::from(&result.session)),
+        )
+        .into_response(),
+        &headers,
+        &result.session_id,
+        &result.session,
     )
-    .into_response();
-    response.headers_mut().insert(
-        header::SET_COOKIE,
-        HeaderValue::from_str(&cookie).map_err(|_| AdminError::internal())?,
-    );
-    Ok(response)
 }
 
 async fn session_status<S>(
@@ -182,13 +167,64 @@ where
         .session(session_cookie::value(&headers).as_deref())
         .await
         .map_err(map_admin_service_error)?;
-    Ok(AdminResponse::new(
+    Ok(session_response(session.as_ref()))
+}
+
+async fn refresh_session<S>(
+    State(state): State<S>,
+    headers: HeaderMap,
+) -> Result<Response, AdminError>
+where
+    S: SessionState + Send + Sync,
+{
+    let session_id = session_cookie::value(&headers);
+    let session = state
+        .admin_services()
+        .auth()
+        .renew_session(session_id.as_deref())
+        .await
+        .map_err(map_admin_service_error)?;
+    let response = session_response(session.as_ref());
+    if let (Some(session_id), Some(session)) = (session_id, session) {
+        return set_session_cookie(response, &headers, &session_id, &session);
+    }
+    // 失效响应不清 Cookie，避免晚到的请求覆盖另一个标签页刚建立的会话
+    Ok(response)
+}
+
+fn session_response(session: Option<&AuthSession>) -> Response {
+    AdminResponse::new(
         StatusCode::OK,
         AdminEnvelope::ok(SessionStatusData {
             authenticated: session.is_some(),
-            session: session.as_ref().map(SessionData::from),
+            session: session.map(SessionData::from),
         }),
-    ))
+    )
+    .into_response()
+}
+
+fn set_session_cookie(
+    mut response: Response,
+    headers: &HeaderMap,
+    session_id: &str,
+    session: &AuthSession,
+) -> Result<Response, AdminError> {
+    let max_age = session
+        .expires_at
+        .signed_duration_since(chrono::Utc::now())
+        .num_seconds()
+        .max(1);
+    let expires = session.expires_at.format("%a, %d %b %Y %H:%M:%S GMT");
+    let cookie = format!(
+        "{}={session_id}; {}; Max-Age={max_age}; Expires={expires}",
+        session_cookie::NAME,
+        session_cookie::attributes(headers)
+    );
+    response.headers_mut().insert(
+        header::SET_COOKIE,
+        HeaderValue::from_str(&cookie).map_err(|_| AdminError::internal())?,
+    );
+    Ok(response)
 }
 
 async fn logout<S>(State(state): State<S>, headers: HeaderMap) -> Result<Response, AdminError>

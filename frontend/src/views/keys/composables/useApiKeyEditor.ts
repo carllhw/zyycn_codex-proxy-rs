@@ -1,5 +1,5 @@
 import type { ApiKey } from '@/api'
-import type { ProviderRequestProfiles, ProviderRequestProfileUpdates } from '@/api/modules/client-profiles'
+import type { ProviderRequestProfiles, ProviderRequestProfileUpdates } from '@/api/modules/settings/profiles'
 import { toast } from '@codex-proxy/ui'
 import { cloneDeep } from 'es-toolkit'
 import { ref, shallowRef } from 'vue'

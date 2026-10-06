@@ -1,7 +1,9 @@
-import type { RequestOptions } from '../request'
+import type { RequestOptions } from '../../request'
 
-import { API_BASE_URL } from '../constants'
-import request from '../request'
+import { API_BASE_URL } from '../../constants'
+import request from '../../request'
+
+export * from './extensions'
 
 export interface PluginSourceEgress {
   id: string

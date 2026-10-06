@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import type { ProviderRequestProfiles } from '@/api/modules/client-profiles'
+import type { ProviderRequestProfiles } from '@/api/modules/settings/profiles'
 import { BaseCard } from '@codex-proxy/ui'
 import ProviderRequestProfilesEditor from '@/components/client-profile/ProviderRequestProfilesEditor.vue'
 

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import type { ClientProfileSelection, ProviderRequestProfile, ProviderRequestProfiles, XaiClientProfileSelection } from '@/api/modules/client-profiles'
+import type { ClientProfileSelection, ProviderRequestProfile, ProviderRequestProfiles, XaiClientProfileSelection } from '@/api/modules/settings/profiles'
 import { BaseSegmented } from '@codex-proxy/ui'
 import { computed, shallowRef } from 'vue'
 import { formatProviderLabel, PROVIDER_IDS, providerIcon } from '@/utils/providers'

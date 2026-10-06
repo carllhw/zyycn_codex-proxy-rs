@@ -144,8 +144,12 @@ openssl rand -hex 24
 - `store.redis.password`
 
 另行设置 `admin.default_password`。它至少需要 12 个字符，不能是常见弱口令，也不能包含 `$`。
-`client.session_ttl_minutes` 控制统一登录中密钥身份的固定会话有效期，默认 1440 分钟；管理员有效期仍由
-`admin.session_ttl_minutes` 控制。两种身份共用一个 Cookie，成功登录替换旧会话；不改变 `/v1/*` 鉴权和限额
+管理员的 `admin.session_ttl_minutes` 控制不活动期限，`admin.session_absolute_ttl_minutes` 控制从登录起计算的最长有效期，
+后者省略时为 43200 分钟（30 天）。配置模板分别为 10080 分钟（7 天）和 43200 分钟；已有配置保留自己的不活动期限。
+使用管理页面时会自动续期，最终到期时间不超过最长有效期；修改配置需重启，已有会话的最长有效期不会因此延长。
+缺少最长有效期记录的会话保持原有固定期限，重新登录后应用续期策略。
+`client.session_ttl_minutes` 控制密钥身份的固定有效期，默认 1440 分钟，不随活动续期。
+两种身份共用一个 Cookie，成功登录替换当前浏览器的旧会话；不改变 `/v1/*` 鉴权和限额
 
 PostgreSQL 与 Redis 密码必须是 48 位十六进制字符。Compose 通过 `config.yaml` 的凭据桥接区
 引用同一密码；三个值都不需要额外导出为环境变量，数据库和 Redis 密码也不能嵌入连接 URL

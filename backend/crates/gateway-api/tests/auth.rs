@@ -535,3 +535,97 @@ async fn key_auth_should_issue_restore_and_clear_a_unified_cookie() {
         .expect("logged out");
     assert_eq!(response_json(status).await["data"]["authenticated"], false);
 }
+
+#[tokio::test]
+async fn refresh_renews_admin_cookie_and_preserves_fixed_key_expiry() {
+    let (app, fixture) = auth_app().await;
+    for body in [
+        json!({"mode": "admin", "password": "strong-admin-password"}),
+        json!({"mode": "key", "apiKey": RAW_KEY}),
+    ] {
+        let response = login(&app, body.clone(), None).await;
+        let cookie = session_cookie(&response);
+        let original = response_json(response).await["data"]["expiresAt"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        if body["mode"] == "admin" {
+            fixture.set_session_expiry(
+                cookie.split_once('=').unwrap().1,
+                chrono::Utc::now() + chrono::Duration::minutes(1),
+            );
+        }
+        let response = app
+            .clone()
+            .oneshot(cookie_request(Method::POST, "/api/auth/refresh", &cookie))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.headers()[header::CACHE_CONTROL], "no-store");
+        assert_eq!(session_cookie(&response), cookie);
+        assert!(
+            response.headers()[header::SET_COOKIE]
+                .to_str()
+                .unwrap()
+                .contains("HttpOnly")
+        );
+        let data = response_json(response).await;
+        assert_eq!(data["data"]["authenticated"], true);
+        let expiry = data["data"]["session"]["expiresAt"].as_str().unwrap();
+        if body["mode"] == "key" {
+            assert_eq!(expiry, original);
+        } else {
+            assert!(
+                chrono::DateTime::parse_from_rfc3339(expiry).unwrap()
+                    > chrono::Utc::now() + chrono::Duration::minutes(1)
+            );
+        }
+    }
+}
+
+#[tokio::test]
+async fn refresh_after_logout_or_password_change_cannot_recreate_a_session() {
+    let (app, _) = auth_app().await;
+    for password_change in [false, true] {
+        let cookie = session_cookie(
+            &login(
+                &app,
+                json!({"mode": "admin", "password": "strong-admin-password"}),
+                None,
+            )
+            .await,
+        );
+        let response = if password_change {
+            change_password(
+                &app,
+                Some(&cookie),
+                "strong-admin-password",
+                "new-strong-admin-password",
+            )
+            .await
+        } else {
+            app.clone()
+                .oneshot(cookie_request(Method::POST, "/api/auth/logout", &cookie))
+                .await
+                .unwrap()
+        };
+        assert_eq!(response.status(), StatusCode::OK);
+        let response = app
+            .clone()
+            .oneshot(cookie_request(Method::POST, "/api/auth/refresh", &cookie))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert!(!response.headers().contains_key(header::SET_COOKIE));
+        assert_eq!(
+            response_json(response).await["data"]["authenticated"],
+            false
+        );
+        assert_eq!(
+            get(&app, "/api/admin/system/version", &cookie)
+                .await
+                .status(),
+            StatusCode::UNAUTHORIZED
+        );
+    }
+}

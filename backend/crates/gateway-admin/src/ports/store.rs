@@ -274,6 +274,14 @@ pub trait AuthStore: Send + Sync {
 
     async fn store_session(&self, session_id: &str, session: &AuthSession) -> AdminStoreResult<()>;
 
+    /// 只延长仍存在且匹配的会话；并发续期返回当前值，已退出或过期时不重建
+    async fn renew_session(
+        &self,
+        session_id: &str,
+        expected: &AuthSession,
+        expires_at: chrono::DateTime<chrono::Utc>,
+    ) -> AdminStoreResult<Option<AuthSession>>;
+
     async fn delete_session(&self, session_id: &str) -> AdminStoreResult<Option<AuthSession>>;
 
     async fn client_key_enabled(

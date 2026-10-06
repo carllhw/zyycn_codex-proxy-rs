@@ -3,10 +3,10 @@ import type {
   ClientProfileOptions,
   ClientProfilePreview,
   ClientProfileSelection,
-} from '@/api/modules/client-profiles'
+} from '@/api/modules/settings/profiles'
 import { BaseButton, BaseSegmented } from '@codex-proxy/ui'
 import { computed, onMounted, shallowRef, watch } from 'vue'
-import { getClientProfileOptions, previewClientProfile } from '@/api/modules/client-profiles'
+import { getClientProfileOptions, previewClientProfile } from '@/api/modules/settings/profiles'
 import { errorMessage } from '@/utils/operation'
 import ClientProfilePresetFields from './ClientProfilePresetFields.vue'
 import ClientProfilePreviewPanel from './ClientProfilePreviewPanel.vue'

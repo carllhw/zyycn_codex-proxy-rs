@@ -1,4 +1,4 @@
-import request from '../request'
+import request from '../../request'
 
 export type ProviderRequestProfile = Record<string, unknown>
 export type ProviderRequestProfiles = Record<string, ProviderRequestProfile>

@@ -69,6 +69,7 @@ async fn password_change_obeys_rate_limit_and_rejects_unbound_legacy_sessions() 
                 admin_user_id: "admin".into(),
                 credential_fingerprint: String::new(),
             },
+            absolute_expires_at: None,
             expires_at: Utc::now() + TimeDelta::hours(1),
         },
     );
@@ -135,6 +136,25 @@ impl AuthStore for MemoryAuthStore {
             .expect("sessions")
             .insert(session_id.to_owned(), session.clone());
         Ok(())
+    }
+
+    async fn renew_session(
+        &self,
+        session_id: &str,
+        expected: &AuthSession,
+        expires_at: chrono::DateTime<chrono::Utc>,
+    ) -> AdminStoreResult<Option<AuthSession>> {
+        let mut sessions = self.sessions.lock().unwrap();
+        if let Some(session) = sessions.get_mut(session_id) {
+            if session.expires_at <= chrono::Utc::now() {
+                return Ok(None);
+            }
+            if session == expected {
+                session.expires_at = expires_at;
+            }
+            return Ok(Some(session.clone()));
+        }
+        Ok(None)
     }
 
     async fn delete_session(&self, session_id: &str) -> AdminStoreResult<Option<AuthSession>> {
@@ -262,7 +282,7 @@ async fn login_with_huge_session_ttl_should_clamp_expiry_instead_of_panicking() 
 }
 
 #[tokio::test]
-async fn expired_sessions_are_removed_and_store_outages_are_not_treated_as_logout() {
+async fn expired_sessions_are_rejected_and_store_outages_are_not_treated_as_logout() {
     use gateway_admin::model::{AdminErrorKind, auth::SessionSubject};
     let store = std::sync::Arc::new(MemoryAuthStore::default());
     let services = super::AdminHarness::new().auth(store.clone()).build().await;
@@ -273,6 +293,7 @@ async fn expired_sessions_are_removed_and_store_outages_are_not_treated_as_logou
                 credential_fingerprint: String::new(),
                 admin_user_id: "admin".to_owned(),
             },
+            absolute_expires_at: None,
             expires_at: Utc::now() - TimeDelta::seconds(1),
         },
     );
@@ -284,7 +305,6 @@ async fn expired_sessions_are_removed_and_store_outages_are_not_treated_as_logou
             .unwrap()
             .is_none()
     );
-    assert!(store.sessions.lock().unwrap().is_empty());
     store
         .unavailable
         .store(true, std::sync::atomic::Ordering::SeqCst);
@@ -368,5 +388,112 @@ async fn failed_rotation_discards_the_new_session_and_leaves_the_old_session_ret
     *store.reject_delete.lock().unwrap() = None;
     services.auth().logout(&original.session_id).await.unwrap();
     services.auth().logout(&original.session_id).await.unwrap();
+    assert!(store.sessions.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn renewal_is_throttled_and_capped_by_the_original_absolute_expiry() {
+    let store = std::sync::Arc::new(MemoryAuthStore::default());
+    let services = super::AdminHarness::new()
+        .auth(store.clone())
+        .session_ttl_minutes(60)
+        .build()
+        .await;
+    let auth = services.auth();
+    let login = auth
+        .login(
+            LoginCommand::Admin {
+                username: None,
+                password: "strong-test-password".into(),
+            },
+            std::net::Ipv4Addr::LOCALHOST.into(),
+            None,
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        auth.renew_session(Some(&login.session_id)).await.unwrap(),
+        Some(login.session.clone())
+    );
+    let limit = Utc::now() + TimeDelta::minutes(30);
+    {
+        let mut sessions = store.sessions.lock().unwrap();
+        let session = sessions.get_mut(&login.session_id).unwrap();
+        session.expires_at = Utc::now() + TimeDelta::minutes(1);
+        session.absolute_expires_at = Some(limit);
+    }
+    let renewed = auth
+        .renew_session(Some(&login.session_id))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(renewed.expires_at, limit);
+    assert_eq!(renewed.absolute_expires_at, Some(limit));
+    assert_eq!(
+        auth.renew_session(Some(&login.session_id)).await.unwrap(),
+        Some(renewed)
+    );
+}
+
+#[tokio::test]
+async fn renewal_never_revives_expired_revoked_or_legacy_sessions() {
+    let store = std::sync::Arc::new(MemoryAuthStore::default());
+    let services = super::AdminHarness::new().auth(store.clone()).build().await;
+    let auth = services.auth();
+    let login = auth
+        .login(
+            LoginCommand::Admin {
+                username: None,
+                password: "strong-test-password".into(),
+            },
+            std::net::Ipv4Addr::LOCALHOST.into(),
+            None,
+        )
+        .await
+        .unwrap();
+    let mut session = login.session.clone();
+    session.absolute_expires_at = None;
+    session.expires_at = Utc::now() + TimeDelta::seconds(30);
+    store
+        .sessions
+        .lock()
+        .unwrap()
+        .insert(login.session_id.clone(), session.clone());
+    assert_eq!(
+        auth.renew_session(Some(&login.session_id)).await.unwrap(),
+        Some(session.clone())
+    );
+    session.expires_at = Utc::now() - TimeDelta::seconds(1);
+    store
+        .sessions
+        .lock()
+        .unwrap()
+        .insert(login.session_id.clone(), session);
+    assert!(
+        auth.renew_session(Some(&login.session_id))
+            .await
+            .unwrap()
+            .is_none()
+    );
+    let mut session = login.session;
+    session.absolute_expires_at = Some(Utc::now() - TimeDelta::seconds(1));
+    store
+        .sessions
+        .lock()
+        .unwrap()
+        .insert(login.session_id.clone(), session);
+    assert!(
+        auth.renew_session(Some(&login.session_id))
+            .await
+            .unwrap()
+            .is_none()
+    );
+    auth.logout(&login.session_id).await.unwrap();
+    assert!(
+        auth.renew_session(Some(&login.session_id))
+            .await
+            .unwrap()
+            .is_none()
+    );
     assert!(store.sessions.lock().unwrap().is_empty());
 }

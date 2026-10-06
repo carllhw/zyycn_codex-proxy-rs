@@ -1,6 +1,6 @@
 import type { rotationOptions } from '../constants'
 import type { SmartSchedulingConfig } from '@/api'
-import type { ProviderRequestProfiles, ProviderRequestProfileUpdates } from '@/api/modules/client-profiles'
+import type { ProviderRequestProfiles, ProviderRequestProfileUpdates } from '@/api/modules/settings/profiles'
 import { toast } from '@codex-proxy/ui'
 import { cloneDeep, isEqual } from 'es-toolkit'
 

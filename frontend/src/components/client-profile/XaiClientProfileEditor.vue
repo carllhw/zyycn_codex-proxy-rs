@@ -1,8 +1,8 @@
 <script setup lang="ts">
-import type { XaiClientProfilePreview, XaiClientProfileSelection } from '@/api/modules/client-profiles'
+import type { XaiClientProfilePreview, XaiClientProfileSelection } from '@/api/modules/settings/profiles'
 import { BaseButton, BaseFormItem, BaseInput, BaseSegmented, BaseSelect } from '@codex-proxy/ui'
 import { computed, onMounted, shallowRef, watch } from 'vue'
-import { getXaiClientProfileOptions, previewXaiClientProfile } from '@/api/modules/client-profiles'
+import { getXaiClientProfileOptions, previewXaiClientProfile } from '@/api/modules/settings/profiles'
 import { errorMessage } from '@/utils/operation'
 import ClientProfilePreviewPanel from './ClientProfilePreviewPanel.vue'
 

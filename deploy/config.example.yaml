@@ -56,7 +56,9 @@ store:
   #   acquire_timeout_seconds: 5
 
 admin:
-  session_ttl_minutes: 1440
+  # 不活动期限与从登录起计算的最长有效期，单位为分钟
+  session_ttl_minutes: 10080
+  session_absolute_ttl_minutes: 43200
   default_username: 'admin@cpr.local'
   # 仅首次创建管理员时使用；至少 12 个字符且不能包含 `$`。
   default_password: ''

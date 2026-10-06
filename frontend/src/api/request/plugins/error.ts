@@ -1,10 +1,25 @@
 import type { AxiosError, AxiosResponse, AxiosResponseHeaders, RawAxiosResponseHeaders } from 'axios'
+import type { RequestContext, RequestNext } from './index'
+import { isAxiosError } from 'axios'
 
 export type ApiErrorKind = 'api' | 'timeout' | 'network' | 'http' | 'cancelled'
 
 interface AdminErrorEnvelope {
   code: number
   message: string
+}
+
+export async function errorPlugin(_context: RequestContext, next: RequestNext) {
+  try {
+    const response = await next()
+    const error = normalizeApiResponseError(response)
+    if (error)
+      throw error
+    return response
+  }
+  catch (error) {
+    throw isAxiosError(error) ? normalizeApiError(error) : error
+  }
 }
 
 export class ApiError extends Error {
@@ -18,6 +33,11 @@ export class ApiError extends Error {
     super(message)
     this.name = 'ApiError'
   }
+}
+
+export function isTransientApiError(error: unknown): error is ApiError {
+  return error instanceof ApiError
+    && (error.kind === 'network' || error.kind === 'timeout' || [502, 503, 504].includes(error.status))
 }
 
 export function normalizeApiError(error: AxiosError<unknown>) {
@@ -105,4 +125,8 @@ function httpFallback(status: number) {
     default:
       return status > 0 ? `请求失败（HTTP ${status}）` : '请求失败'
   }
+}
+
+export function isSessionRequired(error: unknown): error is ApiError & { status: 401, code: 40101 } {
+  return error instanceof ApiError && error.status === 401 && error.code === 40101
 }

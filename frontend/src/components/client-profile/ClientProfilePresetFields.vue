@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import type { ClientProfilePreset, ClientProfilePreview, ClientProfileSelection, CustomClientProfileSelection, PresetClientProfileSelection } from '@/api/modules/client-profiles'
+import type { ClientProfilePreset, ClientProfilePreview, ClientProfileSelection, CustomClientProfileSelection, PresetClientProfileSelection } from '@/api/modules/settings/profiles'
 import { BaseFormItem, BaseInput, BaseSelect, BaseTextarea } from '@codex-proxy/ui'
 import { computed, shallowRef } from 'vue'
 

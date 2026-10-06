@@ -1,6 +1,6 @@
-import type { RequestConfig, RequestOptions } from '../request'
-import { API_BASE_URL } from '../constants'
-import request, { requestRaw } from '../request'
+import type { RequestConfig, RequestOptions } from '../../request'
+import { API_BASE_URL } from '../../constants'
+import request, { requestRaw } from '../../request'
 
 // 管理路由可能执行长任务，HTTP 与页面桥使用同一等待上限。
 export const PLUGIN_MANAGEMENT_TIMEOUT_MS = 180_000
