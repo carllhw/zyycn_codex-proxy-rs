@@ -710,9 +710,6 @@ pub(super) fn continuation_replay_required_error(reason: &'static str) -> Provid
         ContinuationRecoveryDisposition::ClientReplayRequired,
     )
     .with_continuation_unavailable_reason(reason)
-    .with_upstream_code(OpaqueUpstreamValue::new(
-        PREVIOUS_RESPONSE_NOT_FOUND_CODE.to_owned(),
-    ))
     .with_diagnostic(ProviderDiagnostic::new(
         "previous response is unavailable in the selected upstream scope; client replay is required",
     ))
@@ -974,30 +971,20 @@ pub(super) fn map_client_error(
             failure
         }
         CodexClientError::WebSocket(error) => {
-            let close_code = error.close_before_terminal().and_then(|close| close.code());
             let client_visible_error = websocket_client_visible_error(error);
             let mut failure = MappedProviderFailure::plain(provider_error(
                 websocket_error_kind(error),
                 websocket_send_state(error),
             ));
-            if let Some(close_code) = close_code {
-                failure.error =
-                    failure
-                        .error
-                        .with_upstream_code(OpaqueUpstreamValue::new(format!(
-                            "websocket_close_{close_code}"
-                        )));
-            }
             if let CodexWebSocketExchangeError::ConnectionLimitReached(upstream) =
                 error.classified()
             {
-                failure.error =
-                    failure
+                failure.error = failure.error.with_replay_safe();
+                if let Some(code) = upstream.upstream_code.as_ref() {
+                    failure.error = failure
                         .error
-                        .with_replay_safe()
-                        .with_upstream_code(OpaqueUpstreamValue::new(
-                            WEBSOCKET_CONNECTION_LIMIT_REACHED_CODE.to_owned(),
-                        ));
+                        .with_upstream_code(OpaqueUpstreamValue::new(code.clone()));
+                }
                 if let Some(status) = upstream.explicit_status_code {
                     failure.error = failure.error.with_status(status);
                 }

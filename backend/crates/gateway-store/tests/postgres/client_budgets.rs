@@ -1209,3 +1209,45 @@ async fn timezone_cutover_preserves_open_windows_and_resumes_without_overlap() {
     );
     database.close().await;
 }
+
+#[tokio::test]
+async fn failed_settlement_retains_native_database_code_through_the_next_admission() {
+    let Some(database) = TestDatabase::create("budget_native_failure").await else {
+        return;
+    };
+    sqlx::query("alter table client_api_keys rename to hidden_test_keys")
+        .execute(&database.pool)
+        .await
+        .unwrap();
+    let budgets = PgClientBudgetStore::new(database.pool.clone());
+    let error = budgets
+        .settle(charge("missing-key", "native-error", "1"))
+        .await
+        .unwrap_err();
+    fn assert_native_code(error: &(dyn std::error::Error + 'static)) {
+        let mut source = Some(error);
+        while let Some(error) = source {
+            if let Some(sqlx::Error::Database(error)) = error.downcast_ref::<sqlx::Error>() {
+                assert_eq!(error.code().as_deref(), Some("42P01"));
+                return;
+            }
+            source = error.source();
+        }
+        panic!("native database failure was lost");
+    }
+    assert_native_code(&error);
+    let retried = budgets.admit(key_id("missing-key")).await.unwrap_err();
+    assert_eq!(
+        retried.kind(),
+        GatewayErrorKind::ProviderInfrastructureUnavailable
+    );
+    assert_native_code(&retried);
+    assert!(
+        retried
+            .error_details()
+            .unwrap()
+            .as_str()
+            .contains("client_api_keys")
+    );
+    database.close().await;
+}

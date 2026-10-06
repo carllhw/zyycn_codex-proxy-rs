@@ -304,12 +304,14 @@ fn local_provider_capacity_exhaustion_should_map_to_service_unavailable() {
         UpstreamSendState::NotSent,
     ));
 
+    let projected = gateway_error_from_engine(&error);
     assert_eq!(
-        gateway_error_from_engine(&error),
-        GatewayError::new(
-            GatewayErrorKind::AccountCapacityUnavailable,
-            "all eligible upstream accounts are temporarily busy"
-        )
+        projected.kind(),
+        GatewayErrorKind::AccountCapacityUnavailable
+    );
+    assert_eq!(
+        projected.safe_message(),
+        "all eligible upstream accounts are temporarily busy"
     );
 }
 
@@ -352,12 +354,14 @@ fn provider_infrastructure_failure_should_have_a_distinct_client_contract() {
         UpstreamSendState::NotSent,
     ));
 
+    let projected = gateway_error_from_engine(&error);
     assert_eq!(
-        gateway_error_from_engine(&error),
-        GatewayError::new(
-            GatewayErrorKind::ProviderInfrastructureUnavailable,
-            "provider account infrastructure is temporarily unavailable"
-        )
+        projected.kind(),
+        GatewayErrorKind::ProviderInfrastructureUnavailable
+    );
+    assert_eq!(
+        projected.safe_message(),
+        "provider account infrastructure is temporarily unavailable"
     );
 }
 
@@ -368,12 +372,11 @@ fn no_eligible_provider_account_should_map_to_service_unavailable() {
         UpstreamSendState::NotSent,
     ));
 
+    let projected = gateway_error_from_engine(&error);
+    assert_eq!(projected.kind(), GatewayErrorKind::NoAvailableProvider);
     assert_eq!(
-        gateway_error_from_engine(&error),
-        GatewayError::new(
-            GatewayErrorKind::NoAvailableProvider,
-            "no upstream provider is currently available for this request"
-        )
+        projected.safe_message(),
+        "no upstream provider is currently available for this request"
     );
 }
 
@@ -499,13 +502,9 @@ fn engine_provider_runtime_failures_should_collapse_to_safe_unavailability() {
     ] {
         let error = EngineError::Provider(ProviderError::new(kind, UpstreamSendState::Ambiguous));
 
-        assert_eq!(
-            gateway_error_from_engine(&error),
-            GatewayError::new(
-                GatewayErrorKind::UpstreamUnavailable,
-                "upstream service is unavailable"
-            )
-        );
+        let projected = gateway_error_from_engine(&error);
+        assert_eq!(projected.kind(), GatewayErrorKind::UpstreamUnavailable);
+        assert_eq!(projected.safe_message(), "upstream service is unavailable");
     }
 }
 
@@ -513,10 +512,9 @@ fn engine_provider_runtime_failures_should_collapse_to_safe_unavailability() {
 fn engine_store_error_should_collapse_to_safe_internal_error() {
     let error = EngineError::Store(StoreError::new(StoreErrorKind::Unavailable));
 
-    assert_eq!(
-        gateway_error_from_engine(&error),
-        GatewayError::new(GatewayErrorKind::Internal, "gateway execution failed")
-    );
+    let projected = gateway_error_from_engine(&error);
+    assert_eq!(projected.kind(), GatewayErrorKind::Internal);
+    assert_eq!(projected.safe_message(), "gateway execution failed");
 }
 #[test]
 fn openai_error_response_should_preserve_only_safe_contract_fields() {
@@ -669,6 +667,7 @@ mod model_routing {
             Arc::new(UnusedAdmissions),
             Arc::new(UnusedContinuation),
             Arc::new(IgnoredClientApiKeyUsage),
+            Arc::new(crate::support::RecordingDiagnostics::default()),
         );
         let response = crate::openai::api_router(Arc::new(execution))
             .await

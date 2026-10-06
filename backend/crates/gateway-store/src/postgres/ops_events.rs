@@ -136,7 +136,7 @@ impl OpsEventRepository for PgOpsEventRepository {
                 .attempt_index
                 .map(i32::try_from)
                 .transpose()
-                .map_err(|_| invalid("attempt index is too large"))?,
+                .map_err(|source| invalid("attempt index is too large").with_source(source))?,
         )
         .bind(event.level.as_str())
         .bind(event.component)
@@ -154,7 +154,7 @@ impl OpsEventRepository for PgOpsEventRepository {
                 .retry_after_ms
                 .map(i64::try_from)
                 .transpose()
-                .map_err(|_| invalid("retry_after_ms is too large"))?,
+                .map_err(|source| invalid("retry_after_ms is too large").with_source(source))?,
         )
         .bind(event.upstream_request_id)
         .bind(
@@ -162,7 +162,7 @@ impl OpsEventRepository for PgOpsEventRepository {
                 .latency_ms
                 .map(i64::try_from)
                 .transpose()
-                .map_err(|_| invalid("latency_ms is too large"))?,
+                .map_err(|source| invalid("latency_ms is too large").with_source(source))?,
         )
         .bind(event.message)
         .bind(event.error_details)
@@ -176,6 +176,7 @@ impl OpsEventRepository for PgOpsEventRepository {
 
 fn invalid(message: &str) -> StoreError {
     StoreError::InvalidData {
+        source: None,
         entity: ENTITY,
         message: message.to_owned(),
     }

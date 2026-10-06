@@ -214,8 +214,9 @@ pub(crate) async fn append_admin_audit_event_in_transaction(
     event.config_revision = revision
         .into()
         .map(|revision| {
-            i64::try_from(revision.get())
-                .map_err(|_| invalid("config revision exceeds PostgreSQL bigint"))
+            i64::try_from(revision.get()).map_err(|source| {
+                invalid("config revision exceeds PostgreSQL bigint").with_source(source)
+            })
         })
         .transpose()?;
     event.validate()?;
@@ -244,6 +245,7 @@ pub(crate) async fn append_admin_audit_event_in_transaction(
 
 fn invalid(message: &str) -> StoreError {
     StoreError::InvalidData {
+        source: None,
         entity: ENTITY,
         message: message.to_owned(),
     }

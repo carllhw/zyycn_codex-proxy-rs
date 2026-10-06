@@ -132,6 +132,7 @@ pub(crate) fn validate_pricing(pricing: &PricingOverrides) -> StoreResult<()> {
 
 fn invalid_pricing() -> StoreError {
     StoreError::InvalidData {
+        source: None,
         entity: "model pricing",
         message: "invalid model pricing".to_owned(),
     }

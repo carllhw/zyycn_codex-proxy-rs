@@ -32,18 +32,85 @@ pub enum StoreError {
         source: Option<gateway_core::error::ErrorSource>,
     },
     #[error("{entity} {id} was not found")]
-    NotFound { entity: &'static str, id: String },
+    NotFound {
+        entity: &'static str,
+        id: String,
+        source: Option<gateway_core::error::ErrorSource>,
+    },
     #[error("store conflict for {entity} {id}: {kind:?}")]
     Conflict {
         entity: &'static str,
         id: String,
         kind: ConflictKind,
+        source: Option<gateway_core::error::ErrorSource>,
     },
     #[error("invalid persisted {entity}: {message}")]
     InvalidData {
         entity: &'static str,
         message: String,
+        source: Option<gateway_core::error::ErrorSource>,
     },
+}
+
+impl StoreError {
+    /// 本地校验可没有来源；转换已有失败时附加真实原因
+    #[must_use]
+    pub(crate) fn with_source(
+        mut self,
+        error: impl Into<gateway_core::error::ErrorSource>,
+    ) -> Self {
+        let error = error.into();
+        match &mut self {
+            Self::Unavailable { source, .. }
+            | Self::InvalidData { source, .. }
+            | Self::Conflict { source, .. }
+            | Self::NotFound { source, .. } => *source = Some(error),
+        }
+        self
+    }
+
+    pub(crate) fn with_cleanup(
+        mut self,
+        cleanup: impl Into<gateway_core::error::ErrorSource>,
+    ) -> Self {
+        let source = match &mut self {
+            Self::Unavailable { source, .. }
+            | Self::InvalidData { source, .. }
+            | Self::Conflict { source, .. }
+            | Self::NotFound { source, .. } => source,
+        };
+        *source = Some(gateway_core::error::ErrorSource::cleanup(
+            source.take(),
+            cleanup,
+        ));
+        self
+    }
+
+    fn admin_kind(&self) -> AdminStoreErrorKind {
+        match self {
+            Self::NotFound { .. } => AdminStoreErrorKind::NotFound,
+            Self::Conflict {
+                kind: ConflictKind::StaleRevision,
+                ..
+            } => AdminStoreErrorKind::StaleRevision,
+            Self::Conflict {
+                kind: ConflictKind::DuplicateName,
+                ..
+            } => AdminStoreErrorKind::DuplicateName,
+            Self::Conflict { .. } => AdminStoreErrorKind::Conflict,
+            Self::InvalidData { .. } => AdminStoreErrorKind::Invalid,
+            Self::Unavailable { .. } => AdminStoreErrorKind::Unavailable,
+        }
+    }
+
+    fn core_kind(&self) -> gateway_core::error::StoreErrorKind {
+        use gateway_core::error::StoreErrorKind;
+        match self {
+            Self::Unavailable { .. } => StoreErrorKind::Unavailable,
+            Self::Conflict { .. } => StoreErrorKind::Conflict,
+            Self::NotFound { .. } | Self::InvalidData { .. } => StoreErrorKind::InvalidData,
+        }
+    }
 }
 
 pub type StoreResult<T> = Result<T, StoreError>;
@@ -88,21 +155,7 @@ pub(crate) fn mutation_audit(
 }
 
 pub(crate) fn admin_store_error(resource: &'static str, error: StoreError) -> AdminStoreError {
-    let kind = match error {
-        StoreError::NotFound { .. } => AdminStoreErrorKind::NotFound,
-        StoreError::Conflict {
-            kind: ConflictKind::StaleRevision,
-            ..
-        } => AdminStoreErrorKind::StaleRevision,
-        StoreError::Conflict {
-            kind: ConflictKind::DuplicateName,
-            ..
-        } => AdminStoreErrorKind::DuplicateName,
-        StoreError::Conflict { .. } => AdminStoreErrorKind::Conflict,
-        StoreError::InvalidData { .. } => AdminStoreErrorKind::Invalid,
-        StoreError::Unavailable { .. } => AdminStoreErrorKind::Unavailable,
-    };
-    AdminStoreError::new(kind, resource, "store operation failed").with_source(error)
+    AdminStoreError::new(error.admin_kind(), resource, "store operation failed").with_source(error)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -113,6 +166,7 @@ impl Revision {
         NonZeroU64::new(value)
             .map(Self)
             .ok_or_else(|| StoreError::InvalidData {
+                source: None,
                 entity: "revision",
                 message: "must be greater than zero".to_owned(),
             })
@@ -160,6 +214,7 @@ impl FromStr for DecimalAmount {
             });
         if !valid {
             return Err(StoreError::InvalidData {
+                source: None,
                 entity: "decimal amount",
                 message: "expected a non-negative numeric(20,10) value".to_owned(),
             });
@@ -190,18 +245,21 @@ impl JsonObject {
     ) -> StoreResult<Self> {
         let serialized_bytes = serde_json::to_vec(&value)
             .map_err(|error| StoreError::InvalidData {
+                source: Some(error.into()),
                 entity,
-                message: error.to_string(),
+                message: "JSON encoding failed".to_owned(),
             })?
             .len();
         let Value::Object(fields) = value else {
             return Err(StoreError::InvalidData {
+                source: None,
                 entity,
                 message: "top-level JSON value must be an object".to_owned(),
             });
         };
         if serialized_bytes > max_serialized_bytes {
             return Err(StoreError::InvalidData {
+                source: None,
                 entity,
                 message: format!("serialized JSON exceeds {max_serialized_bytes} bytes"),
             });
@@ -233,6 +291,7 @@ pub(crate) fn require_nonempty(
 ) -> StoreResult<()> {
     if value.trim().is_empty() {
         Err(StoreError::InvalidData {
+            source: None,
             entity,
             message: format!("{field} must not be empty"),
         })
@@ -276,11 +335,5 @@ pub(crate) fn provider_unavailable(
 }
 
 pub(crate) fn core_store_error(error: StoreError) -> gateway_core::error::StoreError {
-    use gateway_core::error::{StoreError as CoreStoreError, StoreErrorKind};
-    let kind = match error {
-        StoreError::Unavailable { .. } => StoreErrorKind::Unavailable,
-        StoreError::Conflict { .. } => StoreErrorKind::Conflict,
-        StoreError::NotFound { .. } | StoreError::InvalidData { .. } => StoreErrorKind::InvalidData,
-    };
-    CoreStoreError::caused_by(kind, error)
+    gateway_core::error::StoreError::caused_by(error.core_kind(), error)
 }

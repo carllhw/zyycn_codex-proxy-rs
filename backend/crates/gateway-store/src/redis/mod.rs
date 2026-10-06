@@ -48,6 +48,7 @@ pub(crate) fn namespace(value: &str) -> StoreResult<String> {
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
     {
         return Err(StoreError::InvalidData {
+            source: None,
             entity: "Redis namespace",
             message: "namespace contains unsupported characters".to_owned(),
         });

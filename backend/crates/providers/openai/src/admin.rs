@@ -1632,6 +1632,7 @@ fn map_store_error(error: gateway_core::error::StoreError) -> ProviderAdminError
         StoreErrorKind::Unavailable => ProviderAdminErrorKind::Unavailable,
         _ => ProviderAdminErrorKind::Internal,
     })
+    .with_source(error)
 }
 
 fn map_credential_admin_error(error: CodexCredentialAdminError) -> ProviderAdminError {

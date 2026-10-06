@@ -1108,6 +1108,7 @@ async fn websocket_disconnect_during_core_settlement_finishes_charge_before_rele
             ports.clone(),
             Arc::new(UnusedContinuation),
             Arc::new(IgnoredClientApiKeyUsage),
+            Arc::new(crate::support::RecordingDiagnostics::default()),
         )
         .with_budget(ports.clone()),
     );
@@ -1125,6 +1126,7 @@ async fn websocket_disconnect_during_core_settlement_finishes_charge_before_rele
         Vec::new(),
         Arc::new(EmptyWorkerHealth),
         lifecycle.clone(),
+        Arc::new(crate::support::RecordingDiagnostics::default()),
     )
     .unwrap()
     .router();

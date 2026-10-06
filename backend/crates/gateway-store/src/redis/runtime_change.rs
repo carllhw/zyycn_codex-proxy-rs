@@ -73,9 +73,9 @@ impl RuntimeChangeRepository for RedisRuntimeChangeRepository {
             .await
             .map_err(|source| redis_unavailable("subscribe runtime changes", source))?;
         let stream = pubsub.into_on_message().map(|message| {
-            let payload = message
-                .get_payload::<String>()
-                .map_err(|_| invalid("runtime change payload is not UTF-8"))?;
+            let payload = message.get_payload::<String>().map_err(|source| {
+                invalid("runtime change payload is not UTF-8").with_source(source)
+            })?;
             let wire: RuntimeChangeWire =
                 serde_json::from_str(&payload).map_err(|error| invalid(&error.to_string()))?;
             wire.try_into()
@@ -154,6 +154,7 @@ impl TryFrom<RuntimeChangeWire> for RuntimeChange {
 
 fn invalid(message: &str) -> StoreError {
     StoreError::InvalidData {
+        source: None,
         entity: "runtime change",
         message: message.to_owned(),
     }

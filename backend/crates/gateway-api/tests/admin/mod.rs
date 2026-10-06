@@ -86,6 +86,7 @@ mod account_groups;
 mod accounts;
 mod auth;
 mod client_keys;
+mod error_diagnostics;
 mod errors;
 mod observability;
 mod proxies;
@@ -1673,6 +1674,7 @@ fn unavailable(resource: &'static str) -> AdminStoreError {
         resource,
         "unused test port",
     )
+    .with_source(std::io::Error::other("PRIVATE_ADMIN_NATIVE_CAUSE"))
 }
 
 fn not_found(resource: &'static str) -> AdminStoreError {

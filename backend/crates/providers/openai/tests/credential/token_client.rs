@@ -423,7 +423,10 @@ async fn generic_invalid_grant_should_remain_transient_like_official_codex() {
     let failure = refresh_failure(400, body).await;
     let diagnostic = format!("{failure:?} {failure}");
 
-    let RefreshFailure::Transport { message, upstream } = failure else {
+    let RefreshFailure::Transport {
+        message, upstream, ..
+    } = failure
+    else {
         panic!("unknown official refresh code must remain transient");
     };
     assert_eq!(message, None);
@@ -445,7 +448,10 @@ async fn unauthorized_should_preserve_upstream_details_and_remain_retryable() {
     }"#;
     let failure = refresh_failure(401, body).await;
 
-    let RefreshFailure::Transport { message, upstream } = failure else {
+    let RefreshFailure::Transport {
+        message, upstream, ..
+    } = failure
+    else {
         panic!("production policy gives every 401 a bounded recovery window");
     };
     assert_eq!(message.as_deref(), Some("Invalid refresh token."));
@@ -548,6 +554,7 @@ fn assert_transport_failure(
     let RefreshFailure::Transport {
         message: actual_message,
         upstream,
+        ..
     } = failure
     else {
         panic!("status {status} must classify as transient");
@@ -571,4 +578,48 @@ async fn refresh_failure(status: u16, body: &str) -> RefreshFailure {
         .refresh("refresh-secret")
         .await
         .expect_err("refresh must fail")
+}
+
+#[tokio::test]
+async fn oauth_failure_retains_unknown_code_and_redacts_token_material() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST")).and(path("/oauth/token"))
+        .respond_with(ResponseTemplate::new(503).set_body_json(serde_json::json!({
+            "error": {"code":"FUTURE_OAUTH_FAILURE","message":"request PRIVATE_REFRESH_INPUT failed"},
+            "access_token":"PRIVATE_ACCESS_OUTPUT", "nested":[{"id_token":"PRIVATE_ID_OUTPUT"}, {"refresh_token":"PRIVATE_SECOND_OUTPUT"}]
+        }))).mount(&server).await;
+    let error = client(&server)
+        .refresh("PRIVATE_REFRESH_INPUT")
+        .await
+        .unwrap_err();
+    assert_eq!(error.classification(), "transport-ambiguous");
+    let upstream = error.upstream().unwrap();
+    assert_eq!(upstream.status(), 503);
+    assert_eq!(upstream.code(), Some("FUTURE_OAUTH_FAILURE"));
+    assert!(upstream.redacted());
+    assert!(upstream.body().contains("FUTURE_OAUTH_FAILURE"));
+    assert!(!upstream.body().contains("PRIVATE_"));
+    assert!(!format!("{error:?} {error}").contains("FUTURE_OAUTH_FAILURE"));
+}
+
+#[tokio::test]
+async fn malformed_success_retains_json_source_without_retaining_token_body() {
+    use std::error::Error as _;
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_string("{\"access_token\":\"PRIVATE_ACCESS\", invalid"),
+        )
+        .mount(&server)
+        .await;
+    let error = client(&server).refresh("refresh").await.unwrap_err();
+    let source = error
+        .source()
+        .unwrap()
+        .downcast_ref::<serde_json::Error>()
+        .unwrap();
+    assert!(source.column() > 0);
+    assert!(error.upstream().is_none());
+    assert!(!format!("{error:?} {error}").contains("PRIVATE_ACCESS"));
 }

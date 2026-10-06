@@ -92,6 +92,7 @@ pub(super) fn api_router_with_admin_and_client(
         Arc::new(UnusedAdmissions),
         Arc::new(UnusedContinuation),
         Arc::new(IgnoredClientApiKeyUsage),
+        Arc::new(crate::support::RecordingDiagnostics::default()),
     ));
     api_router_with_admin_and_execution(admin, execution)
 }
@@ -107,6 +108,18 @@ pub(super) fn api_bundle(
     admin: gateway_admin::AdminServices,
     config: gateway_api::ApiConfig,
 ) -> gateway_api::ApiBundle {
+    api_bundle_with_diagnostics(
+        admin,
+        config,
+        Arc::new(crate::support::RecordingDiagnostics::default()),
+    )
+}
+
+pub(crate) fn api_bundle_with_diagnostics(
+    admin: gateway_admin::AdminServices,
+    config: gateway_api::ApiConfig,
+    diagnostics: Arc<dyn gateway_core::diagnostics::OperationalDiagnostics>,
+) -> gateway_api::ApiBundle {
     let execution = Arc::new(DefaultExecutionService::new(
         RuntimeSnapshotHandle::new(snapshot("unused-client-route-key", "openai")),
         Arc::new(UnusedExecutionStore),
@@ -114,6 +127,7 @@ pub(super) fn api_bundle(
         Arc::new(UnusedAdmissions),
         Arc::new(UnusedContinuation),
         Arc::new(IgnoredClientApiKeyUsage),
+        Arc::new(crate::support::RecordingDiagnostics::default()),
     ));
     gateway_api::initialize(
         config,
@@ -122,6 +136,7 @@ pub(super) fn api_bundle(
         Vec::new(),
         Arc::new(EmptyWorkerHealth),
         Arc::new(TestLifecycle::default()),
+        diagnostics,
     )
     .unwrap()
 }
@@ -138,6 +153,7 @@ fn api_router_with_config_and_execution(
         Vec::new(),
         Arc::new(EmptyWorkerHealth),
         Arc::new(TestLifecycle::default()),
+        Arc::new(crate::support::RecordingDiagnostics::default()),
     )
     .expect("API bundle")
     .router()
@@ -180,6 +196,7 @@ async fn api_router_with_origins_and_worker_health(
         Vec::new(),
         worker_health,
         Arc::new(TestLifecycle::default()),
+        Arc::new(crate::support::RecordingDiagnostics::default()),
     )
     .expect("API bundle")
     .router()
@@ -214,6 +231,7 @@ pub(super) fn authenticated_client_for_provider_with_limit(
         Arc::new(UnusedAdmissions),
         Arc::new(UnusedContinuation),
         Arc::new(IgnoredClientApiKeyUsage),
+        Arc::new(crate::support::RecordingDiagnostics::default()),
     );
     source
         .authenticate(plaintext)
@@ -244,6 +262,7 @@ pub(super) fn authenticated_client_with_min_versions(
         Arc::new(UnusedAdmissions),
         Arc::new(UnusedContinuation),
         Arc::new(IgnoredClientApiKeyUsage),
+        Arc::new(crate::support::RecordingDiagnostics::default()),
     );
     source
         .authenticate(plaintext)

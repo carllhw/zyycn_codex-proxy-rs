@@ -57,9 +57,9 @@ pub struct ClientAdmissionRestoreResult {
     pub restored_running_requests: u64,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+#[derive(Debug, Clone, thiserror::Error)]
 #[error("client admission store is unavailable")]
-pub struct ClientAdmissionError;
+pub struct ClientAdmissionError(#[source] pub Option<crate::error::ErrorSource>);
 
 pub trait ClientAdmissionPort: Send + Sync {
     /// 仅续期已经准入的并发槽位，不重复消费 RPM
@@ -118,10 +118,10 @@ pub async fn restore_client_admission_startup(
     let expired = execution
         .recover_expired(now)
         .await
-        .map_err(|_| ClientAdmissionError)?;
+        .map_err(|source| ClientAdmissionError(Some(source.into())))?;
     let since = now
         .checked_sub(Duration::from_secs(61))
-        .ok_or(ClientAdmissionError)?;
+        .ok_or(ClientAdmissionError(None))?;
     let recoveries = recovery.load_recovery(since).await?;
     let restored_clients = u64::try_from(recoveries.len()).unwrap_or(u64::MAX);
     let mut restored_recent_requests = 0_u64;

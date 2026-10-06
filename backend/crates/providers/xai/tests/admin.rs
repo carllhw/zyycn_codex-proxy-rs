@@ -87,6 +87,7 @@ async fn account_unavailable_clears_real_selector_cooldowns_only_for_deleted_acc
         cooldowns.clone(),
         Arc::new(TestRuntimePolicy),
         Arc::new(TestOAuthPending::default()),
+        Arc::new(RecordingDiagnostics::default()),
     );
     let repository = GrokCredentialRepository::new(store.clone());
     let selector = GrokAccountSessionSelector::new(
@@ -191,7 +192,9 @@ async fn xai_quota_catalog_worker_treats_empty_account_pool_as_idle() {
         .await
         .expect("xAI bundle");
 
-    assert_eq!(run_quota_catalog_cycle(&mut bundle).await, Ok(()));
+    run_quota_catalog_cycle(&mut bundle)
+        .await
+        .expect("idle quota cycle");
 }
 
 #[tokio::test]
@@ -650,6 +653,7 @@ fn provider_ports_with_catalog(
         Arc::new(TestCooldown),
         Arc::new(TestRuntimePolicy),
         pending,
+        Arc::new(RecordingDiagnostics::default()),
     )
 }
 
@@ -1174,6 +1178,7 @@ mod errors {
             Arc::new(TestCooldown),
             Arc::new(TestRuntimePolicy),
             Arc::new(TestOAuthPending::default()),
+            Arc::new(RecordingDiagnostics::default()),
         );
         let bundle = provider_xai::initialize(ports).await.unwrap();
         let error = bundle
@@ -1284,4 +1289,17 @@ async fn client_profile_preview_and_dashboard_use_saved_configuration() {
     );
     assert!(dashboard.release.is_none());
     assert!(dashboard.verified_at.is_none());
+}
+
+#[derive(Default)]
+struct RecordingDiagnostics(std::sync::Mutex<Vec<gateway_core::diagnostics::OperationalFailure>>);
+#[async_trait::async_trait]
+impl gateway_core::diagnostics::OperationalDiagnostics for RecordingDiagnostics {
+    async fn record_failure(
+        &self,
+        failure: gateway_core::diagnostics::OperationalFailure,
+    ) -> Result<(), gateway_core::error::StoreError> {
+        self.0.lock().unwrap().push(failure);
+        Ok(())
+    }
 }

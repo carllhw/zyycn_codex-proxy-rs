@@ -103,19 +103,27 @@ impl GrokAccountSessionSelector {
             let diagnostic = request.eligibility() == AccountEligibilityPolicy::BypassForDiagnostic;
             // store 侧常规调度列表不包含停用账号；管理端诊断要对固定账号执行真实上游
             // 验证，这里把不在列表里的 required 账号显式补回候选
-            let mut accounts = self
-                .repository
-                .list_accounts_for_provider()
-                .await
-                .map_err(|_| GrokSessionSelectorError::Unavailable)?;
+            let mut accounts =
+                self.repository
+                    .list_accounts_for_provider()
+                    .await
+                    .map_err(|source| {
+                        GrokSessionSelectorError::Unavailable(Some(
+                            gateway_core::error::ErrorSource::new(source),
+                        ))
+                    })?;
             if diagnostic
                 && let Some(required) = request.required_account()
                 && !accounts.iter().any(|account| account.id() == required)
-                && let Some(account) = self
-                    .repository
-                    .account_by_id(required)
-                    .await
-                    .map_err(|_| GrokSessionSelectorError::Unavailable)?
+                && let Some(account) =
+                    self.repository
+                        .account_by_id(required)
+                        .await
+                        .map_err(|source| {
+                            GrokSessionSelectorError::Unavailable(Some(
+                                gateway_core::error::ErrorSource::new(source),
+                            ))
+                        })?
                 && account.provider() == &self.provider_kind
             {
                 accounts.push(account);
@@ -184,7 +192,11 @@ impl GrokAccountSessionSelector {
                     &account_ids,
                 )
                 .await
-                .map_err(|_| GrokSessionSelectorError::Unavailable)?;
+                .map_err(|source| {
+                    GrokSessionSelectorError::Unavailable(Some(
+                        gateway_core::error::ErrorSource::new(source),
+                    ))
+                })?;
             let runtime_cooldowns = if diagnostic {
                 std::collections::BTreeMap::new()
             } else {
@@ -202,7 +214,7 @@ impl GrokAccountSessionSelector {
                         .signals()
                         .get(account.id())
                         .cloned()
-                        .ok_or(GrokSessionSelectorError::Unavailable)?
+                        .ok_or(GrokSessionSelectorError::Unavailable(None))?
                         .with_provider_quota(self.quota.scheduling_signals(&account))
                         .with_runtime_health(health.0, health.1);
                     Ok(AccountCandidate { account, signals })
@@ -293,7 +305,11 @@ impl GrokAccountSessionSelector {
                         .with_cancellation(request.cancellation().clone()),
                     ))
                     .await
-                    .map_err(|_| GrokSessionSelectorError::Unavailable)?;
+                    .map_err(|source| {
+                        GrokSessionSelectorError::Unavailable(Some(
+                            gateway_core::error::ErrorSource::new(source),
+                        ))
+                    })?;
                 let guard = match lease {
                     ProviderLeaseAcquisition::Acquired(guard) => guard,
                     ProviderLeaseAcquisition::Busy {
@@ -310,21 +326,29 @@ impl GrokAccountSessionSelector {
                     .repository
                     .load(&selected_id, selected_revision)
                     .await
-                    .map_err(|_| GrokSessionSelectorError::InvalidSession)?;
+                    .map_err(|source| {
+                        GrokSessionSelectorError::InvalidSession(Some(
+                            gateway_core::error::ErrorSource::new(source),
+                        ))
+                    })?;
                 if !diagnostic
                     && loaded
                         .refresh_token_expires_at
                         .is_some_and(|expires_at| expires_at <= Utc::now())
                 {
-                    return Err(GrokSessionSelectorError::InvalidSession);
+                    return Err(GrokSessionSelectorError::InvalidSession(None));
                 }
                 let binding = GrokSessionBinding::new(selected_id.as_str())
-                    .map_err(|_| GrokSessionSelectorError::InvalidSession)?
+                    .map_err(|source| {
+                        GrokSessionSelectorError::InvalidSession(Some(
+                            gateway_core::error::ErrorSource::new(source),
+                        ))
+                    })?
                     .with_outbound_proxy(loaded.account.outbound_proxy().cloned());
                 let upstream_user_id = loaded
                     .account
                     .upstream_user_id()
-                    .ok_or(GrokSessionSelectorError::InvalidSession)?;
+                    .ok_or(GrokSessionSelectorError::InvalidSession(None))?;
                 let session = SelectedGrokSession::new(
                     selected_id,
                     selected_revision,
@@ -337,7 +361,11 @@ impl GrokAccountSessionSelector {
                     binding,
                     guard,
                 )
-                .map_err(|_| GrokSessionSelectorError::InvalidSession)?
+                .map_err(|source| {
+                    GrokSessionSelectorError::InvalidSession(Some(
+                        gateway_core::error::ErrorSource::new(source),
+                    ))
+                })?
                 .with_capacity_snapshot(
                     capacity.map(AccountCapacitySnapshot::with_acquired_request),
                 );
@@ -498,8 +526,8 @@ impl GrokAccountSessionSelector {
         {
             Ok(()) => return,
             Err(
-                GrokCredentialRepositoryError::Conflict
-                | GrokCredentialRepositoryError::StaleCredentialRevision,
+                GrokCredentialRepositoryError::Conflict(_)
+                | GrokCredentialRepositoryError::StaleCredentialRevision(_),
             ) => {}
             Err(error) => {
                 tracing::warn!(

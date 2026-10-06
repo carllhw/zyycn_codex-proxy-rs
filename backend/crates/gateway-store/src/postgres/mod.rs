@@ -60,6 +60,7 @@ pub async fn connect_and_migrate(
 ) -> StoreResult<PgPool> {
     if database_url.trim().is_empty() {
         return Err(StoreError::InvalidData {
+            source: None,
             entity: "PostgreSQL configuration",
             message: "database URL is empty".to_owned(),
         });
@@ -225,7 +226,7 @@ impl ControlPlaneRepository for PgControlPlaneRepository {
             self.pool.begin().await.map_err(|source| {
                 postgres_unavailable("begin control plane replacement", source)
             })?;
-        let result = async {
+        let result: StoreResult<_> = async {
             // 锁住所有配置写入共同使用的行，版本检查与修改不能被其他事务穿插
             let current = sqlx::query_scalar::<_, i64>(
                 "select config_revision from runtime_settings where id = 1 for update",
@@ -235,6 +236,7 @@ impl ControlPlaneRepository for PgControlPlaneRepository {
             .map_err(|source| postgres_unavailable("lock control plane revision", source))?;
             if u64::try_from(current).ok() != Some(replacement.expected_revision.get()) {
                 return Err(StoreError::Conflict {
+                    source: None,
                     entity: "runtime settings",
                     id: "1".to_owned(),
                     kind: crate::ConflictKind::StaleRevision,
@@ -256,9 +258,10 @@ impl ControlPlaneRepository for PgControlPlaneRepository {
                 Ok(snapshot)
             }
             Err(error) => {
-                transaction.rollback().await.map_err(|source| {
-                    postgres_unavailable("rollback control plane replacement", source)
-                })?;
+                let error = match transaction.rollback().await {
+                    Ok(()) => error,
+                    Err(cleanup) => error.with_cleanup(cleanup),
+                };
                 Err(error)
             }
         }
@@ -337,7 +340,7 @@ impl PgControlPlaneRepository {
         let mut transaction = self.pool.begin().await.map_err(|source| {
             postgres_unavailable("begin targeted control plane mutation", source)
         })?;
-        let result = async {
+        let result: StoreResult<_> = async {
             let revision = bump_config_revision_in_transaction(&mut transaction).await?;
             match mutation {
                 ControlPlaneMutation::CreateClientApiKey(key) => {
@@ -394,9 +397,10 @@ impl PgControlPlaneRepository {
                 Ok(revision)
             }
             Err(error) => {
-                transaction.rollback().await.map_err(|source| {
-                    postgres_unavailable("rollback targeted control plane mutation", source)
-                })?;
+                let error = match transaction.rollback().await {
+                    Ok(()) => error,
+                    Err(cleanup) => error.with_cleanup(cleanup),
+                };
                 Err(error)
             }
         }

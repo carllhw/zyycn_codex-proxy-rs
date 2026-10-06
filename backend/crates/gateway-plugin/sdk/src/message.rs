@@ -116,7 +116,7 @@ pub enum FrameError {
     #[error("plugin frame exceeds its limit or has invalid lengths")]
     Length,
     #[error("plugin frame metadata is invalid")]
-    Metadata,
+    Metadata(#[source] serde_json::Error),
     #[error("plugin transport is closed or incomplete")]
     Io(#[from] std::io::Error),
 }

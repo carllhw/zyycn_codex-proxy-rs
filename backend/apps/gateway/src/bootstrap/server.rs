@@ -117,6 +117,7 @@ pub async fn run() -> Result<(), BootstrapError> {
             probes,
             host.worker_health(),
             host.connection_lifecycle(),
+            store.diagnostics(),
         )
     )
     .with_middleware({
@@ -155,7 +156,7 @@ pub async fn run() -> Result<(), BootstrapError> {
     ));
     or_shutdown!(
         plugin_runtime,
-        host.start_workers(plan, store.worker_leader_lease())
+        host.start_workers(plan, store.worker_leader_lease(), store.diagnostics())
     );
     host.report_startup_ready("Workers");
     let served = host.serve(api.router()).await;

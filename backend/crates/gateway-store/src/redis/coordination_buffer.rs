@@ -32,10 +32,14 @@ pub struct BufferedClientAdmissionPort {
 
 impl BufferedClientAdmissionPort {
     #[must_use]
-    pub fn new(inner: Arc<dyn ClientAdmissionPort>) -> (Self, ClientAdmissionReleaseWriter) {
+    pub fn new(
+        inner: Arc<dyn ClientAdmissionPort>,
+        diagnostics: Arc<dyn gateway_core::diagnostics::OperationalDiagnostics>,
+    ) -> (Self, ClientAdmissionReleaseWriter) {
         Self::with_capacity(
             inner,
             NonZeroUsize::new(DEFAULT_QUEUE_CAPACITY).expect("queue capacity is non-zero"),
+            diagnostics,
         )
     }
 
@@ -43,6 +47,7 @@ impl BufferedClientAdmissionPort {
     pub fn with_capacity(
         inner: Arc<dyn ClientAdmissionPort>,
         capacity: NonZeroUsize,
+        diagnostics: Arc<dyn gateway_core::diagnostics::OperationalDiagnostics>,
     ) -> (Self, ClientAdmissionReleaseWriter) {
         let (sender, receiver) = mpsc::channel(capacity.get());
         (
@@ -52,6 +57,7 @@ impl BufferedClientAdmissionPort {
             },
             ClientAdmissionReleaseWriter {
                 inner,
+                diagnostics,
                 receiver: Mutex::new(receiver),
             },
         )
@@ -127,6 +133,7 @@ struct AdmissionRelease {
 }
 
 pub struct ClientAdmissionReleaseWriter {
+    diagnostics: Arc<dyn gateway_core::diagnostics::OperationalDiagnostics>,
     inner: Arc<dyn ClientAdmissionPort>,
     receiver: Mutex<mpsc::Receiver<AdmissionRelease>>,
 }
@@ -138,7 +145,7 @@ impl DaemonTask for ClientAdmissionReleaseWriter {
             loop {
                 let release = tokio::select! {
                     () = cancellation.cancelled() => {
-                        drain_admission_releases(&mut receiver, self.inner.as_ref()).await;
+                        drain_admission_releases(&mut receiver, self.inner.as_ref(), self.diagnostics.as_ref()).await;
                         return Ok(());
                     },
                     release = receiver.recv() => release,
@@ -148,13 +155,7 @@ impl DaemonTask for ClientAdmissionReleaseWriter {
                         "client admission release queue closed",
                     ));
                 };
-                if let Err(error) = self
-                    .inner
-                    .release(&release.client_api_key_id, &release.model_request_id)
-                    .await
-                {
-                    tracing::warn!(%error, "Client admission 后台释放失败，依赖租约 TTL 收敛");
-                }
+                release_admission(self.inner.as_ref(), self.diagnostics.as_ref(), release).await;
             }
         })
     }
@@ -163,21 +164,46 @@ impl DaemonTask for ClientAdmissionReleaseWriter {
 async fn drain_admission_releases(
     receiver: &mut mpsc::Receiver<AdmissionRelease>,
     port: &dyn ClientAdmissionPort,
+    diagnostics: &dyn gateway_core::diagnostics::OperationalDiagnostics,
 ) {
     receiver.close();
     let started_at = Instant::now();
     while let Some(release) = receiver.recv().await {
         let remaining = SHUTDOWN_DRAIN_TIMEOUT.saturating_sub(started_at.elapsed());
         if remaining.is_zero()
-            || tokio::time::timeout(
-                remaining,
-                port.release(&release.client_api_key_id, &release.model_request_id),
-            )
-            .await
-            .is_err()
+            || tokio::time::timeout(remaining, release_admission(port, diagnostics, release))
+                .await
+                .is_err()
         {
             tracing::warn!("Client admission 关闭排空超时，剩余租约依赖 TTL 收敛");
             break;
+        }
+    }
+}
+
+async fn release_admission(
+    port: &dyn ClientAdmissionPort,
+    diagnostics: &dyn gateway_core::diagnostics::OperationalDiagnostics,
+    release: AdmissionRelease,
+) {
+    if let Err(source) = port
+        .release(&release.client_api_key_id, &release.model_request_id)
+        .await
+    {
+        let mut failure = gateway_core::diagnostics::OperationalFailure::new(
+            "store",
+            "release_client_admission",
+            "admission_unavailable",
+            "Client admission release failed; lease TTL remains active",
+        );
+        failure.correlation_id = Some(release.model_request_id.as_str().to_owned());
+        failure.details =
+            gateway_core::error::ErrorDetails::capture(Some(&source.into()), None, false);
+        if diagnostics.record_failure(failure).await.is_err() {
+            tracing::warn!(
+                request_id = release.model_request_id.as_str(),
+                "admission diagnostic could not be recorded"
+            );
         }
     }
 }

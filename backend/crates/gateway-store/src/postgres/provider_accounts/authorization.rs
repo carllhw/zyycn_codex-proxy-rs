@@ -34,21 +34,25 @@ impl PgAdminAccountStore {
         {
             return Err(invalid_receipt());
         }
-        let mut transaction = self.pool.begin().await.map_err(|_| unavailable_receipt())?;
+        let mut transaction = self
+            .pool
+            .begin()
+            .await
+            .map_err(|source| unavailable_receipt().with_source(source))?;
         let outcome = commit_authorization_in_transaction(&mut transaction, command, context).await;
         match outcome {
             Ok(outcome) => {
                 transaction
                     .commit()
                     .await
-                    .map_err(|_| unavailable_receipt())?;
+                    .map_err(|source| unavailable_receipt().with_source(source))?;
                 Ok(outcome)
             }
             Err(error) => {
-                transaction
-                    .rollback()
-                    .await
-                    .map_err(|_| unavailable_receipt())?;
+                let error = match transaction.rollback().await {
+                    Ok(()) => error,
+                    Err(cleanup) => error.with_cleanup(cleanup),
+                };
                 Err(error)
             }
         }
@@ -71,7 +75,7 @@ async fn commit_authorization_in_transaction(
         .bind(lock)
         .execute(&mut **transaction)
         .await
-        .map_err(|_| unavailable_receipt())?;
+        .map_err(|source| unavailable_receipt().with_source(source))?;
     if let Some(result) = load_receipt(&mut **transaction, key).await? {
         return Ok(AuthorizationCommitResult {
             result,
@@ -140,12 +144,12 @@ async fn commit_authorization_in_transaction(
     }];
     sqlx::query("insert into authorization_receipts(provider_kind, flow_digest, owner_digest, config_revision, accounts_json) values ($1,$2,$3,$4,$5)")
             .bind(key.provider_kind().as_str()).bind(key.flow_digest()).bind(key.owner_digest())
-            .bind(i64::try_from(result.config_revision.get()).map_err(|_| invalid_receipt())?)
-            .bind(serde_json::to_value(accounts).map_err(|_| invalid_receipt())?)
-            .execute(&mut **transaction).await.map_err(|_| unavailable_receipt())?;
+            .bind(i64::try_from(result.config_revision.get()).map_err(|source| invalid_receipt().with_source(source))?)
+            .bind(serde_json::to_value(accounts).map_err(|source| invalid_receipt().with_source(source))?)
+            .execute(&mut **transaction).await.map_err(|source| unavailable_receipt().with_source(source))?;
     // 保留期长于 OAuth pending 上限；每次提交有界回收，避免引入第二套维护任务
     sqlx::query("delete from authorization_receipts where ctid in (select ctid from authorization_receipts where expires_at <= now() order by expires_at limit 128 for update skip locked)")
-            .execute(&mut **transaction).await.map_err(|_| unavailable_receipt())?;
+            .execute(&mut **transaction).await.map_err(|source| unavailable_receipt().with_source(source))?;
     Ok(AuthorizationCommitResult {
         result,
         newly_committed: true,
@@ -157,25 +161,28 @@ async fn load_receipt<'a>(
     key: &AuthorizationReceiptKey,
 ) -> AdminStoreResult<Option<CredentialMutationResult>> {
     let row: Option<(String, i64, serde_json::Value)> = sqlx::query_as("select owner_digest, config_revision, accounts_json from authorization_receipts where provider_kind=$1 and flow_digest=$2 and expires_at>now()")
-        .bind(key.provider_kind().as_str()).bind(key.flow_digest()).fetch_optional(executor).await.map_err(|_| unavailable_receipt())?;
+        .bind(key.provider_kind().as_str()).bind(key.flow_digest()).fetch_optional(executor).await.map_err(|source| unavailable_receipt().with_source(source))?;
     let Some((owner, revision, accounts)) = row else {
         return Ok(None);
     };
     if owner != key.owner_digest() {
         return Err(invalid_receipt());
     }
-    let [account]: [StoredAccount; 1] =
-        serde_json::from_value(accounts).map_err(|_| unavailable_receipt())?;
+    let [account]: [StoredAccount; 1] = serde_json::from_value(accounts)
+        .map_err(|source| unavailable_receipt().with_source(source))?;
     Ok(Some(CredentialMutationResult {
         config_revision: AdminRevision::new(
-            u64::try_from(revision).map_err(|_| unavailable_receipt())?,
+            u64::try_from(revision).map_err(|source| unavailable_receipt().with_source(source))?,
         )
-        .map_err(|_| unavailable_receipt())?,
+        .map_err(|source| unavailable_receipt().with_source(source))?,
         account_id: CoreProviderAccountId::new(account.account_id)
-            .map_err(|_| unavailable_receipt())?,
+            .map_err(|source| unavailable_receipt().with_source(source))?,
         credential_revision: account
             .credential_revision
-            .map(|revision| AdminRevision::new(revision).map_err(|_| unavailable_receipt()))
+            .map(|revision| {
+                AdminRevision::new(revision)
+                    .map_err(|source| unavailable_receipt().with_source(source))
+            })
             .transpose()?,
     }))
 }

@@ -1368,9 +1368,19 @@ async fn main() {
                 last_call = id;
                 if matches!(
                     method.as_str(),
-                    "malformed_truncated_frame" | "malformed_frame_length"
+                    "malformed_truncated_frame" | "malformed_frame_length" | "malformed_metadata"
                 ) {
-                    let bytes: &[u8] = if method == "malformed_truncated_frame" {
+                    let mut malformed_metadata = Vec::new();
+                    if method == "malformed_metadata" {
+                        let metadata = br#"{"type":"PRIVATE_INVALID_FRAME_KIND"}"#;
+                        malformed_metadata
+                            .extend_from_slice(&(metadata.len() as u32).to_be_bytes());
+                        malformed_metadata.extend_from_slice(&0_u64.to_be_bytes());
+                        malformed_metadata.extend_from_slice(metadata);
+                    }
+                    let bytes: &[u8] = if method == "malformed_metadata" {
+                        &malformed_metadata
+                    } else if method == "malformed_truncated_frame" {
                         // 声明 16 字节元数据，却只写入一个字节后退出
                         &[0, 0, 0, 16, 0, 0, 0, 0, b'{']
                     } else {

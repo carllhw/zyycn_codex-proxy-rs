@@ -223,8 +223,9 @@ fn pending_mutation_v1_should_round_trip_all_targets_and_owners() {
                 assert_eq!(
                     PendingAuthorizationMutation::from_storage_v1(Value::Object(
                         expected.to_storage_v1()
-                    )),
-                    Ok(expected.clone()),
+                    ))
+                    .unwrap(),
+                    expected.clone(),
                 );
                 let with_proxy = expected
                     .with_outbound_proxy(Some(
@@ -237,8 +238,9 @@ fn pending_mutation_v1_should_round_trip_all_targets_and_owners() {
                 assert_eq!(
                     PendingAuthorizationMutation::from_storage_v1(Value::Object(
                         with_proxy.to_storage_v1()
-                    )),
-                    Ok(with_proxy)
+                    ))
+                    .unwrap(),
+                    with_proxy
                 );
             }
         }

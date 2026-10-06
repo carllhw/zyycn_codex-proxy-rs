@@ -351,3 +351,34 @@ fn client_visible_upstream_error_should_preserve_opaque_structured_fields() {
     assert_eq!(detail.error_type(), Some(error_type.as_str()));
     assert!(!format!("{detail:?}").contains(&message));
 }
+
+#[test]
+fn cleanup_failure_keeps_the_primary_cause_and_separate_bounded_details() {
+    use gateway_core::error::{ErrorDetails, ErrorSource};
+    let primary = ErrorSource::new(std::io::Error::other("PRIMARY_NATIVE_FAILURE"));
+    let combined = primary.with_cleanup(std::io::Error::other("ROLLBACK_NATIVE_FAILURE"));
+    assert_eq!(
+        combined.source().unwrap().to_string(),
+        "PRIMARY_NATIVE_FAILURE"
+    );
+    let details = ErrorDetails::capture(Some(&combined), None, false).unwrap();
+    let value: serde_json::Value = serde_json::from_str(details.as_str()).unwrap();
+    assert_eq!(
+        value["causes"]["messages"],
+        json!(["PRIMARY_NATIVE_FAILURE"])
+    );
+    assert_eq!(
+        value["causes"]["cleanup"][0]["messages"],
+        json!(["ROLLBACK_NATIVE_FAILURE"])
+    );
+    assert_eq!(value["causes"]["truncated"], false);
+    assert!(!format!("{combined:?} {details:?}").contains("NATIVE_FAILURE"));
+
+    let oversized = ErrorSource::new(std::io::Error::other("界".repeat(24_000)))
+        .with_cleanup(std::io::Error::other("ROLLBACK_NATIVE_FAILURE"));
+    let details = ErrorDetails::capture(Some(&oversized), None, false).unwrap();
+    let value: serde_json::Value = serde_json::from_str(details.as_str()).unwrap();
+    assert_eq!(value["causes"]["truncated"], true);
+    assert_eq!(value["causes"]["cleanup"][0]["truncated"], true);
+    assert!(details.as_str().len() < 66_000);
+}

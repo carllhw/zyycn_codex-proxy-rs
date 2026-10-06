@@ -199,6 +199,7 @@ pub async fn initialize(
             Arc::clone(&refresher),
             Arc::clone(&leases),
             Arc::clone(&runtime_policy),
+            ports.diagnostics(),
         )
         .with_personal_access_token_client(token_client),
     );
@@ -208,6 +209,7 @@ pub async fn initialize(
         Arc::clone(&leases),
         credential_state,
         Arc::clone(&runtime_policy),
+        ports.diagnostics(),
     ));
     let pending = Arc::new(OpenAiOAuthPendingStore::new(
         ports.oauth_pending(),

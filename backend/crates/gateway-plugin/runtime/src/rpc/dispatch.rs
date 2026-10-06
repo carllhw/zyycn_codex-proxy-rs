@@ -46,7 +46,7 @@ async fn write_loop<W: AsyncWrite + Unpin>(
             frame = data.recv() => frame,
         };
         let Some(frame) = frame else {
-            shared.fail(RpcError::Closed);
+            shared.fail(RpcError::Closed(None));
             return;
         };
         // 撤销尚未发送的调用时丢弃排队帧；已开始写入的 Call 必须先于 Cancel
@@ -64,8 +64,10 @@ async fn write_loop<W: AsyncWrite + Unpin>(
             _ = stopped.changed() => return,
             result = write_frame(&mut writer, &frame) => result,
         };
-        if written.is_err() {
-            shared.fail(RpcError::Closed);
+        if let Err(source) = written {
+            shared.fail(RpcError::Closed(Some(
+                gateway_core::error::ErrorSource::new(source),
+            )));
             return;
         }
     }
@@ -87,9 +89,14 @@ async fn read_loop<R: AsyncRead + Unpin>(
             _ = stopped.changed() => return,
             frame = read_frame(&mut reader) => frame,
         };
-        let Ok(frame) = frame else {
-            shared.fail(RpcError::Closed);
-            return;
+        let frame = match frame {
+            Ok(frame) => frame,
+            Err(source) => {
+                shared.fail(RpcError::Closed(Some(
+                    gateway_core::error::ErrorSource::new(source),
+                )));
+                return;
+            }
         };
         let result = match frame.message {
             Message::Cancelled { id } if frame.payload.is_empty() => {
@@ -114,7 +121,7 @@ async fn read_loop<R: AsyncRead + Unpin>(
                 params,
             } => {
                 if id == 0 || id % 2 != 0 || id <= last_callback {
-                    Err(RpcError::Protocol)
+                    Err(RpcError::Protocol(None))
                 } else if let Some(context) = shared.context(parent_id) {
                     last_callback = id;
                     if let Some(permit) = shared.try_callback_slot() {
@@ -171,10 +178,10 @@ async fn read_loop<R: AsyncRead + Unpin>(
                     }));
                     Ok(())
                 } else {
-                    Err(RpcError::Protocol)
+                    Err(RpcError::Protocol(None))
                 }
             }
-            _ => Err(RpcError::Protocol),
+            _ => Err(RpcError::Protocol(None)),
         };
         if let Err(error) = result {
             shared.fail(error);

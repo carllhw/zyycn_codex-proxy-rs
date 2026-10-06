@@ -19,22 +19,25 @@ impl ReceiveWindow {
     }
 
     pub fn receive(&mut self, sequence: u64, bytes: usize) -> Result<(), RpcError> {
-        let bytes = u32::try_from(bytes).map_err(|_| RpcError::Protocol)?;
+        let bytes = u32::try_from(bytes).map_err(|_| RpcError::Protocol(None))?;
         if sequence != self.next_sequence || bytes == 0 || bytes > self.bytes || self.frames == 0 {
-            return Err(RpcError::Protocol);
+            return Err(RpcError::Protocol(None));
         }
         self.next_sequence = self
             .next_sequence
             .checked_add(1)
-            .ok_or(RpcError::Protocol)?;
+            .ok_or(RpcError::Protocol(None))?;
         self.bytes -= bytes;
         self.frames -= 1;
         Ok(())
     }
 
     pub fn release(&mut self, bytes: u32) -> Result<(), RpcError> {
-        self.bytes = self.bytes.checked_add(bytes).ok_or(RpcError::Protocol)?;
-        self.frames = self.frames.checked_add(1).ok_or(RpcError::Protocol)?;
+        self.bytes = self
+            .bytes
+            .checked_add(bytes)
+            .ok_or(RpcError::Protocol(None))?;
+        self.frames = self.frames.checked_add(1).ok_or(RpcError::Protocol(None))?;
         Ok(())
     }
 }

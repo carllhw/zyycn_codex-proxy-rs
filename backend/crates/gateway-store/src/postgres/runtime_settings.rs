@@ -206,6 +206,7 @@ impl RuntimeSettingsUpdate {
                 })
         {
             return Err(StoreError::InvalidData {
+                source: None,
                 entity: "runtime settings",
                 message: "settings violate the frozen runtime constraints".to_owned(),
             });
@@ -276,6 +277,7 @@ pub(crate) async fn load_runtime_settings_from_pool(pool: &PgPool) -> StoreResul
     .await
     .map_err(|source| postgres_unavailable("load runtime settings", source))?
     .ok_or_else(|| StoreError::NotFound {
+        source: None,
         entity: "runtime settings",
         id: "1".to_owned(),
     })?;
@@ -453,6 +455,7 @@ pub(crate) async fn load_runtime_settings_in_transaction(
     .await
     .map_err(|source| postgres_unavailable("load runtime settings in transaction", source))?
     .ok_or_else(|| StoreError::NotFound {
+        source: None,
         entity: "runtime settings",
         id: "1".to_owned(),
     })?;
@@ -568,6 +571,7 @@ pub(crate) async fn update_runtime_settings_in_transaction(
     .await
     .map_err(|source| postgres_unavailable("update runtime settings in transaction", source))?
     .ok_or_else(|| StoreError::NotFound {
+        source: None,
         entity: "runtime settings",
         id: "1".to_owned(),
     })?;
@@ -587,6 +591,7 @@ pub(crate) async fn bump_config_revision_in_transaction(
     .await
     .map_err(|source| postgres_unavailable("bump config revision in transaction", source))?
     .ok_or_else(|| StoreError::NotFound {
+        source: None,
         entity: "runtime settings",
         id: "1".to_owned(),
     })?;
@@ -715,6 +720,7 @@ fn to_u32(value: i64) -> StoreResult<u32> {
 
 fn invalid_location() -> StoreError {
     StoreError::InvalidData {
+        source: None,
         entity: "runtime settings",
         message: "request location is invalid".to_owned(),
     }
@@ -722,6 +728,7 @@ fn invalid_location() -> StoreError {
 
 fn invalid_request_profile() -> StoreError {
     StoreError::InvalidData {
+        source: None,
         entity: "runtime settings",
         message: "Provider request profile key is invalid".to_owned(),
     }
@@ -729,6 +736,7 @@ fn invalid_request_profile() -> StoreError {
 
 fn invalid_numeric() -> StoreError {
     StoreError::InvalidData {
+        source: None,
         entity: "runtime settings",
         message: "numeric field is outside its supported range".to_owned(),
     }

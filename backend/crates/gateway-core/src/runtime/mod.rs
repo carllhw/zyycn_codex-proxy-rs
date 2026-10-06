@@ -454,7 +454,10 @@ impl ScheduledTask for RuntimeSnapshotReconciliationTask {
                 .refresh_with_mode(RefreshMode::Reconcile)
                 .await
                 .map(|_| ())
-                .map_err(|_| WorkerTaskError::safe("runtime snapshot reconciliation failed"))
+                .map_err(|source| {
+                    WorkerTaskError::safe("runtime snapshot reconciliation failed")
+                        .with_source(source)
+                })
         })
     }
 }

@@ -52,7 +52,9 @@ impl WorkerLeaderLeaseGuard for RedisWorkerLeaderLeaseGuard {
                 current,
             )
             .await
-            .map_err(|_| WorkerLeaseError::safe("worker lease renewal failed"))?
+            .map_err(|source| {
+                WorkerLeaseError::safe("worker lease renewal failed").with_source(source)
+            })?
             .ok_or_else(|| WorkerLeaseError::safe("worker lease was lost"))?;
             self.grant = Some(renewed);
             Ok(())
@@ -72,7 +74,9 @@ impl WorkerLeaderLeaseGuard for RedisWorkerLeaderLeaseGuard {
             CredentialLeaseRepository::release_credential_lease(&repository, &request, &grant)
                 .await
                 .map(|_| ())
-                .map_err(|_| WorkerLeaseError::safe("worker lease release failed"))
+                .map_err(|source| {
+                    WorkerLeaseError::safe("worker lease release failed").with_source(source)
+                })
         })
     }
 }
@@ -94,7 +98,9 @@ impl WorkerLeaderLeasePort for RedisWorkerLeaderLeasePort {
                 &lease_request,
             )
             .await
-            .map_err(|_| WorkerLeaseError::safe("worker lease acquisition failed"))?;
+            .map_err(|source| {
+                WorkerLeaseError::safe("worker lease acquisition failed").with_source(source)
+            })?;
             let Some(grant) = grant else {
                 return Ok(WorkerLeaseAcquisition::Busy { retry_after: None });
             };

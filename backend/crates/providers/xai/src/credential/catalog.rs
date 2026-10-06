@@ -1394,13 +1394,13 @@ fn map_quota_repository_error(
         RepositoryError::CredentialNotFound | RepositoryError::WrongProviderKind => {
             GrokQuotaError::AccountUnavailable
         }
-        RepositoryError::StaleCredentialRevision | RepositoryError::Conflict => {
+        RepositoryError::StaleCredentialRevision(_) | RepositoryError::Conflict(_) => {
             GrokQuotaError::StaleCredentialSnapshot
         }
-        RepositoryError::Store => GrokQuotaError::Store,
+        RepositoryError::Store(_) => GrokQuotaError::Store,
         RepositoryError::InvalidInput(_)
         | RepositoryError::IdentityRebind
-        | RepositoryError::InvalidCredentialData
+        | RepositoryError::InvalidCredentialData(_)
         | RepositoryError::RevisionOverflow => GrokQuotaError::InvalidData,
     }
 }

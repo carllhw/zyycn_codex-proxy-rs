@@ -141,6 +141,7 @@ async fn full_recoverable_coordination_queues_should_drop_writes_without_waiting
     let (admissions, _admission_writer) = BufferedClientAdmissionPort::with_capacity(
         inner.clone(),
         NonZeroUsize::new(1).expect("capacity"),
+        Arc::new(crate::RecordingDiagnostics::default()),
     );
     let client = ClientApiKeyId::new("key_buffer_test").expect("client key");
     let request = ModelRequestId::new("req_buffer_test").expect("request ID");
@@ -167,6 +168,7 @@ async fn redis_coordination_writers_should_flush_each_side_effect() {
     let (admissions, admission_writer) = BufferedClientAdmissionPort::with_capacity(
         inner.clone(),
         NonZeroUsize::new(8).expect("capacity"),
+        Arc::new(crate::RecordingDiagnostics::default()),
     );
     let client = ClientApiKeyId::new("key_writer_test").expect("client key");
     let request = ModelRequestId::new("req_writer_test").expect("request ID");
@@ -207,6 +209,7 @@ async fn awaited_buffered_release_should_not_publish_capacity_before_writer_runs
     let (admissions, admission_writer) = BufferedClientAdmissionPort::with_capacity(
         inner.clone(),
         NonZeroUsize::new(8).expect("capacity"),
+        Arc::new(crate::RecordingDiagnostics::default()),
     );
     let client = ClientApiKeyId::new("key_capacity_handoff").expect("client key");
     let request = |index| ClientAdmissionRequest {

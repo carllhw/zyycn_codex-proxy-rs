@@ -325,7 +325,7 @@ async fn shutdown_returns_after_in_flight_callback_future_is_dropped() {
     .await
     .expect("session shutdown");
     assert!(callbacks.dropped.load(Ordering::Acquire));
-    assert!(matches!(calling.await.unwrap(), Err(RpcError::Closed)));
+    assert!(matches!(calling.await.unwrap(), Err(RpcError::Closed(_))));
 }
 
 #[tokio::test]
@@ -416,7 +416,7 @@ async fn oversized_call_frames_do_not_close_the_session_or_begin_callbacks() {
             .await
             .err()
             .expect("oversized call must fail");
-        assert_eq!(error, RpcError::Context);
+        assert!(matches!(error, RpcError::Context(_)));
         assert!(matches!(
             session
                 .call_stream(
@@ -426,7 +426,7 @@ async fn oversized_call_frames_do_not_close_the_session_or_begin_callbacks() {
                     payload,
                 )
                 .await,
-            Err(RpcError::Context)
+            Err(RpcError::Context(_))
         ));
         assert_eq!(callbacks.begun.load(Ordering::Relaxed), begun);
         assert!(session.is_ready());
@@ -653,7 +653,7 @@ async fn unknown_parent_cannot_borrow_another_calls_resources() {
             vec![],
         )
         .await;
-    assert!(matches!(reply, Err(RpcError::Protocol)));
+    assert!(matches!(reply, Err(RpcError::Protocol(_))));
     assert_eq!(callbacks.called.load(Ordering::Relaxed), 0);
 }
 
@@ -712,12 +712,16 @@ async fn child_crash_fails_the_call_without_waiting_for_its_deadline() {
     let result = tokio::time::timeout(Duration::from_secs(2), call)
         .await
         .unwrap();
-    assert!(matches!(result, Err(RpcError::Closed)));
+    assert!(matches!(result, Err(RpcError::Closed(_))));
 }
 
 #[tokio::test]
 async fn malformed_worker_frames_fail_boundedly_and_release_call_resources() {
-    for method in ["malformed_truncated_frame", "malformed_frame_length"] {
+    for method in [
+        "malformed_truncated_frame",
+        "malformed_frame_length",
+        "malformed_metadata",
+    ] {
         let callbacks = Arc::new(LifecycleCallbacks::default());
         let (_cache, session) = session(Arc::clone(&callbacks)).await;
         let result = tokio::time::timeout(
@@ -731,7 +735,29 @@ async fn malformed_worker_frames_fail_boundedly_and_release_call_resources() {
         )
         .await
         .expect("malformed worker output must fail within the process boundary");
-        assert!(matches!(result, Err(RpcError::Closed)));
+        let error = result.err().expect("malformed frame failure");
+        assert!(matches!(error, RpcError::Closed(Some(_))));
+        if method == "malformed_metadata" {
+            use std::error::Error as _;
+            let frame = error
+                .source()
+                .unwrap()
+                .downcast_ref::<gateway_plugin_sdk::FrameError>()
+                .unwrap();
+            assert!(frame.source().unwrap().is::<serde_json::Error>());
+            let provider = gateway_core::error::ProviderError::new(
+                gateway_core::error::ProviderErrorKind::Protocol,
+                gateway_core::upstream::UpstreamSendState::Ambiguous,
+            )
+            .with_source(error);
+            assert!(
+                provider
+                    .error_details()
+                    .unwrap()
+                    .contains("PRIVATE_INVALID_FRAME_KIND")
+            );
+            assert!(!format!("{provider:?} {provider}").contains("PRIVATE_INVALID_FRAME_KIND"));
+        }
         assert!(!session.is_ready());
         assert_eq!(callbacks.begun.load(Ordering::Relaxed), 1);
         assert_eq!(callbacks.finished.load(Ordering::Relaxed), 1);
@@ -786,7 +812,7 @@ async fn stream_window_and_sequence_violations_fail_closed() {
             )
             .await
             .unwrap();
-        assert!(matches!(stream.next().await, Err(RpcError::Protocol)));
+        assert!(matches!(stream.next().await, Err(RpcError::Protocol(_))));
         session.shutdown(Duration::from_secs(1)).await;
     }
 }

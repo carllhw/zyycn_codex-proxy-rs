@@ -284,6 +284,7 @@ fn decode_session(value: &str) -> StoreResult<AuthSessionRecord> {
 
 fn auth_invalid(message: &str) -> StoreError {
     StoreError::InvalidData {
+        source: None,
         entity: "authentication state",
         message: message.to_owned(),
     }

@@ -181,6 +181,7 @@ pub(crate) fn worker_definition_error(
     error: gateway_core::task::WorkerDefinitionError,
 ) -> StoreError {
     StoreError::InvalidData {
+        source: None,
         entity: "store worker plan",
         message: error.to_string(),
     }
@@ -202,7 +203,9 @@ impl ScheduledTask for StaleModelRequestRecoveryTask {
             )
             .await
             .map(|_| ())
-            .map_err(|_| WorkerTaskError::safe("stale request recovery failed"))
+            .map_err(|source| {
+                WorkerTaskError::safe("stale request recovery failed").with_source(source)
+            })
         })
     }
 }

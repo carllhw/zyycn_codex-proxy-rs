@@ -43,7 +43,7 @@ impl StreamIngress {
         self.window.receive(sequence, payload.len())?;
         self.chunks
             .try_send(payload)
-            .map_err(|_| RpcError::Protocol)
+            .map_err(|_| RpcError::Protocol(None))
     }
 
     pub fn release(&mut self, bytes: u32) -> Result<(), RpcError> {
@@ -86,7 +86,7 @@ impl RpcStream {
                 let Some(terminal) = self.terminal.take() else {
                     return Ok(None);
                 };
-                terminal.await.map_err(|_| RpcError::Closed)??;
+                terminal.await.map_err(|_| RpcError::Closed(None))??;
                 Ok(None)
             }
             Err(_) => {

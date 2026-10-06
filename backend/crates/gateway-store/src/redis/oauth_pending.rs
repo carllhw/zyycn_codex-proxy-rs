@@ -322,6 +322,7 @@ fn ttl_millis(ttl: Duration) -> StoreResult<u64> {
         .ok()
         .filter(|value| *value > 0 && *value <= MAX_REDIS_EXACT_INTEGER)
         .ok_or_else(|| StoreError::InvalidData {
+            source: None,
             entity: "OAuth pending flow",
             message: "TTL is outside the supported range".to_owned(),
         })

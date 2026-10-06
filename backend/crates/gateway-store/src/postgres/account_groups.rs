@@ -93,7 +93,7 @@ impl PgAccountGroupRepository {
         let mut transaction = self.pool.begin().await.map_err(|source| {
             admin_store_error(ENTITY, unavailable("begin account group mutation", source))
         })?;
-        let result = async {
+        let result: StoreResult<_> = async {
             let revision = bump_config_revision_in_transaction(&mut transaction).await?;
             mutation(&mut transaction).await?;
             append_admin_audit_event_in_transaction(&mut transaction, audit, revision).await?;
@@ -108,12 +108,10 @@ impl PgAccountGroupRepository {
                 admin_revision(revision)
             }
             Err(error) => {
-                transaction.rollback().await.map_err(|source| {
-                    admin_store_error(
-                        ENTITY,
-                        unavailable("rollback account group mutation", source),
-                    )
-                })?;
+                let error = match transaction.rollback().await {
+                    Ok(()) => error,
+                    Err(cleanup) => error.with_cleanup(cleanup),
+                };
                 Err(admin_store_error(ENTITY, error))
             }
         }
@@ -210,14 +208,18 @@ impl AccountGroupStore for PgAccountGroupRepository {
             .map(|row| {
                 let group_id = AccountGroupId::new(
                     row.try_get::<String, _>("account_group_id")
-                        .map_err(|_| invalid("invalid group ID"))?,
+                        .map_err(|source| invalid("invalid group ID").with_source(source))?,
                 )
-                .map_err(|_| invalid("invalid group ID"))?;
+                .map_err(|source| invalid("invalid group ID").with_source(source))?;
                 let default_slots = u64::try_from(
                     row.try_get::<i64, _>("max_concurrent_per_account")
-                        .map_err(|_| invalid("invalid default account concurrency"))?,
+                        .map_err(|source| {
+                            invalid("invalid default account concurrency").with_source(source)
+                        })?,
                 )
-                .map_err(|_| invalid("invalid default account concurrency"))?;
+                .map_err(|source| {
+                    invalid("invalid default account concurrency").with_source(source)
+                })?;
                 let account = account_summary_from_row(row)?;
                 Ok(AccountGroupMemberFact {
                     group_id,
@@ -459,7 +461,8 @@ async fn count_groups(pool: &PgPool, query: &AccountGroupListQuery) -> StoreResu
         .fetch_one(pool)
         .await
         .map_err(|source| unavailable("count account groups", source))?;
-    u64::try_from(count).map_err(|_| invalid("negative account group count"))
+    u64::try_from(count)
+        .map_err(|source| invalid("negative account group count").with_source(source))
 }
 
 async fn load_record(pool: &PgPool, id: &str) -> StoreResult<Option<AccountGroupRecord>> {
@@ -479,33 +482,35 @@ async fn load_record(pool: &PgPool, id: &str) -> StoreResult<Option<AccountGroup
 fn group_record(row: &sqlx::postgres::PgRow) -> StoreResult<AccountGroupRecord> {
     let provider_counts: serde_json::Value = row
         .try_get("provider_counts")
-        .map_err(|_| invalid("invalid provider counts"))?;
+        .map_err(|source| invalid("invalid provider counts").with_source(source))?;
     let provider_counts = serde_json::from_value::<BTreeMap<String, u64>>(provider_counts)
-        .map_err(|_| invalid("invalid provider counts"))?;
+        .map_err(|source| invalid("invalid provider counts").with_source(source))?;
     Ok(AccountGroupRecord {
         fast_mode: FastMode::parse(
             row.try_get("fast_mode")
-                .map_err(|_| invalid("invalid fast_mode"))?,
+                .map_err(|source| invalid("invalid fast_mode").with_source(source))?,
         )
         .ok_or_else(|| invalid("invalid fast_mode"))?,
         id: AccountGroupId::new(
             row.try_get::<String, _>("id")
-                .map_err(|_| invalid("invalid id"))?,
+                .map_err(|source| invalid("invalid id").with_source(source))?,
         )
-        .map_err(|_| invalid("invalid id"))?,
-        name: row.try_get("name").map_err(|_| invalid("invalid name"))?,
+        .map_err(|source| invalid("invalid id").with_source(source))?,
+        name: row
+            .try_get("name")
+            .map_err(|source| invalid("invalid name").with_source(source))?,
         description: row
             .try_get("description")
-            .map_err(|_| invalid("invalid description"))?,
+            .map_err(|source| invalid("invalid description").with_source(source))?,
         color: AccountGroupColor::parse(
             row.try_get::<String, _>("color")
-                .map_err(|_| invalid("invalid color"))?
+                .map_err(|source| invalid("invalid color").with_source(source))?
                 .as_str(),
         )
         .ok_or_else(|| invalid("invalid color"))?,
         enabled: row
             .try_get("enabled")
-            .map_err(|_| invalid("invalid enabled"))?,
+            .map_err(|source| invalid("invalid enabled").with_source(source))?,
         member_count: count_value(row, "member_count")?,
         provider_counts,
         client_key_count: count_value(row, "client_key_count")?,
@@ -519,16 +524,17 @@ fn group_record(row: &sqlx::postgres::PgRow) -> StoreResult<AccountGroupRecord> 
             total_slots: Some(0),
         },
         usage: AccountGroupUsage {
-            today_usd: DecimalAmount::from_str("0").map_err(|_| invalid("invalid zero cost"))?,
+            today_usd: DecimalAmount::from_str("0")
+                .map_err(|source| invalid("invalid zero cost").with_source(source))?,
             retained_total_usd: DecimalAmount::from_str("0")
-                .map_err(|_| invalid("invalid zero cost"))?,
+                .map_err(|source| invalid("invalid zero cost").with_source(source))?,
         },
         created_at: row
             .try_get("created_at")
-            .map_err(|_| invalid("invalid created_at"))?,
+            .map_err(|source| invalid("invalid created_at").with_source(source))?,
         updated_at: row
             .try_get("updated_at")
-            .map_err(|_| invalid("invalid updated_at"))?,
+            .map_err(|source| invalid("invalid updated_at").with_source(source))?,
     })
 }
 
@@ -580,20 +586,21 @@ async fn group_costs(
         .map(|row| {
             let group_id: String = row
                 .try_get("group_id")
-                .map_err(|_| invalid("invalid group ID"))?;
+                .map_err(|source| invalid("invalid group ID").with_source(source))?;
             let today = row
                 .try_get::<String, _>("today_usd")
-                .map_err(|_| invalid("invalid today cost"))?;
+                .map_err(|source| invalid("invalid today cost").with_source(source))?;
             let retained_total = row
                 .try_get::<String, _>("retained_total_usd")
-                .map_err(|_| invalid("invalid retained total cost"))?;
+                .map_err(|source| invalid("invalid retained total cost").with_source(source))?;
             Ok((
                 group_id,
                 AccountGroupUsage {
                     today_usd: DecimalAmount::from_str(&today)
-                        .map_err(|_| invalid("invalid today cost"))?,
-                    retained_total_usd: DecimalAmount::from_str(&retained_total)
-                        .map_err(|_| invalid("invalid retained total cost"))?,
+                        .map_err(|source| invalid("invalid today cost").with_source(source))?,
+                    retained_total_usd: DecimalAmount::from_str(&retained_total).map_err(
+                        |source| invalid("invalid retained total cost").with_source(source),
+                    )?,
                 },
             ))
         })
@@ -603,9 +610,9 @@ async fn group_costs(
 fn count_value(row: &sqlx::postgres::PgRow, field: &str) -> StoreResult<u64> {
     u64::try_from(
         row.try_get::<i64, _>(field)
-            .map_err(|_| invalid("invalid count"))?,
+            .map_err(|source| invalid("invalid count").with_source(source))?,
     )
-    .map_err(|_| invalid("negative count"))
+    .map_err(|source| invalid("negative count").with_source(source))
 }
 
 fn validate_page_query(query: &AccountGroupListQuery) -> AdminStoreResult<()> {
@@ -658,6 +665,7 @@ fn not_found(id: &str) -> AdminStoreError {
 
 fn not_found_store(id: &str) -> StoreError {
     StoreError::NotFound {
+        source: None,
         entity: ENTITY,
         id: id.to_owned(),
     }
@@ -665,6 +673,7 @@ fn not_found_store(id: &str) -> StoreError {
 
 fn conflict(id: &str) -> StoreError {
     StoreError::Conflict {
+        source: None,
         entity: ENTITY,
         id: id.to_owned(),
         kind: ConflictKind::InvalidTransition,
@@ -677,6 +686,7 @@ fn invalid_admin(message: &str) -> AdminStoreError {
 
 fn invalid(message: &str) -> StoreError {
     StoreError::InvalidData {
+        source: None,
         entity: ENTITY,
         message: message.to_owned(),
     }
@@ -695,7 +705,7 @@ pub(crate) async fn insert_account_group_in_transaction(
     command: &NewAccountGroup,
 ) -> StoreResult<()> {
     validate_group_fields(&command.name, command.description.as_deref())
-        .map_err(|_| invalid("invalid account group fields"))?;
+        .map_err(|source| invalid("invalid account group fields").with_source(source))?;
     sqlx::query(
         "insert into account_groups
          (id, name, description, color, fast_mode, enabled, created_at, updated_at)

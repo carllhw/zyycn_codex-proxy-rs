@@ -110,18 +110,18 @@ impl ClientAdmissionRecoveryPort for PgClientAdmissionRecoveryRepository {
         Box::pin(async move {
             self.load_client_admission_recovery(DateTime::<Utc>::from(since))
                 .await
-                .map_err(|_| ClientAdmissionError)?
+                .map_err(|source| ClientAdmissionError(Some(source.into())))?
                 .into_iter()
                 .map(|recovery| {
                     let client_api_key_id = ClientApiKeyId::new(recovery.client_api_key_ref)
-                        .map_err(|_| ClientAdmissionError)?;
+                        .map_err(|source| ClientAdmissionError(Some(source.into())))?;
                     let recent_requests = recovery
                         .recent_requests
                         .into_iter()
                         .map(|request| {
                             Ok(RecentAdmissionFact {
                                 model_request_id: ModelRequestId::new(request.model_request_id)
-                                    .map_err(|_| ClientAdmissionError)?,
+                                    .map_err(|source| ClientAdmissionError(Some(source.into())))?,
                                 started_at: request.started_at.into(),
                             })
                         })
@@ -132,7 +132,7 @@ impl ClientAdmissionRecoveryPort for PgClientAdmissionRecoveryRepository {
                         .map(|request| {
                             Ok(RunningAdmissionFact {
                                 model_request_id: ModelRequestId::new(request.model_request_id)
-                                    .map_err(|_| ClientAdmissionError)?,
+                                    .map_err(|source| ClientAdmissionError(Some(source.into())))?,
                                 expires_at: request.deadline_at.into(),
                             })
                         })

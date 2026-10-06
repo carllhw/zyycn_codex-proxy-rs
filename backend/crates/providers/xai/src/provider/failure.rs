@@ -398,22 +398,31 @@ pub(super) fn map_request_error(error: GrokRequestEncodeError) -> ProviderError 
 
 /// 将选择阶段失败映射为带结构化 code 与 retry_after 的 Provider 错误
 pub(super) fn map_selection_error(error: GrokSessionSelectorError) -> ProviderError {
+    let mapped = selection_failure(&error);
+    if std::error::Error::source(&error).is_some() {
+        mapped.with_source(error)
+    } else {
+        mapped
+    }
+}
+
+fn selection_failure(error: &GrokSessionSelectorError) -> ProviderError {
     let (retry_after, message, code) = match error {
         GrokSessionSelectorError::QueueRejected(error) => {
             return provider_error(error.provider_kind(), UpstreamSendState::NotSent);
         }
         GrokSessionSelectorError::AccountCoolingDown { retry_after } => (
-            retry_after,
-            cooling_down_message(retry_after),
+            *retry_after,
+            cooling_down_message(*retry_after),
             "account_cooling_down",
         ),
         GrokSessionSelectorError::ModelCoolingDown { retry_after } => (
-            retry_after,
-            model_cooling_down_message(retry_after),
+            *retry_after,
+            model_cooling_down_message(*retry_after),
             "model_cooling_down",
         ),
         GrokSessionSelectorError::CapacityUnavailable { retry_after } => (
-            retry_after,
+            *retry_after,
             "account is at its concurrency or request-interval limit".to_owned(),
             "account_capacity_busy",
         ),
@@ -422,7 +431,7 @@ pub(super) fn map_selection_error(error: GrokSessionSelectorError) -> ProviderEr
             "no account is eligible for the requested model".to_owned(),
             "no_eligible_account",
         ),
-        GrokSessionSelectorError::Unavailable => (
+        GrokSessionSelectorError::Unavailable(_) => (
             None,
             "account scheduling state is temporarily unreadable".to_owned(),
             "account_selector_unavailable",
@@ -436,7 +445,7 @@ pub(super) fn map_selection_error(error: GrokSessionSelectorError) -> ProviderEr
         GrokSessionSelectorError::PolicyUnavailable => {
             return provider_error(ProviderErrorKind::Unavailable, UpstreamSendState::NotSent);
         }
-        GrokSessionSelectorError::InvalidSession => {
+        GrokSessionSelectorError::InvalidSession(_) => {
             return provider_error(ProviderErrorKind::Protocol, UpstreamSendState::NotSent);
         }
     };

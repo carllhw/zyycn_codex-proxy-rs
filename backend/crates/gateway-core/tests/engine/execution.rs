@@ -99,7 +99,9 @@ impl ClientBudgetPort for Budget {
             assert!(self.active.load(Ordering::SeqCst));
             self.charges.lock().unwrap().push(charge);
             if self.fail_settlement {
-                Err(ClientBudgetError)
+                Err(ClientBudgetError(Some(
+                    std::io::Error::other("PRIVATE_SETTLEMENT_CAUSE").into(),
+                )))
             } else {
                 Ok(())
             }
@@ -115,6 +117,7 @@ fn service(admissions: Arc<Admissions>, budget: Arc<Budget>) -> DefaultExecution
         admissions,
         Arc::new(UnusedContinuation),
         Arc::new(RecordingClientApiKeyUsage::default()),
+        Arc::new(crate::RecordingDiagnostics::default()),
     )
     .with_budget(budget)
 }
@@ -324,6 +327,7 @@ fn reused_client_uses_updated_limits_for_each_execution() {
         admissions.clone(),
         Arc::new(UnusedContinuation),
         Arc::new(RecordingClientApiKeyUsage::default()),
+        Arc::new(crate::RecordingDiagnostics::default()),
     );
     let client = service.authenticate("sk_start_test").unwrap();
     let limited = RateLimits {
@@ -360,6 +364,7 @@ fn reused_client_cannot_start_after_key_disable_or_snapshot_suspension() {
             admissions.clone(),
             Arc::new(UnusedContinuation),
             Arc::new(RecordingClientApiKeyUsage::default()),
+            Arc::new(crate::RecordingDiagnostics::default()),
         );
         let next = request(&service, ClientTransport::WebSocket);
         if suspend {
@@ -463,6 +468,7 @@ fn reused_client_is_reauthenticated_by_the_current_frontend_plan_without_identit
             admissions.clone(),
             Arc::new(UnusedContinuation),
             Arc::new(RecordingClientApiKeyUsage::default()),
+            Arc::new(crate::RecordingDiagnostics::default()),
         )
         .with_frontend_authentication(authentication.clone());
         let client = service
@@ -554,6 +560,7 @@ fn early_failure_service(
         admissions,
         Arc::new(UnusedContinuation),
         Arc::new(RecordingClientApiKeyUsage::default()),
+        Arc::new(crate::RecordingDiagnostics::default()),
     )
     .with_budget(budget)
 }
@@ -911,6 +918,7 @@ fn retry_policy_can_stop_but_cannot_bypass_replay_safety() {
                 Arc::new(Admissions::default()),
                 Arc::new(UnusedContinuation),
                 Arc::new(RecordingClientApiKeyUsage::default()),
+                Arc::new(crate::RecordingDiagnostics::default()),
             )
             .with_request_policies(policies);
             let mut started = service
@@ -1169,6 +1177,7 @@ fn completed_parent_rejects_new_nested_execution_and_cancels_an_active_child() {
             Arc::new(Admissions::default()),
             Arc::new(UnusedContinuation),
             Arc::new(RecordingClientApiKeyUsage::default()),
+            Arc::new(crate::RecordingDiagnostics::default()),
         )
         .with_request_policies(policy_index);
 
@@ -1360,6 +1369,7 @@ fn native_response_processing_uses_the_real_translation_boundary() {
             Arc::new(Admissions::default()),
             Arc::new(UnusedContinuation),
             Arc::new(RecordingClientApiKeyUsage::default()),
+            Arc::new(crate::RecordingDiagnostics::default()),
         )
         .with_request_observers(observer_index);
 
@@ -1510,6 +1520,7 @@ fn response_translation_zero_output_preserves_canonical_usage_and_finalization()
             Arc::new(Admissions::default()),
             Arc::new(UnusedContinuation),
             Arc::new(RecordingClientApiKeyUsage::default()),
+            Arc::new(crate::RecordingDiagnostics::default()),
         );
 
         let mut started = service
@@ -1663,6 +1674,7 @@ fn native_response_failure_after_downstream_commit_is_not_replayed() {
             Arc::new(Admissions::default()),
             Arc::new(UnusedContinuation),
             Arc::new(RecordingClientApiKeyUsage::default()),
+            Arc::new(crate::RecordingDiagnostics::default()),
         );
 
         let mut started = service
@@ -1735,6 +1747,7 @@ fn model_routing_policy_selects_native_provider() {
             Arc::new(Admissions::default()),
             Arc::new(UnusedContinuation),
             Arc::new(RecordingClientApiKeyUsage::default()),
+            Arc::new(crate::RecordingDiagnostics::default()),
         )
         .with_request_policies(policy_index);
         let mut started = service
@@ -1788,6 +1801,7 @@ fn model_routing_reject_stops_before_provider_execution() {
             Arc::new(Admissions::default()),
             Arc::new(UnusedContinuation),
             Arc::new(RecordingClientApiKeyUsage::default()),
+            Arc::new(crate::RecordingDiagnostics::default()),
         )
         .with_request_policies(policy_index);
         assert!(matches!(
@@ -1875,6 +1889,7 @@ fn model_routing_cannot_expand_the_frozen_key_model_scope() {
             Arc::new(Admissions::default()),
             Arc::new(UnusedContinuation),
             Arc::new(RecordingClientApiKeyUsage::default()),
+            Arc::new(crate::RecordingDiagnostics::default()),
         )
         .with_request_policies(policy_index);
 
@@ -2022,6 +2037,7 @@ fn scheduler_reject_is_a_terminal_policy_rejection_before_upstream_send() {
             Arc::new(Admissions::default()),
             Arc::new(UnusedContinuation),
             Arc::new(RecordingClientApiKeyUsage::default()),
+            Arc::new(crate::RecordingDiagnostics::default()),
         )
         .with_request_policies(policy_index)
         .with_request_observers(observer_index);
@@ -2292,6 +2308,7 @@ fn observation_service(
         admissions,
         Arc::new(UnusedContinuation),
         Arc::new(RecordingClientApiKeyUsage::default()),
+        Arc::new(crate::RecordingDiagnostics::default()),
     )
     .with_budget(budget)
     .with_request_observers(observer_index);
@@ -2329,6 +2346,7 @@ fn fallback_exhaustion_observation_uses_the_last_actual_provider_not_the_candida
             Arc::new(Admissions::default()),
             Arc::new(UnusedContinuation),
             Arc::new(RecordingClientApiKeyUsage::default()),
+            Arc::new(crate::RecordingDiagnostics::default()),
         )
         .with_request_observers(observer_index);
         let mut started = service
@@ -2393,6 +2411,7 @@ fn routing_external_effect_stops_a_not_sent_provider_retry() {
             Arc::new(Admissions::default()),
             Arc::new(UnusedContinuation),
             Arc::new(RecordingClientApiKeyUsage::default()),
+            Arc::new(crate::RecordingDiagnostics::default()),
         )
         .with_request_policies(policy_index)
         .with_request_observers(observer_index);
@@ -2580,6 +2599,20 @@ fn charged_service(
     budget: Option<Arc<Budget>>,
     fail: bool,
 ) -> DefaultExecutionService {
+    charged_service_with_diagnostics(
+        admissions,
+        budget,
+        fail,
+        Arc::new(crate::RecordingDiagnostics::default()),
+    )
+}
+
+fn charged_service_with_diagnostics(
+    admissions: Arc<Admissions>,
+    budget: Option<Arc<Budget>>,
+    fail: bool,
+    diagnostics: Arc<crate::RecordingDiagnostics>,
+) -> DefaultExecutionService {
     let service = DefaultExecutionService::new(
         RuntimeSnapshotHandle::new(start_snapshot()),
         Arc::new(TrackingExecutionStore::default()),
@@ -2591,6 +2624,7 @@ fn charged_service(
         admissions,
         Arc::new(UnusedContinuation),
         Arc::new(RecordingClientApiKeyUsage::default()),
+        diagnostics,
     );
     match budget {
         Some(budget) => service.with_budget(budget),
@@ -2826,7 +2860,13 @@ fn settlement_failure_keeps_provider_error_and_releases_concurrency_once() {
                 fail_settlement,
                 ..Default::default()
             });
-            let service = charged_service(admissions.clone(), Some(budget.clone()), true);
+            let diagnostics = Arc::new(crate::RecordingDiagnostics::default());
+            let service = charged_service_with_diagnostics(
+                admissions.clone(),
+                Some(budget.clone()),
+                true,
+                diagnostics.clone(),
+            );
             let mut started = service
                 .start(request(&service, ClientTransport::WebSocket))
                 .await
@@ -2840,6 +2880,24 @@ fn settlement_failure_keeps_provider_error_and_releases_concurrency_once() {
             started.session.detach_finalize().await;
             // Store 端口已接管精确费用后，结算错误不能改写 Provider 错误或触发第二次结算
             assert_cleanup_completed(&admissions, &budget, &started.request_id);
+            let failures = diagnostics.0.lock().unwrap();
+            assert_eq!(failures.len(), usize::from(fail_settlement));
+            if let Some(failure) = failures.first() {
+                assert_eq!(failure.operation, "settle_client_budget");
+                assert_eq!(
+                    failure.correlation_id.as_deref(),
+                    Some(started.request_id.as_str())
+                );
+                assert!(
+                    failure
+                        .details
+                        .as_ref()
+                        .unwrap()
+                        .as_str()
+                        .contains("PRIVATE_SETTLEMENT_CAUSE")
+                );
+                assert!(!format!("{failure:?}").contains("PRIVATE_SETTLEMENT_CAUSE"));
+            }
         }
     });
 }
@@ -2923,6 +2981,7 @@ fn account_probe_should_not_write_to_the_persistent_execution_store() {
         Arc::new(UnusedAdmissions),
         Arc::new(UnusedContinuation),
         Arc::new(RecordingClientApiKeyUsage::default()),
+        Arc::new(crate::RecordingDiagnostics::default()),
     );
 
     let error = block_on(service.probe(
@@ -2954,6 +3013,7 @@ fn probe_failures_should_be_observable_without_a_model_request_row() {
         Arc::new(UnusedAdmissions),
         Arc::new(UnusedContinuation),
         Arc::new(RecordingClientApiKeyUsage::default()),
+        Arc::new(crate::RecordingDiagnostics::default()),
     );
 
     let error = block_on(service.probe(
@@ -2999,6 +3059,7 @@ fn provider_local_probe_failure_should_remain_distinct_from_upstream() {
         Arc::new(UnusedAdmissions),
         Arc::new(UnusedContinuation),
         Arc::new(RecordingClientApiKeyUsage::default()),
+        Arc::new(crate::RecordingDiagnostics::default()),
     );
 
     let error = block_on(service.probe(
@@ -3041,6 +3102,7 @@ fn diagnostic_probe_does_not_apply_data_plane_account_model_policy() {
         Arc::new(UnusedAdmissions),
         Arc::new(UnusedContinuation),
         Arc::new(RecordingClientApiKeyUsage::default()),
+        Arc::new(crate::RecordingDiagnostics::default()),
     );
 
     let error = block_on(service.probe(
@@ -3072,6 +3134,7 @@ fn probe_observation_store_failure_preserves_the_provider_error() {
         Arc::new(UnusedAdmissions),
         Arc::new(UnusedContinuation),
         Arc::new(RecordingClientApiKeyUsage::default()),
+        Arc::new(crate::RecordingDiagnostics::default()),
     );
 
     let error = block_on(service.probe(
@@ -3195,6 +3258,7 @@ fn client_catalog_forwards_scope_maps_whole_objects_and_omits_unroutable_models(
             Arc::new(UnusedAdmissions),
             Arc::new(UnusedContinuation),
             Arc::new(RecordingClientApiKeyUsage::default()),
+            Arc::new(crate::RecordingDiagnostics::default()),
         );
         let client = service.authenticate("sk_start_test").expect("authenticate");
         let result = block_on(service.client_model_catalog(&client, "codex", "0.154.0"));
@@ -3350,6 +3414,7 @@ fn successful_authentication_should_record_client_key_usage() {
         Arc::new(UnusedAdmissions),
         Arc::new(UnusedContinuation),
         usage.clone(),
+        Arc::new(crate::RecordingDiagnostics::default()),
     );
 
     service
@@ -3369,6 +3434,7 @@ fn client_key_verification_should_not_record_client_key_usage() {
         Arc::new(UnusedAdmissions),
         Arc::new(UnusedContinuation),
         usage.clone(),
+        Arc::new(crate::RecordingDiagnostics::default()),
     );
 
     let key_id = service
@@ -3390,6 +3456,7 @@ fn request_verification_should_apply_entry_authentication_without_recording_key_
             Arc::new(UnusedAdmissions),
             Arc::new(UnusedContinuation),
             usage.clone(),
+            Arc::new(crate::RecordingDiagnostics::default()),
         );
 
         let client = service
@@ -3423,6 +3490,7 @@ fn assert_provider_endpoint_observation(model: Option<&str>) {
         Arc::new(UnusedAdmissions),
         Arc::new(UnusedContinuation),
         Arc::new(RecordingClientApiKeyUsage::default()),
+        Arc::new(crate::RecordingDiagnostics::default()),
     );
     let client = service
         .authenticate("sk_usage_test")
@@ -3476,6 +3544,7 @@ fn known_catalog_should_reject_a_model_that_the_provider_did_not_publish() {
         Arc::new(UnusedAdmissions),
         Arc::new(UnusedContinuation),
         Arc::new(RecordingClientApiKeyUsage::default()),
+        Arc::new(crate::RecordingDiagnostics::default()),
     );
     let client = service
         .authenticate("sk_start_test")
@@ -3522,6 +3591,7 @@ fn continuation_owned_by_another_client_api_key_should_fail_closed() {
         Arc::new(UnusedAdmissions),
         Arc::new(RejectedContinuation::OwnershipMismatch),
         Arc::new(RecordingClientApiKeyUsage::default()),
+        Arc::new(crate::RecordingDiagnostics::default()),
     );
     let client = service
         .authenticate("sk_start_test")
@@ -3549,6 +3619,7 @@ fn invalid_continuation_record_should_not_be_forwarded_as_an_external_handle() {
         Arc::new(UnusedAdmissions),
         Arc::new(RejectedContinuation::InvalidData),
         Arc::new(RecordingClientApiKeyUsage::default()),
+        Arc::new(crate::RecordingDiagnostics::default()),
     );
     let client = service
         .authenticate("sk_start_test")
@@ -4024,6 +4095,7 @@ fn account_wait_inherits_the_budget_spent_during_client_admission() {
             admissions.clone(),
             Arc::new(UnusedContinuation),
             Arc::new(RecordingClientApiKeyUsage::default()),
+            Arc::new(crate::RecordingDiagnostics::default()),
         );
         let running = service
             .start(request(&service, ClientTransport::HttpSse))
@@ -4133,6 +4205,7 @@ fn queue_service(
         admissions.clone(),
         Arc::new(UnusedContinuation),
         Arc::new(RecordingClientApiKeyUsage::default()),
+        Arc::new(crate::RecordingDiagnostics::default()),
     );
     (service, admissions)
 }
@@ -4257,6 +4330,7 @@ fn reused_websocket_client_gets_group_fast_policy_from_each_new_request_snapshot
         admissions,
         Arc::new(UnusedContinuation),
         Arc::new(RecordingClientApiKeyUsage::default()),
+        Arc::new(crate::RecordingDiagnostics::default()),
     );
     let client = service.authenticate("sk_start_test").unwrap();
     for (revision, fast_mode) in [
@@ -4306,6 +4380,7 @@ fn request_settings_recompute_routing_and_admission_without_changing_sibling_or_
             admissions.clone(),
             Arc::new(UnusedContinuation),
             Arc::new(RecordingClientApiKeyUsage::default()),
+            Arc::new(crate::RecordingDiagnostics::default()),
         );
         let client = service.authenticate("sk_start_test").unwrap();
         let mut modified = service.prepare_verified_execution(client.clone()).unwrap();
@@ -4478,6 +4553,7 @@ fn repeated_connection_failures_never_block_later_requests_for_the_provider() {
         Arc::new(UnusedAdmissions),
         Arc::new(UnusedContinuation),
         Arc::new(RecordingClientApiKeyUsage::default()),
+        Arc::new(crate::RecordingDiagnostics::default()),
     );
     for _ in 0..5 {
         let client = service
@@ -4528,6 +4604,7 @@ fn entry_settings_freeze_authentication_and_rebase_only_explicit_overrides() {
             Arc::new(UnusedAdmissions),
             Arc::new(UnusedContinuation),
             Arc::new(RecordingClientApiKeyUsage::default()),
+            Arc::new(crate::RecordingDiagnostics::default()),
         );
         let baseline = service.request_settings().unwrap();
         let mut values = serde_json::to_value(baseline.values()).unwrap();
@@ -4670,6 +4747,7 @@ fn unchanged_and_precompiled_request_settings_reuse_the_frozen_snapshot() {
         Arc::new(UnusedAdmissions),
         Arc::new(UnusedContinuation),
         Arc::new(RecordingClientApiKeyUsage::default()),
+        Arc::new(crate::RecordingDiagnostics::default()),
     );
     let client = service.authenticate("sk_start_test").unwrap();
     let mut prepared = service.prepare_verified_execution(client).unwrap();
@@ -4767,6 +4845,7 @@ fn child_settings_recompute_key_scope_without_inheriting_parent_defaults() {
             Arc::new(UnusedAdmissions),
             Arc::new(UnusedContinuation),
             Arc::new(RecordingClientApiKeyUsage::default()),
+            Arc::new(crate::RecordingDiagnostics::default()),
         );
         let parent = service
             .prepare_execution(service.authenticate("sk_parent").unwrap())

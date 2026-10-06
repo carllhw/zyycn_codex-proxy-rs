@@ -78,8 +78,18 @@ impl AdminStoreError {
 
     /// 来源留在内部诊断链，公开消息不展开基础设施错误
     #[must_use]
-    pub fn with_source(mut self, source: impl std::error::Error + Send + Sync + 'static) -> Self {
-        self.source = Some(gateway_core::error::ErrorSource::new(source));
+    pub fn with_source(mut self, source: impl Into<gateway_core::error::ErrorSource>) -> Self {
+        self.source = Some(source.into());
+        self
+    }
+
+    /// 清理失败不覆盖最初操作的分类与原因
+    #[must_use]
+    pub fn with_cleanup(mut self, cleanup: impl Into<gateway_core::error::ErrorSource>) -> Self {
+        self.source = Some(gateway_core::error::ErrorSource::cleanup(
+            self.source.take(),
+            cleanup,
+        ));
         self
     }
 

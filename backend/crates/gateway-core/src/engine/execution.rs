@@ -739,6 +739,7 @@ pub struct DefaultExecutionService {
     snapshots: RuntimeSnapshotHandle,
     /// probe 自身走 transient store，探测失败仍写入持久 store 的 ops_events
     observations: Arc<dyn ExecutionStore>,
+    diagnostics: Arc<dyn crate::diagnostics::OperationalDiagnostics>,
     providers: ProviderRegistry,
     admissions: Arc<dyn ClientAdmissionPort>,
     admission_waiting: ConcurrencyWaitQueue<ClientApiKeyId>,
@@ -763,10 +764,12 @@ impl DefaultExecutionService {
         admissions: Arc<dyn ClientAdmissionPort>,
         continuation: Arc<dyn NativeContinuationPort>,
         client_api_key_usage: Arc<dyn ClientApiKeyUsageSink>,
+        diagnostics: Arc<dyn crate::diagnostics::OperationalDiagnostics>,
     ) -> Self {
         Self {
             snapshots,
             observations: execution,
+            diagnostics,
             providers,
             admissions,
             admission_waiting: ConcurrencyWaitQueue::default(),
@@ -1325,7 +1328,12 @@ impl DefaultExecutionService {
             && let Some(guard) = start_guard.take()
         {
             guard
-                .release_failed(self.budget.as_deref(), request_id, budget_key_id)
+                .release_failed(
+                    self.budget.as_deref(),
+                    request_id,
+                    budget_key_id,
+                    self.diagnostics.as_ref(),
+                )
                 .await;
         }
         result
@@ -1498,6 +1506,7 @@ impl DefaultExecutionService {
                             amount_usd: crate::metering::Decimal::ZERO,
                             completed_at: SystemTime::now(),
                         },
+                        self.diagnostics.as_ref(),
                     )
                     .await;
                 }
@@ -1518,6 +1527,7 @@ impl DefaultExecutionService {
                 active_request,
                 Arc::clone(&self.continuation),
                 self.budget.clone(),
+                self.diagnostics.clone(),
             )),
         })
     }
@@ -1872,6 +1882,7 @@ impl DefaultExecutionService {
             CapacityWait::new(&self.admission_waiting, policy, deadline_at.at(), budget);
         let mut admission = AdmissionLease {
             port: Arc::clone(&self.admissions),
+            diagnostics: self.diagnostics.clone(),
             client_api_key_id: key.clone(),
             model_request_id: request_id.clone(),
             armed: false,
@@ -1902,7 +1913,7 @@ impl DefaultExecutionService {
             pin_mut!(acquire, timeout, cancelled);
             let decision = select_biased! {
                 () = cancelled => return Err(GatewayError::new(GatewayErrorKind::Cancelled, "request admission was cancelled")),
-                result = acquire => result.map_err(|_| GatewayError::new(GatewayErrorKind::NoAvailableProvider, "request admission is temporarily unavailable"))?,
+                result = acquire => result.map_err(|source| GatewayError::new(GatewayErrorKind::NoAvailableProvider, "request admission is temporarily unavailable").with_source(source))?,
                 _ = timeout => return Err(GatewayError::new(GatewayErrorKind::Timeout, "request deadline elapsed")),
             };
             match decision {
@@ -2477,14 +2488,26 @@ struct AdmissionLease {
     renewal: Option<Box<dyn LeaseGuard>>,
     armed: bool,
     port: Arc<dyn ClientAdmissionPort>,
+    diagnostics: Arc<dyn crate::diagnostics::OperationalDiagnostics>,
     client_api_key_id: ClientApiKeyId,
     model_request_id: ModelRequestId,
 }
 
-async fn settle_budget(port: &dyn ClientBudgetPort, charge: ClientBudgetCharge) {
+async fn settle_budget(
+    port: &dyn ClientBudgetPort,
+    charge: ClientBudgetCharge,
+    diagnostics: &dyn crate::diagnostics::OperationalDiagnostics,
+) {
     let request_id = charge.request_id.clone();
     if let Err(error) = port.settle(charge).await {
-        tracing::error!(request_id = request_id.as_str(), operation = "settle_client_budget", %error, "Client budget settlement failed; storage will retry on the next request");
+        record_resource_failure(
+            diagnostics,
+            &request_id,
+            "settle_client_budget",
+            "Client budget settlement failed; storage will retry on the next request",
+            error,
+        )
+        .await;
     }
 }
 
@@ -2496,7 +2519,14 @@ impl AdmissionLease {
             .release(&self.client_api_key_id, &self.model_request_id)
             .await
         {
-            tracing::warn!(request_id = self.model_request_id.as_str(), key_id = self.client_api_key_id.as_str(), operation = "release_client_admission", %error, "Client admission 释放失败，依赖租约 TTL 收敛");
+            record_resource_failure(
+                self.diagnostics.as_ref(),
+                &self.model_request_id,
+                "release_client_admission",
+                "Client admission release failed; lease TTL remains active",
+                error,
+            )
+            .await;
         }
         self.armed = false;
     }
@@ -2537,6 +2567,7 @@ impl ExecutionStartGuard {
         budget: Option<&dyn ClientBudgetPort>,
         request_id: ModelRequestId,
         key_id: ClientApiKeyId,
+        diagnostics: &dyn crate::diagnostics::OperationalDiagnostics,
     ) {
         if let Some(active_request) = self.active_request {
             active_request.release();
@@ -2550,6 +2581,7 @@ impl ExecutionStartGuard {
                     amount_usd: crate::metering::Decimal::ZERO,
                     completed_at: SystemTime::now(),
                 },
+                diagnostics,
             )
             .await;
         }
@@ -2565,6 +2597,7 @@ struct DefaultExecutionSession {
     continuation: Arc<dyn NativeContinuationPort>,
     continuation_recorded: bool,
     budget: Option<Arc<dyn ClientBudgetPort>>,
+    diagnostics: Arc<dyn crate::diagnostics::OperationalDiagnostics>,
 }
 
 impl DefaultExecutionSession {
@@ -2574,6 +2607,7 @@ impl DefaultExecutionSession {
         active_request: Option<ActiveRequestLease>,
         continuation: Arc<dyn NativeContinuationPort>,
         budget: Option<Arc<dyn ClientBudgetPort>>,
+        diagnostics: Arc<dyn crate::diagnostics::OperationalDiagnostics>,
     ) -> Self {
         Self {
             core,
@@ -2583,6 +2617,7 @@ impl DefaultExecutionSession {
             continuation,
             continuation_recorded: false,
             budget,
+            diagnostics,
         }
     }
 
@@ -2595,12 +2630,13 @@ impl DefaultExecutionSession {
             }
             let budget = self.budget.take();
             let charge = self.core.budget_charge();
+            let diagnostics = self.diagnostics.clone();
             // 在首次 await 前把完整清理责任留在会话内
             // 事件等待被取消后，后续 poll
             // 或 detach 继续同一个 future，既不丢失费用，也不重启已完成的结算
             self.cleanup = Some(Box::pin(async move {
                 if let Some(budget) = budget {
-                    settle_budget(budget.as_ref(), charge).await;
+                    settle_budget(budget.as_ref(), charge, diagnostics.as_ref()).await;
                 }
                 admission.release().await;
             }));
@@ -2923,6 +2959,34 @@ pub fn gateway_error_from_engine(error: &EngineError) -> GatewayError {
                 "no provider is available",
             )
         }
+        EngineError::Store(source) => {
+            GatewayError::new(GatewayErrorKind::Internal, "request execution failed")
+                .with_source(source.clone())
+        }
         _ => GatewayError::new(GatewayErrorKind::Internal, "request execution failed"),
+    }
+}
+
+async fn record_resource_failure(
+    diagnostics: &dyn crate::diagnostics::OperationalDiagnostics,
+    request_id: &ModelRequestId,
+    operation: &'static str,
+    message: &'static str,
+    source: impl Into<crate::error::ErrorSource>,
+) {
+    let mut failure = crate::diagnostics::OperationalFailure::new(
+        "core",
+        operation,
+        "resource_unavailable",
+        message,
+    );
+    failure.correlation_id = Some(request_id.as_str().to_owned());
+    failure.details = crate::error::ErrorDetails::capture(Some(&source.into()), None, false);
+    if diagnostics.record_failure(failure).await.is_err() {
+        tracing::warn!(
+            request_id = request_id.as_str(),
+            operation,
+            "resource diagnostic could not be recorded"
+        );
     }
 }

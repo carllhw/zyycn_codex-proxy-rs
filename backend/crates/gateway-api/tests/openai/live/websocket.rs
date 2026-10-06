@@ -138,6 +138,7 @@ async fn blocked_relay(
         Vec::new(),
         Arc::new(crate::openai::EmptyWorkerHealth),
         Arc::new(Lifecycle(trace.clone())),
+        Arc::new(crate::support::RecordingDiagnostics::default()),
     )
     .unwrap()
     .router();

@@ -247,6 +247,7 @@ impl CredentialLeaseGuard {
             .grant
             .clone()
             .ok_or_else(|| crate::StoreError::InvalidData {
+                source: None,
                 entity: "credential lease",
                 message: "lease has already been released".to_owned(),
             })?;
@@ -385,9 +386,9 @@ impl RedisCredentialLeaseRepository {
             .invoke_async::<String>(&mut connection)
             .await
             .map_err(|source| redis_unavailable("advance provider scheduling cursor", source))?;
-        cursor
-            .parse::<u64>()
-            .map_err(|_| invalid("Redis returned an invalid scheduling cursor"))
+        cursor.parse::<u64>().map_err(|source| {
+            invalid("Redis returned an invalid scheduling cursor").with_source(source)
+        })
     }
 
     fn keys(&self, request: &CredentialLeaseRequest) -> StoreResult<[String; 3]> {
@@ -486,9 +487,9 @@ impl RedisCredentialLeaseRepository {
             .invoke_async(&mut connection)
             .await
             .map_err(|source| redis_unavailable("load credential runtime signal", source))?;
-        let in_flight = in_flight
-            .parse::<u32>()
-            .map_err(|_| invalid("Redis returned an invalid in-flight count"))?;
+        let in_flight = in_flight.parse::<u32>().map_err(|source| {
+            invalid("Redis returned an invalid in-flight count").with_source(source)
+        })?;
         let last_started_at = if last_started == "0" {
             None
         } else {
@@ -830,7 +831,7 @@ struct LeaseAttempt {
 fn grant(lease_id: String, fence: &str, expires_at: &str) -> StoreResult<CredentialLeaseGrant> {
     let fence = fence
         .parse::<u64>()
-        .map_err(|_| invalid("Redis returned an invalid fencing token"))?;
+        .map_err(|source| invalid("Redis returned an invalid fencing token").with_source(source))?;
     Ok(CredentialLeaseGrant {
         lease_id,
         fencing_token: Revision::new(fence)?,
@@ -841,7 +842,7 @@ fn grant(lease_id: String, fence: &str, expires_at: &str) -> StoreResult<Credent
 fn timestamp(value: &str) -> StoreResult<DateTime<Utc>> {
     let milliseconds = value
         .parse::<i64>()
-        .map_err(|_| invalid("Redis returned an invalid timestamp"))?;
+        .map_err(|source| invalid("Redis returned an invalid timestamp").with_source(source))?;
     DateTime::from_timestamp_millis(milliseconds)
         .ok_or_else(|| invalid("Redis returned an out-of-range timestamp"))
 }
@@ -850,7 +851,7 @@ fn duration(value: &str) -> StoreResult<Duration> {
     value
         .parse::<u64>()
         .map(Duration::from_millis)
-        .map_err(|_| invalid("Redis returned an invalid retry interval"))
+        .map_err(|source| invalid("Redis returned an invalid retry interval").with_source(source))
 }
 
 fn supported_duration(value: Duration, allow_zero: bool, field: &'static str) -> StoreResult<()> {
@@ -863,11 +864,13 @@ fn supported_duration(value: Duration, allow_zero: bool, field: &'static str) ->
 
 fn duration_millis(value: Duration) -> StoreResult<u64> {
     supported_duration(value, true, "duration")?;
-    u64::try_from(value.as_millis()).map_err(|_| invalid("duration is too large"))
+    u64::try_from(value.as_millis())
+        .map_err(|source| invalid("duration is too large").with_source(source))
 }
 
 fn invalid(message: &str) -> StoreError {
     StoreError::InvalidData {
+        source: None,
         entity: "credential lease",
         message: message.to_owned(),
     }

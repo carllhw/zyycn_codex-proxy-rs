@@ -107,8 +107,7 @@ impl ScheduledTask for XaiOAuthRefreshTask {
                 return Ok(());
             }
             let outcomes = self.service.refresh_due().await.map_err(|error| {
-                tracing::error!(error = %error, "xAI OAuth refresh cycle failed");
-                WorkerTaskError::safe("xAI OAuth refresh failed")
+                WorkerTaskError::safe("xAI OAuth refresh failed").with_source(error)
             })?;
             let failures = outcomes
                 .iter()
@@ -151,7 +150,9 @@ impl ScheduledTask for XaiQuotaCatalogTask {
                 .accounts
                 .list_for_provider(&self.provider_kind)
                 .await
-                .map_err(|_| WorkerTaskError::safe("xAI Provider accounts unavailable"))?;
+                .map_err(|source| {
+                    WorkerTaskError::safe("xAI Provider accounts unavailable").with_source(source)
+                })?;
             let mut failures = 0_u64;
             let now = SystemTime::now();
             let accounts = self.reserve_periodic_refreshes(accounts, now);

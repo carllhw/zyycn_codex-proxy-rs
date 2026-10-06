@@ -170,6 +170,7 @@ pub fn initialize(
     probes: Vec<Arc<dyn HealthProbe>>,
     worker_health: Arc<dyn WorkerHealthSource>,
     lifecycle: Arc<dyn ConnectionLifecycle>,
+    diagnostics: Arc<dyn gateway_core::diagnostics::OperationalDiagnostics>,
 ) -> Result<ApiBundle, ApiError> {
     // 配置加载已解析环境变量与相对路径，初始化只校验，避免覆盖最终目录
     config.validate().map_err(ApiError::Config)?;
@@ -256,6 +257,10 @@ pub fn initialize(
             headers_ms = latency.as_millis(), "HTTP response headers ready");
     });
     let router = router
+        .layer(axum::middleware::from_fn_with_state(
+            diagnostics,
+            admin::diagnostics::record_failure,
+        ))
         .layer(PropagateRequestIdLayer::new(request_id_header.clone()))
         .layer(trace_layer)
         .layer(SetRequestIdLayer::new(

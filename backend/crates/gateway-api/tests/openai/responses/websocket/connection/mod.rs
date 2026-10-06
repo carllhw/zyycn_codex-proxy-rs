@@ -761,6 +761,7 @@ async fn start_active_response_with_middleware(
             Vec::new(),
             Arc::new(crate::openai::EmptyWorkerHealth),
             Arc::new(crate::openai::TestLifecycle::default()),
+            Arc::new(crate::support::RecordingDiagnostics::default()),
         )
         .unwrap()
         .with_middleware(move |_| Some(plan.clone()))

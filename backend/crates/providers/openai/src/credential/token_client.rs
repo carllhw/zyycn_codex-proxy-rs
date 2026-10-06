@@ -81,7 +81,7 @@ impl fmt::Debug for TokenPair {
 }
 
 /// Codex token 刷新的稳定失败分类
-#[derive(Clone, PartialEq, Eq, thiserror::Error)]
+#[derive(Clone, thiserror::Error)]
 pub enum RefreshFailure {
     #[error("refresh token is invalid or expired")]
     InvalidGrant {
@@ -94,11 +94,19 @@ pub enum RefreshFailure {
         upstream: Option<Box<RefreshUpstreamFailure>>,
     },
     #[error("refresh transport failed before server processing")]
-    RetryableTransport { message: String },
+    RetryableTransport {
+        message: String,
+        #[source]
+        source: Option<gateway_core::error::ErrorSource>,
+        redacted: bool,
+    },
     #[error("refresh transport failed after possible server processing")]
     Transport {
         message: Option<String>,
         upstream: Option<Box<RefreshUpstreamFailure>>,
+        #[source]
+        source: Option<gateway_core::error::ErrorSource>,
+        redacted: bool,
     },
 }
 
@@ -120,7 +128,7 @@ impl RefreshFailure {
             Self::InvalidGrant { message, .. }
             | Self::Banned { message, .. }
             | Self::Transport { message, .. } => message.as_deref(),
-            Self::RetryableTransport { message } => Some(message),
+            Self::RetryableTransport { message, .. } => Some(message),
         }
     }
 
@@ -131,6 +139,47 @@ impl RefreshFailure {
             | Self::Banned { upstream, .. }
             | Self::Transport { upstream, .. } => upstream.as_deref(),
             Self::RetryableTransport { .. } => None,
+        }
+    }
+
+    pub(crate) fn redacted(&self) -> bool {
+        self.upstream()
+            .is_some_and(RefreshUpstreamFailure::redacted)
+            || match self {
+                Self::RetryableTransport { redacted, .. } | Self::Transport { redacted, .. } => {
+                    *redacted
+                }
+                _ => false,
+            }
+    }
+
+    fn redact_refresh_token(&mut self, secret: &str) {
+        if secret.is_empty() {
+            return;
+        }
+        match self {
+            Self::InvalidGrant { message, upstream }
+            | Self::Banned { message, upstream }
+            | Self::Transport {
+                message, upstream, ..
+            } => {
+                if let Some(message) = message {
+                    *message = message.replace(secret, "[REDACTED]");
+                }
+                if let Some(upstream) = upstream {
+                    for value in [&mut upstream.body]
+                        .into_iter()
+                        .chain(upstream.code.iter_mut())
+                        .chain(upstream.error_type.iter_mut())
+                    {
+                        if value.contains(secret) {
+                            *value = value.replace(secret, "[REDACTED]");
+                            upstream.redacted = true;
+                        }
+                    }
+                }
+            }
+            Self::RetryableTransport { .. } => {}
         }
     }
 
@@ -147,18 +196,28 @@ impl RefreshFailure {
 
 /// 当前 OAuth 刷新请求收到的完整非成功响应
 ///
-/// 该值不持久化；`Debug` 不输出正文
-/// 调用方仅在受控刷新失败日志中显式记录正文
+/// 原文只进入受控诊断详情；普通日志不展开正文或任意上游值
 #[derive(Clone, PartialEq, Eq)]
 pub struct RefreshUpstreamFailure {
     status: u16,
     code: Option<String>,
     error_type: Option<String>,
     body: String,
+    redacted: bool,
 }
 
 impl RefreshUpstreamFailure {
     fn new(status: StatusCode, body: &[u8], error: Option<&RefreshErrorResponse>) -> Self {
+        let mut text = String::from_utf8_lossy(body).into_owned();
+        let redacted = if let Ok(mut value) = serde_json::from_slice::<serde_json::Value>(body) {
+            let changed = redact_oauth_tokens(&mut value);
+            if changed {
+                text = value.to_string();
+            }
+            changed
+        } else {
+            false
+        };
         Self {
             status: status.as_u16(),
             code: error
@@ -167,8 +226,14 @@ impl RefreshUpstreamFailure {
             error_type: error
                 .and_then(RefreshErrorResponse::error_type)
                 .map(str::to_owned),
-            body: String::from_utf8_lossy(body).into_owned(),
+            body: text,
+            redacted,
         }
+    }
+
+    #[must_use]
+    pub const fn redacted(&self) -> bool {
+        self.redacted
     }
 
     #[must_use]
@@ -197,8 +262,11 @@ impl fmt::Debug for RefreshUpstreamFailure {
         formatter
             .debug_struct("RefreshUpstreamFailure")
             .field("status", &self.status)
-            .field("code", &self.code)
-            .field("error_type", &self.error_type)
+            .field("code", &self.code.as_ref().map(|_| "<redacted>"))
+            .field(
+                "error_type",
+                &self.error_type.as_ref().map(|_| "<redacted>"),
+            )
             .field("body", &"<redacted>")
             .finish()
     }
@@ -222,6 +290,8 @@ pub trait TokenRefresher: Send + Sync + 'static {
 
 fn proxy_refresh_failure() -> RefreshFailure {
     RefreshFailure::RetryableTransport {
+        redacted: false,
+        source: None,
         message: "account OAuth egress unavailable".to_owned(),
     }
 }
@@ -503,13 +573,19 @@ impl TokenRefresher for OpenAiTokenClient {
         proxy: Option<&gateway_core::account::OutboundProxy>,
     ) -> Result<TokenPair, RefreshFailure> {
         self.with_proxy(proxy)
-            .map_err(|_| proxy_refresh_failure())?
+            .map_err(|source| RefreshFailure::RetryableTransport {
+                redacted: false,
+                message: "account OAuth egress unavailable".to_owned(),
+                source: Some(source.into()),
+            })?
             .refresh(refresh_token)
             .await
     }
     async fn refresh(&self, refresh_token: &str) -> Result<TokenPair, RefreshFailure> {
-        let headers = build_codex_profile_headers(&self.profile.snapshot()).map_err(|_| {
+        let headers = build_codex_profile_headers(&self.profile.snapshot()).map_err(|source| {
             RefreshFailure::Transport {
+                redacted: false,
+                source: Some(source.into()),
                 message: Some("OpenAI OAuth refresh profile is invalid".to_owned()),
                 upstream: None,
             }
@@ -525,12 +601,16 @@ impl TokenRefresher for OpenAiTokenClient {
             })
             .send()
             .await
-            .map_err(|error| refresh_transport_failure(&error))?;
+            .map_err(refresh_transport_failure)?;
         let (status, body) = read_bounded_response(response).await?;
         if !status.is_success() {
-            return Err(classify_refresh_failure(status, &body));
+            let mut failure = classify_refresh_failure(status, &body);
+            failure.redact_refresh_token(refresh_token);
+            return Err(failure);
         }
-        parse_token_pair(&body).map_err(|()| RefreshFailure::Transport {
+        parse_token_pair(&body).map_err(|source| RefreshFailure::Transport {
+            redacted: true,
+            source: Some(source),
             message: Some("OpenAI OAuth refresh returned an invalid success response".to_owned()),
             upstream: None,
         })
@@ -604,8 +684,10 @@ async fn read_bounded_response(
         .chunk()
         .await
         .map_err(|error| RefreshFailure::Transport {
-            message: Some(error.to_string()),
+            redacted: error.url().is_some(),
+            message: Some("OpenAI OAuth response body read failed".to_owned()),
             upstream: None,
+            source: Some(error.without_url().into()),
         })?
     {
         let next_len = body
@@ -617,6 +699,8 @@ async fn read_bounded_response(
                     "OpenAI OAuth response exceeded {MAX_OAUTH_RESPONSE_BYTES} bytes"
                 )),
                 upstream: None,
+                source: None,
+                redacted: true,
             })?;
         body.reserve(next_len.saturating_sub(body.len()));
         body.extend_from_slice(&chunk);
@@ -624,14 +708,19 @@ async fn read_bounded_response(
     Ok((status, body))
 }
 
-fn parse_token_pair(body: &[u8]) -> Result<TokenPair, ()> {
-    let tokens = serde_json::from_slice::<RefreshTokenResponse>(body).map_err(|_| ())?;
+#[derive(Debug, thiserror::Error)]
+#[error("OpenAI OAuth ID token claims are invalid")]
+struct InvalidRefreshClaims;
+
+fn parse_token_pair(body: &[u8]) -> Result<TokenPair, gateway_core::error::ErrorSource> {
+    let tokens = serde_json::from_slice::<RefreshTokenResponse>(body)
+        .map_err(gateway_core::error::ErrorSource::new)?;
     if tokens
         .id_token
         .as_deref()
         .is_some_and(|token| super::types::parse_chatgpt_jwt_claims(token).is_err())
     {
-        return Err(());
+        return Err(InvalidRefreshClaims.into());
     }
     Ok(TokenPair {
         access_token: tokens.access_token,
@@ -662,6 +751,8 @@ fn classify_refresh_failure(status: StatusCode, body: &[u8]) -> RefreshFailure {
     // 显式 401 先进入有界恢复退避，避免瞬时授权故障直接失效账号
     if status == StatusCode::UNAUTHORIZED {
         return RefreshFailure::Transport {
+            redacted: false,
+            source: None,
             message,
             upstream: upstream(),
         };
@@ -687,19 +778,30 @@ fn classify_refresh_failure(status: StatusCode, body: &[u8]) -> RefreshFailure {
         };
     }
     RefreshFailure::Transport {
+        redacted: false,
+        source: None,
         message,
         upstream: upstream(),
     }
 }
 
-fn refresh_transport_failure(error: &reqwest::Error) -> RefreshFailure {
-    let message = error.to_string();
-    if is_safe_to_retry_refresh_transport(error) {
-        RefreshFailure::RetryableTransport { message }
+fn refresh_transport_failure(error: reqwest::Error) -> RefreshFailure {
+    let retryable = is_safe_to_retry_refresh_transport(&error);
+    let redacted = error.url().is_some();
+    let source = Some(error.without_url().into());
+    let message = "OpenAI OAuth transport failed".to_owned();
+    if retryable {
+        RefreshFailure::RetryableTransport {
+            message,
+            source,
+            redacted,
+        }
     } else {
         RefreshFailure::Transport {
             message: Some(message),
             upstream: None,
+            source,
+            redacted,
         }
     }
 }
@@ -717,4 +819,37 @@ fn is_safe_to_retry_refresh_transport(error: &reqwest::Error) -> bool {
         || message.contains("connection refused")
         || message.contains("network is unreachable")
         || message.contains("tls handshake")
+}
+
+fn redact_oauth_tokens(value: &mut serde_json::Value) -> bool {
+    let mut redacted = false;
+    match value {
+        serde_json::Value::Object(fields) => {
+            for (key, value) in fields {
+                let sensitive = [
+                    "access_token",
+                    "refresh_token",
+                    "id_token",
+                    "client_secret",
+                    "authorization",
+                    "cookie",
+                ]
+                .iter()
+                .any(|field| key.eq_ignore_ascii_case(field));
+                if sensitive && !value.is_null() {
+                    *value = serde_json::Value::String("[REDACTED]".to_owned());
+                    redacted = true;
+                } else {
+                    redacted |= redact_oauth_tokens(value);
+                }
+            }
+        }
+        serde_json::Value::Array(values) => {
+            for value in values {
+                redacted |= redact_oauth_tokens(value);
+            }
+        }
+        _ => {}
+    }
+    redacted
 }

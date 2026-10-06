@@ -135,10 +135,12 @@ fn rpc_failure(error: RpcError) -> &'static str {
     match error {
         RpcError::Timeout => "插件响应超时",
         RpcError::Cancelled => "调用已取消",
-        RpcError::Closed | RpcError::Start(_) => "插件进程不可用",
-        RpcError::Handshake | RpcError::Protocol | RpcError::InvalidResponse(_) => "插件协议错误",
+        RpcError::Closed(_) | RpcError::Start(_) => "插件进程不可用",
+        RpcError::Handshake(_) | RpcError::Protocol(_) | RpcError::InvalidResponse(..) => {
+            "插件协议错误"
+        }
         RpcError::Capacity => "插件调用容量不足",
-        RpcError::Context => "调用上下文无效",
+        RpcError::Context(_) => "调用上下文无效",
         RpcError::Remote(_) => "插件拒绝命令",
     }
 }

@@ -202,7 +202,7 @@ async fn invoke_middleware(
     );
     let (protocol, headers, payload) = match invocation.request_parts() {
         Ok(projection) => projection,
-        Err(_) => return recover_rpc(&entry, &invocation, RpcError::Context).await,
+        Err(_) => return recover_rpc(&entry, &invocation, RpcError::Context(None)).await,
     };
     let mut call_context = invocation_ports.session.context(
         match entry.mount {

@@ -165,6 +165,7 @@ async fn turns_refresh_host_settings_and_key_identity_while_preserving_handshake
         Arc::new(crate::openai::UnusedAdmissions),
         Arc::new(crate::openai::UnusedContinuation),
         Arc::new(crate::openai::IgnoredClientApiKeyUsage),
+        Arc::new(crate::support::RecordingDiagnostics::default()),
     ));
     let admin = crate::admin::AdminTestFixture::new().await;
     let plan = Arc::new(SettingsPlan::default());
@@ -187,6 +188,7 @@ async fn turns_refresh_host_settings_and_key_identity_while_preserving_handshake
         vec![],
         Arc::new(crate::openai::EmptyWorkerHealth),
         Arc::new(crate::openai::TestLifecycle::default()),
+        Arc::new(crate::support::RecordingDiagnostics::default()),
     )
     .unwrap()
     .with_middleware(move |_| Some(frozen.clone()))

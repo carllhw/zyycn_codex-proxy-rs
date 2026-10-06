@@ -156,8 +156,9 @@ impl HostBundle {
         &self,
         plan: Vec<WorkerContribution>,
         lease: Arc<dyn WorkerLeaderLeasePort>,
+        diagnostics: Arc<dyn gateway_core::diagnostics::OperationalDiagnostics>,
     ) -> Result<(), HostError> {
-        self.workers.start(plan, lease)?;
+        self.workers.start(plan, lease, diagnostics)?;
         Ok(())
     }
 

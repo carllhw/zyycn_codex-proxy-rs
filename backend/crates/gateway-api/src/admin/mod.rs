@@ -15,6 +15,7 @@ pub mod accounts;
 pub mod auth;
 pub mod backups;
 pub mod client_keys;
+pub(crate) mod diagnostics;
 mod extract;
 pub mod observability;
 mod plugins;

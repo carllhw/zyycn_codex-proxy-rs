@@ -1,6 +1,8 @@
 //! 网关核心使用的稳定错误分类
 
+mod details;
 mod source;
+pub use details::ErrorDetails;
 
 pub use source::ErrorSource;
 
@@ -865,25 +867,20 @@ impl ProviderError {
 
     /// 包装底层失败；来源只供显式诊断访问，不改变分类和发送事实
     #[must_use]
-    pub fn with_source(mut self, source: impl std::error::Error + Send + Sync + 'static) -> Self {
-        self.source = Some(ErrorSource::new(source));
+    pub fn with_source(mut self, source: impl Into<crate::error::ErrorSource>) -> Self {
+        self.source = Some(source.into());
         self
     }
 
     /// 运维详情的唯一投影入口，来源链与上游正文分别保留，不进入公共响应或诊断包
     #[must_use]
     pub fn error_details(&self) -> Option<String> {
-        if self.source.is_none() && self.raw_upstream_error.is_none() {
-            return None;
-        }
-        Some(
-            serde_json::json!({
-                "causes": self.source.as_ref().map(ErrorSource::snapshot),
-                "upstream": self.raw_upstream_error().map(RawUpstreamError::as_str),
-                "redacted": self.sensitive_context_was_redacted(),
-            })
-            .to_string(),
+        ErrorDetails::capture(
+            self.source.as_ref(),
+            self.raw_upstream_error(),
+            self.sensitive_context_was_redacted(),
         )
+        .map(ErrorDetails::into_string)
     }
 
     /// 返回将由运维错误详情原样展示的上游错误返回
@@ -1094,14 +1091,15 @@ impl GatewayErrorKind {
 }
 
 /// 协议无关、可安全暴露的网关错误
-#[derive(Clone, PartialEq, Eq, Error)]
+#[derive(Clone, Error)]
 #[error("{message}")]
 pub struct GatewayError {
     kind: GatewayErrorKind,
     message: &'static str,
     diagnostic: Option<Box<ProviderDiagnostic>>,
-    client_visible_upstream_error: Option<ClientVisibleUpstreamError>,
+    client_visible_upstream_error: Option<Box<ClientVisibleUpstreamError>>,
     client_details: Option<Box<GatewayClientErrorDetails>>,
+    source: Option<ErrorSource>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -1120,7 +1118,19 @@ impl GatewayError {
             diagnostic: None,
             client_visible_upstream_error: None,
             client_details: None,
+            source: None,
         }
+    }
+
+    #[must_use]
+    pub fn with_source(mut self, source: impl Into<ErrorSource>) -> Self {
+        self.source = Some(source.into());
+        self
+    }
+
+    #[must_use]
+    pub fn error_details(&self) -> Option<ErrorDetails> {
+        ErrorDetails::capture(self.source.as_ref(), None, false)
     }
 
     #[must_use]
@@ -1232,7 +1242,7 @@ impl GatewayError {
     /// 附加只供请求方协议展示的结构化上游错误
     #[must_use]
     pub fn with_client_visible_upstream_error(mut self, error: ClientVisibleUpstreamError) -> Self {
-        self.client_visible_upstream_error = Some(error);
+        self.client_visible_upstream_error = Some(Box::new(error));
         self
     }
 
@@ -1259,7 +1269,7 @@ impl GatewayError {
     #[must_use]
     pub fn client_message(&self) -> &str {
         self.client_visible_upstream_error
-            .as_ref()
+            .as_deref()
             .map_or(self.message, ClientVisibleUpstreamError::message)
     }
 
@@ -1267,7 +1277,7 @@ impl GatewayError {
     #[must_use]
     pub fn client_error_type(&self) -> Option<&str> {
         self.client_visible_upstream_error
-            .as_ref()
+            .as_deref()
             .and_then(ClientVisibleUpstreamError::error_type)
     }
 
@@ -1275,7 +1285,7 @@ impl GatewayError {
     #[must_use]
     pub fn client_error_code(&self) -> Option<&str> {
         self.client_visible_upstream_error
-            .as_ref()
+            .as_deref()
             .and_then(ClientVisibleUpstreamError::code)
             .or_else(|| {
                 self.client_details
@@ -1337,13 +1347,10 @@ impl StoreError {
 
     /// 包装已有存储错误并保留来源
     #[must_use]
-    pub fn caused_by(
-        kind: StoreErrorKind,
-        source: impl std::error::Error + Send + Sync + 'static,
-    ) -> Self {
+    pub fn caused_by(kind: StoreErrorKind, source: impl Into<crate::error::ErrorSource>) -> Self {
         Self {
             kind,
-            source: Some(ErrorSource::new(source)),
+            source: Some(source.into()),
         }
     }
 

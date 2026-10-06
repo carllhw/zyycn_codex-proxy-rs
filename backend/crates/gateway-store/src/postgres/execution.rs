@@ -631,7 +631,7 @@ impl ModelRequestRepository for PgExecutionStore {
         .bind(attempt.http_version)
         .bind(
             i32::try_from(attempt.attempt_count)
-                .map_err(|_| invalid("attempt_count is too large"))?,
+                .map_err(|source| invalid("attempt_count is too large").with_source(source))?,
         )
         .bind(optional_i64(
             attempt.account_selection_wait_ms,
@@ -649,11 +649,13 @@ impl ModelRequestRepository for PgExecutionStore {
         .await
         .map_err(|source| postgres_unavailable("begin model request attempt", source))?
         .ok_or(StoreError::Conflict {
+            source: None,
             entity: ENTITY,
             id: attempt.model_request_id,
             kind: ConflictKind::DownstreamAlreadyCommitted,
         })?;
-        u32::try_from(count).map_err(|_| invalid("attempt_count is invalid"))
+        u32::try_from(count)
+            .map_err(|source| invalid("attempt_count is invalid").with_source(source))
     }
 
     async fn mark_upstream_send_state(
@@ -847,7 +849,7 @@ impl ModelRequestRepository for PgExecutionStore {
         .bind(finalization.upstream_send_state.as_str())
         .bind(
             i32::try_from(finalization.attempt_count)
-                .map_err(|_| invalid("attempt_count is too large"))?,
+                .map_err(|source| invalid("attempt_count is too large").with_source(source))?,
         )
         .bind(finalization.downstream_committed_at)
         .bind(finalization.client_status_code.map(i32::from))
@@ -992,6 +994,7 @@ impl ExecutionStore for PgExecutionStore {
                 Box::pin(async move {
                     let ttl_ms = i64::try_from(ttl.as_millis()).map_err(|_| {
                         crate::StoreError::InvalidData {
+                            source: None,
                             entity: "model request",
                             message: "lease TTL is invalid".to_owned(),
                         }
@@ -1172,7 +1175,9 @@ impl ExecutionStore for PgExecutionStore {
                 upstream_model_id: None,
                 failure_kind: error.kind().as_str().to_owned(),
                 upstream_send_state: None,
-                error_details: None,
+                error_details: error
+                    .error_details()
+                    .map(gateway_core::error::ErrorDetails::into_string),
                 status_code: None,
                 provider_error_code: error.client_error_code().map(str::to_owned),
                 retry_after_ms: error
@@ -1596,12 +1601,55 @@ fn validate_connection_observation(finalization: &ModelRequestFinalization) -> S
 }
 
 fn to_i64(value: u64, field: &'static str) -> StoreResult<i64> {
-    i64::try_from(value).map_err(|_| invalid(field))
+    i64::try_from(value).map_err(|source| invalid(field).with_source(source))
 }
 
 fn invalid(message: &str) -> StoreError {
     StoreError::InvalidData {
+        source: None,
         entity: ENTITY,
         message: message.to_owned(),
+    }
+}
+
+#[async_trait]
+impl gateway_core::diagnostics::OperationalDiagnostics for PgExecutionStore {
+    async fn record_failure(
+        &self,
+        failure: gateway_core::diagnostics::OperationalFailure,
+    ) -> Result<(), CoreStoreError> {
+        use super::{OpsEvent, OpsEventLevel, OpsEventRepository, PgOpsEventRepository};
+        let event = OpsEvent {
+            id: Uuid::now_v7().to_string(),
+            model_request_id: None,
+            attempt_index: None,
+            level: OpsEventLevel::Warning,
+            component: failure.component.to_owned(),
+            operation: failure.operation.to_owned(),
+            provider_kind: failure.provider_kind.map(|kind| kind.as_str().to_owned()),
+            provider_account_id: failure.account_id.as_ref().map(|id| id.as_str().to_owned()),
+            provider_account_ref: failure.account_id.map(|id| id.as_str().to_owned()),
+            upstream_model_id: None,
+            failure_kind: failure.kind.to_owned(),
+            upstream_send_state: None,
+            error_details: failure
+                .details
+                .map(gateway_core::error::ErrorDetails::into_string),
+            status_code: failure.upstream_status,
+            provider_error_code: failure.upstream_code.map(|code| code.as_str().to_owned()),
+            retry_after_ms: None,
+            upstream_request_id: None,
+            latency_ms: None,
+            message: serde_json::json!({
+                "correlationId": failure.correlation_id,
+                "message": failure.message,
+            })
+            .to_string(),
+            created_at: failure.occurred_at.into(),
+        };
+        PgOpsEventRepository::new(self.pool.clone())
+            .append_ops_event(event)
+            .await
+            .map_err(core_store_error)
     }
 }

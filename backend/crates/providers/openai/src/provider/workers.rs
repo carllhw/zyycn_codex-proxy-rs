@@ -141,8 +141,7 @@ impl ScheduledTask for OpenAiOAuthRefreshTask {
                 return Ok(());
             }
             let outcomes = self.service.refresh_due().await.map_err(|error| {
-                tracing::error!(error = %error, "OpenAI OAuth refresh cycle failed");
-                WorkerTaskError::safe("OpenAI OAuth refresh failed")
+                WorkerTaskError::safe("OpenAI OAuth refresh failed").with_source(error)
             })?;
             let mut refreshed = 0_u64;
             let mut invalidated = 0_u64;
@@ -259,11 +258,8 @@ impl ScheduledTask for OpenAiQuotaTask {
                 }
                 Ok(_) => {}
                 Err(error) => {
-                    tracing::warn!(
-                        error = %error,
-                        "OpenAI quota synchronization failed"
-                    );
-                    return Err(WorkerTaskError::safe("OpenAI quota synchronization failed"));
+                    return Err(WorkerTaskError::safe("OpenAI quota synchronization failed")
+                        .with_source(error));
                 }
             }
             Ok(())
@@ -279,12 +275,10 @@ impl ScheduledTask for OpenAiCatalogTask {
             }
             let result = match self.catalog.refresh_catalogs().await {
                 Ok(_) | Err(CodexCredentialCatalogError::NoEligibleCredential) => Ok(()),
-                Err(error) => {
-                    tracing::warn!(error = %error, "OpenAI model catalog refresh failed");
-                    Err(WorkerTaskError::safe(
-                        "OpenAI model catalog synchronization failed",
-                    ))
-                }
+                Err(error) => Err(WorkerTaskError::safe(
+                    "OpenAI model catalog synchronization failed",
+                )
+                .with_source(error)),
             };
             // 成功周期尾部追加 [0, 20%) 单侧随机抖动，打破固定周期轮询特征；
             // 放在周期尾部避免延迟冷启动首轮刷新，失败路径交给宿主退避不叠加。
@@ -385,8 +379,7 @@ impl ScheduledTask for OpenAiWarmupTask {
                 .load_warmup_policy()
                 .await
                 .map_err(|error| {
-                    tracing::warn!(error = %error, "OpenAI warmup policy load failed");
-                    WorkerTaskError::safe("OpenAI warmup policy load failed")
+                    WorkerTaskError::safe("OpenAI warmup policy load failed").with_source(error)
                 })?;
             if !policy.enabled() {
                 return Ok(());
@@ -424,7 +417,9 @@ impl ScheduledTask for OpenAiWarmupTask {
                 .runtime_policy()
                 .claim_warmup_slot(self.timezone, slot)
                 .await
-                .map_err(|_| WorkerTaskError::safe("warmup slot is unavailable"))?
+                .map_err(|source| {
+                    WorkerTaskError::safe("warmup slot is unavailable").with_source(source)
+                })?
             {
                 return Ok(());
             }

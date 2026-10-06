@@ -969,3 +969,159 @@ async fn zero_attempt_postgres_write_failures_are_not_retried_and_do_not_stop_th
     assert_eq!(recovered.trace, None);
     database.close().await;
 }
+
+#[async_trait]
+impl gateway_core::diagnostics::OperationalDiagnostics for RecordingStore {
+    async fn record_failure(
+        &self,
+        _: gateway_core::diagnostics::OperationalFailure,
+    ) -> Result<(), StoreError> {
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl gateway_core::diagnostics::OperationalDiagnostics for BlockingStore {
+    async fn record_failure(
+        &self,
+        _: gateway_core::diagnostics::OperationalFailure,
+    ) -> Result<(), StoreError> {
+        Ok(())
+    }
+}
+
+#[tokio::test]
+async fn operational_failure_uses_the_bounded_queue_without_creating_a_model_request() {
+    use gateway_core::diagnostics::{OperationalDiagnostics as _, OperationalFailure};
+    use gateway_core::error::{ErrorDetails, ErrorSource};
+    let Some(database) = TestDatabase::create("operational_details").await else {
+        return;
+    };
+    let inner = Arc::new(PgExecutionStore::new(database.pool.clone()));
+    let (store, writer) =
+        BufferedExecutionStore::with_capacity(inner, NonZeroUsize::new(1).unwrap());
+    let mut failure =
+        OperationalFailure::new("admin", "http_request", "unavailable", "safe summary");
+    failure.correlation_id = Some("admin-request-123".to_owned());
+    failure.details = ErrorDetails::capture(
+        Some(&ErrorSource::new(std::io::Error::other(
+            "PRIVATE_STORE_CAUSE",
+        ))),
+        None,
+        false,
+    );
+    let occurred_at = failure.occurred_at;
+    store.record_failure(failure).await.unwrap();
+    store
+        .record_failure(OperationalFailure::new(
+            "worker",
+            "run",
+            "worker_failed",
+            "safe",
+        ))
+        .await
+        .unwrap();
+    assert_eq!(store.stats().queued_items, 1);
+    assert_eq!(store.stats().dropped_total, 1);
+    let cancellation = CancellationToken::new();
+    cancellation.cancel();
+    writer.run(cancellation).await.unwrap();
+    let row: (
+        Option<String>,
+        String,
+        String,
+        chrono::DateTime<chrono::Utc>,
+    ) = sqlx::query_as(
+        "select model_request_id, message, error_details, created_at
+         from ops_events where component = 'admin'",
+    )
+    .fetch_one(&database.pool)
+    .await
+    .unwrap();
+    assert!(row.0.is_none());
+    let message: serde_json::Value = serde_json::from_str(&row.1).unwrap();
+    assert_eq!(message["correlationId"], "admin-request-123");
+    assert!(!row.1.contains("PRIVATE_STORE_CAUSE"));
+    assert!(row.2.contains("PRIVATE_STORE_CAUSE"));
+    assert_eq!(
+        row.3.timestamp_micros(),
+        chrono::DateTime::<chrono::Utc>::from(occurred_at).timestamp_micros()
+    );
+    let requests: i64 = sqlx::query_scalar("select count(*) from model_requests")
+        .fetch_one(&database.pool)
+        .await
+        .unwrap();
+    assert_eq!(requests, 0);
+    database.close().await;
+}
+
+#[tokio::test]
+async fn progress_congestion_preserves_failure_reserve_without_waiting() {
+    use futures::FutureExt as _;
+    use gateway_core::diagnostics::{OperationalDiagnostics as _, OperationalFailure};
+    use gateway_core::error::{ErrorDetails, ErrorSource};
+    let Some(database) = TestDatabase::create("failure_reserve").await else {
+        return;
+    };
+    let inner = Arc::new(PgExecutionStore::new(database.pool.clone()));
+    let mut request_ids = Vec::new();
+    for index in 0..4 {
+        let request = accepted_request(&format!("req_reserved_failure_{index}"));
+        request_ids.push(request.id.clone());
+        inner.create_model_request(request).await.unwrap();
+    }
+    let request_id = &request_ids[0];
+    let (store, writer) =
+        BufferedExecutionStore::with_capacity(inner, NonZeroUsize::new(4).unwrap());
+    // 不启动消费者，确定性地填满普通额度；每次调用必须首次 poll 就返回
+    for (request_id, status) in request_ids.iter().zip([200, 201, 202, 203]) {
+        store
+            .record_client_status(request_id, status)
+            .now_or_never()
+            .expect("enqueue waited")
+            .unwrap();
+    }
+    let mut failure =
+        OperationalFailure::new("admin", "http_request", "unavailable", "safe failure");
+    failure.correlation_id = Some(request_id.as_str().to_owned());
+    failure.details = ErrorDetails::capture(
+        Some(&ErrorSource::new(std::io::Error::other(
+            "ORIGINAL_RESERVED_CAUSE",
+        ))),
+        None,
+        false,
+    );
+    store
+        .record_failure(failure)
+        .now_or_never()
+        .expect("failure waited for queue capacity")
+        .unwrap();
+    assert_eq!(store.stats().queued_items, 5);
+    assert_eq!(store.stats().dropped_total, 0);
+    store
+        .record_client_status(request_id, 204)
+        .now_or_never()
+        .expect("overflow waited")
+        .unwrap();
+    assert_eq!(store.stats().queued_items, 5);
+    assert_eq!(store.stats().dropped_total, 1);
+    let cancelled = CancellationToken::new();
+    cancelled.cancel();
+    writer.run(cancelled).await.unwrap();
+    assert_eq!(store.stats().persisted_total, 5);
+    let detail: String =
+        sqlx::query_scalar("select error_details from ops_events where component = 'admin'")
+            .fetch_one(&database.pool)
+            .await
+            .unwrap();
+    assert!(detail.contains("ORIGINAL_RESERVED_CAUSE"));
+    let status: i32 =
+        sqlx::query_scalar("select client_status_code from model_requests where id = $1")
+            .bind(request_id.as_str())
+            .fetch_one(&database.pool)
+            .await
+            .unwrap();
+    assert_eq!(status, 200);
+    assert_eq!(store.stats().queued_bytes, 0);
+    database.close().await;
+}

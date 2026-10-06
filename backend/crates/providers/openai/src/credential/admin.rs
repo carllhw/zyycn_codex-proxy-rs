@@ -864,6 +864,7 @@ pub struct CodexCredentialAdminService {
     personal_access_token_client: Option<Arc<OpenAiTokenClient>>,
     leases: Arc<dyn ProviderLeasePort>,
     runtime_policy: Arc<dyn ProviderRuntimePolicyPort>,
+    diagnostics: Arc<dyn gateway_core::diagnostics::OperationalDiagnostics>,
 }
 
 impl fmt::Debug for CodexCredentialAdminService {
@@ -886,12 +887,14 @@ impl CodexCredentialAdminService {
         refresher: Arc<dyn TokenRefresher>,
         leases: Arc<dyn ProviderLeasePort>,
         runtime_policy: Arc<dyn ProviderRuntimePolicyPort>,
+        diagnostics: Arc<dyn gateway_core::diagnostics::OperationalDiagnostics>,
     ) -> Self {
         Self {
             refresher,
             personal_access_token_client: None,
             leases,
             runtime_policy,
+            diagnostics,
         }
     }
 
@@ -959,9 +962,20 @@ impl CodexCredentialAdminService {
                 refresh_token.expose_secret(),
                 current.account.outbound_proxy(),
             )
-            .await
-            .inspect_err(|error| log_manual_refresh_failure(&account_id, error))
-            .map_err(map_refresh_failure)?;
+            .await;
+        let tokens = match tokens {
+            Ok(tokens) => tokens,
+            Err(error) => {
+                super::diagnostics::record_refresh_failure(
+                    self.diagnostics.as_ref(),
+                    &account_id,
+                    "manual_refresh",
+                    &error,
+                )
+                .await;
+                return Err(map_refresh_failure(error));
+            }
+        };
         let access_token_expires_at = match tokens.access_token.as_deref() {
             Some(access_token) => parse_access_token_expiration(access_token),
             None => current
@@ -1236,7 +1250,9 @@ fn map_refresh_failure(error: RefreshFailure) -> CodexCredentialAdminError {
         RefreshFailure::RetryableTransport { .. } => CodexCredentialAdminError::RefreshUnavailable,
         // Worker 的 Transport 分类还承担 401 退避；管理提示只按已收到的响应事实细分，
         // 不改变后台刷新策略，也不把明确失败响应误报为租约冲突或执行结果未知
-        RefreshFailure::Transport { message, upstream } => match upstream {
+        RefreshFailure::Transport {
+            message, upstream, ..
+        } => match upstream {
             Some(upstream) => CodexCredentialAdminError::RefreshUpstream {
                 status: upstream.status(),
                 code: upstream.code().map(str::to_owned),
@@ -1245,20 +1261,6 @@ fn map_refresh_failure(error: RefreshFailure) -> CodexCredentialAdminError {
             None => CodexCredentialAdminError::RefreshAmbiguous { message },
         },
     }
-}
-
-fn log_manual_refresh_failure(account_id: &ProviderAccountId, error: &RefreshFailure) {
-    let upstream = error.upstream();
-    tracing::warn!(
-        account_id = %account_id,
-        failure_class = error.classification(),
-        upstream_message = ?error.message(),
-        upstream_status = ?upstream.map(super::token_client::RefreshUpstreamFailure::status),
-        upstream_code = ?upstream.and_then(super::token_client::RefreshUpstreamFailure::code),
-        upstream_type = ?upstream.and_then(super::token_client::RefreshUpstreamFailure::error_type),
-        upstream_body = ?upstream.map(super::token_client::RefreshUpstreamFailure::body),
-        "OpenAI OAuth manual refresh failed"
-    );
 }
 
 fn parse_import_document(

@@ -97,6 +97,8 @@ impl TokenRefresher for SingleUseRefresher {
             .expect("refresh response lock")
             .take()
             .ok_or_else(|| RefreshFailure::Transport {
+                redacted: false,
+                source: None,
                 message: Some("test refresh response is exhausted".to_owned()),
                 upstream: None,
             })
@@ -220,6 +222,7 @@ fn refresh_service(
         Arc::new(RefreshLeases),
         Arc::new(RefreshCredentialState),
         runtime_policy,
+        Arc::new(crate::RecordingDiagnostics::default()),
     )
 }
 
@@ -302,6 +305,7 @@ async fn scheduled_refresh_stops_retrying_rejected_disabled_credentials() {
         Arc::new(RefreshLeases),
         Arc::new(RefreshCredentialState),
         MutableRuntimePolicy::new(Duration::from_secs(5 * 60)),
+        Arc::new(crate::RecordingDiagnostics::default()),
     );
     let account_id = "acct_disabled_rejected";
     seed_refreshable_account(&store, account_id, SystemTime::now(), None).await;
@@ -507,6 +511,7 @@ async fn scheduled_refresh_persists_the_original_upstream_error_message() {
         Arc::new(RefreshLeases),
         Arc::new(RefreshCredentialState),
         policy,
+        Arc::new(crate::RecordingDiagnostics::default()),
     );
     let account_id = "acct_invalid_refresh_token";
     seed_refreshable_account(
@@ -570,6 +575,7 @@ async fn scheduled_refresh_persists_retryable_message_inside_the_two_hour_window
         Arc::new(RefreshLeases),
         Arc::new(RefreshCredentialState),
         policy,
+        Arc::new(crate::RecordingDiagnostics::default()),
     );
     let account_id = "acct_retryable_unauthorized";
     let expires_at = SystemTime::now()
@@ -614,6 +620,8 @@ async fn scheduled_refresh_uses_the_final_message_after_the_two_hour_window() {
         store.repository(),
         Arc::new(FailingRefresher {
             failure: RefreshFailure::Transport {
+                redacted: false,
+                source: None,
                 message: Some(upstream_message.to_owned()),
                 upstream: None,
             },
@@ -621,6 +629,7 @@ async fn scheduled_refresh_uses_the_final_message_after_the_two_hour_window() {
         Arc::new(RefreshLeases),
         Arc::new(RefreshCredentialState),
         policy,
+        Arc::new(crate::RecordingDiagnostics::default()),
     );
     let account_id = "acct_exhausted_unauthorized";
     seed_refreshable_account(
@@ -935,6 +944,7 @@ async fn quota_rejection_during_oauth_refresh_preserves_terminal_result() {
             Arc::new(RefreshLeases),
             Arc::new(RefreshCredentialState),
             MutableRuntimePolicy::new(Duration::from_secs(5 * 60)),
+            Arc::new(crate::RecordingDiagnostics::default()),
         );
         let outcomes = service.refresh_due().await.expect("refresh cycle");
         assert!(
@@ -951,4 +961,47 @@ async fn quota_rejection_during_oauth_refresh_preserves_terminal_result() {
             Some("refresh token invalidated")
         );
     }
+}
+
+#[tokio::test]
+async fn scheduled_refresh_records_native_failure_once_and_keeps_retry_state() {
+    let store = Arc::new(MemoryAccountStore::default());
+    let diagnostics = Arc::new(crate::RecordingDiagnostics::default());
+    let service = CodexCredentialRefreshService::new(
+        store.repository(),
+        Arc::new(FailingRefresher {
+            failure: RefreshFailure::Transport {
+                redacted: false,
+                message: Some("safe transport summary".to_owned()),
+                upstream: None,
+                source: Some(std::io::Error::other("PRIVATE_OAUTH_NATIVE_CAUSE").into()),
+            },
+        }),
+        Arc::new(RefreshLeases),
+        Arc::new(RefreshCredentialState),
+        MutableRuntimePolicy::new(Duration::from_secs(300)),
+        diagnostics.clone(),
+    );
+    seed_refreshable_account(&store, "acct_diagnostic", SystemTime::now(), None).await;
+    let outcomes = service.refresh_due().await.unwrap();
+    assert!(matches!(
+        outcomes.as_slice(),
+        [CodexCredentialRefreshOutcome::Transient { .. }]
+    ));
+    let failures = diagnostics.0.lock().unwrap();
+    assert_eq!(failures.len(), 1);
+    assert_eq!(
+        failures[0].account_id.as_ref().unwrap().as_str(),
+        "acct_diagnostic"
+    );
+    assert_eq!(failures[0].operation, "scheduled_refresh");
+    assert!(
+        failures[0]
+            .details
+            .as_ref()
+            .unwrap()
+            .as_str()
+            .contains("PRIVATE_OAUTH_NATIVE_CAUSE")
+    );
+    assert!(!format!("{:?}", failures[0]).contains("PRIVATE_OAUTH_NATIVE_CAUSE"));
 }

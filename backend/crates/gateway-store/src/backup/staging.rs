@@ -74,6 +74,7 @@ impl StagingArea {
             .map_err(|source| unavailable("read staging free space", source))?;
         if free < MIN_STAGING_FREE_BYTES {
             return Err(StoreError::InvalidData {
+                source: None,
                 entity: "backup staging",
                 message: "staging disk space is below 1 GiB".to_owned(),
             });
@@ -103,6 +104,7 @@ fn unavailable(
 
 fn invalid(message: &str) -> StoreError {
     StoreError::InvalidData {
+        source: None,
         entity: "backup staging",
         message: message.to_owned(),
     }

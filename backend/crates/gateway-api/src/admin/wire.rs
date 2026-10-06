@@ -170,6 +170,7 @@ pub struct AdminError {
     status: StatusCode,
     body: AdminErrorBody,
     retry_after_seconds: Option<u64>,
+    diagnostic: Option<gateway_admin::model::AdminError>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -266,6 +267,7 @@ impl AdminError {
             status,
             body: AdminErrorBody::new(code, message),
             retry_after_seconds: None,
+            diagnostic: None,
         }
     }
 
@@ -380,12 +382,16 @@ pub(crate) fn map_admin_service_error(error: gateway_admin::model::AdminError) -
     {
         response.body.message = error.message().to_owned();
     }
+    response.diagnostic = Some(error);
     response
 }
 
 impl IntoResponse for AdminError {
     fn into_response(self) -> Response {
         let mut response = (self.status, Json(self.body)).into_response();
+        if let Some(error) = self.diagnostic {
+            response.extensions_mut().insert(error);
+        }
         if let Some(seconds) = self.retry_after_seconds
             && let Ok(value) = axum::http::HeaderValue::from_str(&seconds.to_string())
         {

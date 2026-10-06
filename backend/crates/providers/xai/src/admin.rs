@@ -1491,21 +1491,23 @@ fn map_store_error(error: gateway_core::error::StoreError) -> ProviderAdminError
         StoreErrorKind::Unavailable => ProviderAdminErrorKind::Unavailable,
         _ => ProviderAdminErrorKind::Internal,
     })
+    .with_source(error)
 }
 
 fn map_repository_error(error: GrokCredentialRepositoryError) -> ProviderAdminError {
     use GrokCredentialRepositoryError as Error;
-    provider_error(match error {
+    provider_error(match &error {
         Error::InvalidInput(_)
         | Error::WrongProviderKind
         | Error::IdentityRebind
-        | Error::InvalidCredentialData => ProviderAdminErrorKind::Invalid,
+        | Error::InvalidCredentialData(_) => ProviderAdminErrorKind::Invalid,
         Error::CredentialNotFound => ProviderAdminErrorKind::NotFound,
-        Error::StaleCredentialRevision | Error::Conflict | Error::RevisionOverflow => {
+        Error::StaleCredentialRevision(_) | Error::Conflict(_) | Error::RevisionOverflow => {
             ProviderAdminErrorKind::Conflict
         }
-        Error::Store => ProviderAdminErrorKind::Unavailable,
+        Error::Store(_) => ProviderAdminErrorKind::Unavailable,
     })
+    .with_source(error)
 }
 
 fn map_refresh_error(error: GrokCredentialRefreshError) -> ProviderAdminError {

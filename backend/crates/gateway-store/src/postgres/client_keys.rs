@@ -74,13 +74,17 @@ impl ClientApiKeySnapshot {
     ) -> StoreResult<Self> {
         Ok(Self {
             request_profiles: std::collections::BTreeMap::new(),
-            id: ClientApiKeyId::new(id).map_err(|_| invalid("persisted key ID is invalid"))?,
-            plaintext_key: PlaintextClientApiKey::new(key)
-                .map_err(|_| invalid("persisted plaintext key is invalid"))?,
+            id: ClientApiKeyId::new(id)
+                .map_err(|source| invalid("persisted key ID is invalid").with_source(source))?,
+            plaintext_key: PlaintextClientApiKey::new(key).map_err(|source| {
+                invalid("persisted plaintext key is invalid").with_source(source)
+            })?,
             group_ids: group_ids
                 .into_iter()
                 .map(|id| {
-                    AccountGroupId::new(id).map_err(|_| invalid("persisted group ID is invalid"))
+                    AccountGroupId::new(id).map_err(|source| {
+                        invalid("persisted group ID is invalid").with_source(source)
+                    })
                 })
                 .collect::<StoreResult<Vec<_>>>()?,
             limits: RateLimits {
@@ -703,6 +707,7 @@ impl PgAdminClientKeyStore {
                 admin_store_error(
                     ENTITY,
                     StoreError::NotFound {
+                        source: None,
                         entity: ENTITY,
                         id: id.as_str().to_owned(),
                     },
@@ -748,6 +753,7 @@ impl ClientKeyStore for PgAdminClientKeyStore {
             .map_err(|source| map_error(postgres_unavailable("lock budget limits key", source)))?;
         let (daily, weekly) = current.ok_or_else(|| {
             map_error(StoreError::NotFound {
+                source: None,
                 entity: ENTITY,
                 id: command.id.as_str().to_owned(),
             })
@@ -1159,6 +1165,7 @@ pub(crate) async fn insert_client_api_key_in_transaction(
                 && database.constraint() == Some("client_api_keys_key_sha256_idx")
         }) {
             StoreError::Conflict {
+        source: None,
                 entity: ENTITY,
                 id: key.id.clone(),
                 kind: crate::ConflictKind::InvalidTransition,
@@ -1238,6 +1245,7 @@ async fn ensure_client_key_name_available(
     .map_err(|source| postgres_unavailable("check client API key name", source))?;
     if duplicate {
         return Err(StoreError::Conflict {
+            source: None,
             entity: ENTITY,
             id: id.to_owned(),
             kind: crate::ConflictKind::DuplicateName,
@@ -1282,6 +1290,7 @@ fn require_changed(rows_affected: u64, id: &str) -> StoreResult<()> {
         Ok(())
     } else {
         Err(StoreError::NotFound {
+            source: None,
             entity: ENTITY,
             id: id.to_owned(),
         })
@@ -1304,6 +1313,7 @@ async fn replace_client_api_key_groups_in_transaction(
         .map_err(|source| postgres_unavailable("validate client API key groups", source))?;
         if usize::try_from(count).ok() != Some(group_ids.len()) {
             return Err(StoreError::NotFound {
+                source: None,
                 entity: "account group",
                 id: "client API key group selection".to_owned(),
             });
@@ -1342,8 +1352,9 @@ fn validate_group_ids(group_ids: &[String]) -> StoreResult<()> {
 }
 
 fn validate_key(key: &str) -> StoreResult<()> {
-    PlaintextClientApiKey::validate(key)
-        .map_err(|_| invalid("key must contain nonempty visible ASCII characters"))
+    PlaintextClientApiKey::validate(key).map_err(|source| {
+        invalid("key must contain nonempty visible ASCII characters").with_source(source)
+    })
 }
 
 fn validate_request_profiles<'a>(
@@ -1381,7 +1392,8 @@ fn decode_request_profiles(
         .into_iter()
         .map(|(provider, profile)| {
             Ok((
-                ProviderKind::new(provider).map_err(|_| invalid("invalid request profile key"))?,
+                ProviderKind::new(provider)
+                    .map_err(|source| invalid("invalid request profile key").with_source(source))?,
                 OpaqueProviderData::new(profile),
             ))
         })
@@ -1404,7 +1416,7 @@ fn client_record_from_row(row: &sqlx::postgres::PgRow) -> StoreResult<ClientApiK
     use sqlx::Row as _;
     let groups: serde_json::Value = row
         .try_get("groups")
-        .map_err(|_| invalid("invalid groups"))?;
+        .map_err(|source| invalid("invalid groups").with_source(source))?;
     Ok(
         ClientApiKeyRecord {
             request_profile_overrides:
@@ -1412,40 +1424,47 @@ fn client_record_from_row(row: &sqlx::postgres::PgRow) -> StoreResult<ClientApiK
                     row.try_get::<sqlx::types::Json<
                         BTreeMap<String, serde_json::Map<String, serde_json::Value>>,
                     >, _>("request_profile_overrides")
-                        .map_err(|_| invalid("invalid request profiles"))?
+                        .map_err(|source| invalid("invalid request profiles").with_source(source))?
                         .0,
                 )?,
-            id: row.try_get("id").map_err(|_| invalid("invalid id"))?,
-            name: row.try_get("name").map_err(|_| invalid("invalid name"))?,
-            label: row.try_get("label").map_err(|_| invalid("invalid label"))?,
-            groups: serde_json::from_value(groups).map_err(|_| invalid("invalid groups"))?,
+            id: row
+                .try_get("id")
+                .map_err(|source| invalid("invalid id").with_source(source))?,
+            name: row
+                .try_get("name")
+                .map_err(|source| invalid("invalid name").with_source(source))?,
+            label: row
+                .try_get("label")
+                .map_err(|source| invalid("invalid label").with_source(source))?,
+            groups: serde_json::from_value(groups)
+                .map_err(|source| invalid("invalid groups").with_source(source))?,
             provider_kinds: row
                 .try_get("provider_kinds")
-                .map_err(|_| invalid("invalid provider kinds"))?,
+                .map_err(|source| invalid("invalid provider kinds").with_source(source))?,
             prefix: row
                 .try_get("prefix")
-                .map_err(|_| invalid("invalid prefix"))?,
+                .map_err(|source| invalid("invalid prefix").with_source(source))?,
             enabled: row
                 .try_get("enabled")
-                .map_err(|_| invalid("invalid enabled"))?,
+                .map_err(|source| invalid("invalid enabled").with_source(source))?,
             max_concurrency: to_u64(
                 row.try_get("max_concurrency")
-                    .map_err(|_| invalid("invalid max concurrency"))?,
+                    .map_err(|source| invalid("invalid max concurrency").with_source(source))?,
             )?,
             requests_per_minute: to_u64(
                 row.try_get("requests_per_minute")
-                    .map_err(|_| invalid("invalid requests per minute"))?,
+                    .map_err(|source| invalid("invalid requests per minute").with_source(source))?,
             )?,
             budget: ClientBudgetStatus::default(),
             last_used_at: row
                 .try_get("last_used_at")
-                .map_err(|_| invalid("invalid last used at"))?,
+                .map_err(|source| invalid("invalid last used at").with_source(source))?,
             created_at: row
                 .try_get("created_at")
-                .map_err(|_| invalid("invalid created at"))?,
+                .map_err(|source| invalid("invalid created at").with_source(source))?,
             updated_at: row
                 .try_get("updated_at")
-                .map_err(|_| invalid("invalid updated at"))?,
+                .map_err(|source| invalid("invalid updated at").with_source(source))?,
         },
     )
 }
@@ -1525,34 +1544,38 @@ async fn load_client_key_memberships(
         use sqlx::Row as _;
         let key_id: String = row
             .try_get("key_id")
-            .map_err(|_| invalid("invalid client API key membership"))?;
+            .map_err(|source| invalid("invalid client API key membership").with_source(source))?;
         let group_id: Option<String> = row
             .try_get("group_id")
-            .map_err(|_| invalid("invalid client API key group"))?;
+            .map_err(|source| invalid("invalid client API key group").with_source(source))?;
         if let Some(group_id) = group_id {
             groups
                 .entry(key_id.clone())
                 .or_default()
                 .push(ClientApiKeyGroupRecord {
                     id: group_id,
-                    name: row
-                        .try_get("group_name")
-                        .map_err(|_| invalid("invalid client API key group name"))?,
-                    color: row
-                        .try_get("group_color")
-                        .map_err(|_| invalid("invalid client API key group color"))?,
-                    enabled: row
-                        .try_get("group_enabled")
-                        .map_err(|_| invalid("invalid client API key group state"))?,
+                    name: row.try_get("group_name").map_err(|source| {
+                        invalid("invalid client API key group name").with_source(source)
+                    })?,
+                    color: row.try_get("group_color").map_err(|source| {
+                        invalid("invalid client API key group color").with_source(source)
+                    })?,
+                    enabled: row.try_get("group_enabled").map_err(|source| {
+                        invalid("invalid client API key group state").with_source(source)
+                    })?,
                 });
             providers.entry(key_id).or_default().extend(
                 row.try_get::<Vec<String>, _>("group_provider_kinds")
-                    .map_err(|_| invalid("invalid client API key provider kinds"))?,
+                    .map_err(|source| {
+                        invalid("invalid client API key provider kinds").with_source(source)
+                    })?,
             );
         } else {
             providers.entry(key_id).or_default().extend(
                 row.try_get::<Vec<String>, _>("global_provider_kinds")
-                    .map_err(|_| invalid("invalid global provider kinds"))?,
+                    .map_err(|source| {
+                        invalid("invalid global provider kinds").with_source(source)
+                    })?,
             );
         }
     }
@@ -1649,15 +1672,18 @@ fn push_client_key_order(statement: &mut QueryBuilder<Postgres>, sort: ClientApi
 }
 
 fn to_i64(value: u64) -> StoreResult<i64> {
-    i64::try_from(value).map_err(|_| invalid("numeric limit exceeds PostgreSQL bigint"))
+    i64::try_from(value)
+        .map_err(|source| invalid("numeric limit exceeds PostgreSQL bigint").with_source(source))
 }
 
 fn to_u64(value: i64) -> StoreResult<u64> {
-    u64::try_from(value).map_err(|_| invalid("persisted numeric limit is negative"))
+    u64::try_from(value)
+        .map_err(|source| invalid("persisted numeric limit is negative").with_source(source))
 }
 
 fn invalid(message: &str) -> StoreError {
     StoreError::InvalidData {
+        source: None,
         entity: ENTITY,
         message: message.to_owned(),
     }

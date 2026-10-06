@@ -51,12 +51,12 @@ impl ProviderStoreError {
     pub fn caused_by(
         kind: ProviderStoreErrorKind,
         operation: &'static str,
-        source: impl std::error::Error + Send + Sync + 'static,
+        source: impl Into<crate::error::ErrorSource>,
     ) -> Self {
         Self {
             kind,
             operation,
-            source: Some(crate::error::ErrorSource::new(source)),
+            source: Some(source.into()),
         }
     }
 
@@ -1494,6 +1494,7 @@ pub struct ProviderStorePorts {
     cooldowns: Arc<dyn ProviderCooldownPort>,
     runtime_policy: Arc<dyn ProviderRuntimePolicyPort>,
     oauth_pending: Arc<dyn OAuthPendingFlowPort>,
+    diagnostics: Arc<dyn crate::diagnostics::OperationalDiagnostics>,
 }
 
 impl ProviderStorePorts {
@@ -1511,6 +1512,7 @@ impl ProviderStorePorts {
         cooldowns: Arc<dyn ProviderCooldownPort>,
         runtime_policy: Arc<dyn ProviderRuntimePolicyPort>,
         oauth_pending: Arc<dyn OAuthPendingFlowPort>,
+        diagnostics: Arc<dyn crate::diagnostics::OperationalDiagnostics>,
     ) -> Self {
         Self {
             accounts,
@@ -1524,7 +1526,13 @@ impl ProviderStorePorts {
             cooldowns,
             runtime_policy,
             oauth_pending,
+            diagnostics,
         }
+    }
+
+    #[must_use]
+    pub fn diagnostics(&self) -> Arc<dyn crate::diagnostics::OperationalDiagnostics> {
+        self.diagnostics.clone()
     }
 
     #[must_use]

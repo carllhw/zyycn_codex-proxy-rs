@@ -82,9 +82,7 @@ use crate::transport::protocol::responses::{
     CodexResponsesRequest, PREVIOUS_RESPONSE_NOT_FOUND_CODE, PREVIOUS_RESPONSE_NOT_FOUND_MESSAGE,
     PreviousResponseScope, ResponseEventSignals, TransportRequirement, transport_requirement,
 };
-use crate::transport::protocol::websocket::{
-    WEBSOCKET_CONNECTION_LIMIT_REACHED_CODE, websocket_response_create_payload_len,
-};
+use crate::transport::protocol::websocket::websocket_response_create_payload_len;
 use crate::transport::request::{
     CodexRequestEncodeError, RequestAccountScope, align_structured_location_fields,
     clear_request_turn_state, encode_generate_request, scope_request_to_account,

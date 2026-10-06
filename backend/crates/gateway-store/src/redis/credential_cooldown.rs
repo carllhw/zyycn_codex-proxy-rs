@@ -260,10 +260,10 @@ impl RedisCredentialCooldownRepository {
         }
         let revision = revision
             .parse::<u64>()
-            .map_err(|_| invalid("cached cooldown revision is invalid"))?;
+            .map_err(|source| invalid("cached cooldown revision is invalid").with_source(source))?;
         let until_ms = until_ms
             .parse::<i64>()
-            .map_err(|_| invalid("cached cooldown expiry is invalid"))?;
+            .map_err(|source| invalid("cached cooldown expiry is invalid").with_source(source))?;
         let cooldown_until = DateTime::from_timestamp_millis(until_ms)
             .ok_or_else(|| invalid("cached cooldown expiry is invalid"))?;
         let kind = ProviderCooldownKind::parse(&kind).unwrap_or(ProviderCooldownKind::RateLimit);
@@ -350,7 +350,7 @@ impl RedisCredentialCooldownRepository {
                     account_id,
                     gateway_admin::model::accounts::AccountFreeze {
                         credential_revision: gateway_admin::model::Revision::new(revision.get())
-                            .map_err(|_| invalid("freeze revision"))?,
+                            .map_err(|source| invalid("freeze revision").with_source(source))?,
                         until,
                         generation,
                         requires_probe: kind.requires_probe(),
@@ -401,7 +401,7 @@ impl RedisCredentialCooldownRepository {
             .map_err(|source| redis_unavailable("read capacity peak in-flight", source))?;
         peak.map(u32::try_from)
             .transpose()
-            .map_err(|_| invalid("capacity peak in-flight is invalid"))
+            .map_err(|source| invalid("capacity peak in-flight is invalid").with_source(source))
     }
 }
 
@@ -741,6 +741,7 @@ impl ProviderCooldownPort for RedisCredentialCooldownRepository {
 
 fn invalid(message: &str) -> StoreError {
     StoreError::InvalidData {
+        source: None,
         entity: "credential cooldown",
         message: message.to_owned(),
     }

@@ -53,6 +53,7 @@ use task::{WorkerContribution, WorkerDefinitionError};
 #[derive(Clone)]
 pub struct CoreStorePorts {
     execution: Arc<dyn ExecutionStore>,
+    diagnostics: Arc<dyn diagnostics::OperationalDiagnostics>,
     admissions: Arc<dyn ClientAdmissionPort>,
     admission_recovery: Arc<dyn ClientAdmissionRecoveryPort>,
     continuation: Arc<dyn NativeContinuationPort>,
@@ -77,9 +78,11 @@ impl CoreStorePorts {
             Arc<dyn SnapshotSubscriptionPort>,
         ),
         client_api_key_usage: Arc<dyn ClientApiKeyUsageSink>,
+        diagnostics: Arc<dyn diagnostics::OperationalDiagnostics>,
     ) -> Self {
         Self {
             execution,
+            diagnostics,
             admissions,
             admission_recovery,
             continuation,
@@ -201,6 +204,7 @@ fn build_execution_service(
         Arc::clone(&ports.admissions),
         Arc::clone(&ports.continuation),
         Arc::clone(&ports.client_api_key_usage),
+        Arc::clone(&ports.diagnostics),
     );
     if let Some(budget) = &ports.budget {
         service = service.with_budget(Arc::clone(budget));

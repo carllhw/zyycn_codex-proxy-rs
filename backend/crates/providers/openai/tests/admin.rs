@@ -1729,6 +1729,7 @@ fn provider_ports_with_catalog(
         Arc::new(TestCooldown),
         Arc::new(TestRuntimePolicy),
         pending,
+        Arc::new(RecordingDiagnostics::default()),
     )
 }
 
@@ -2530,6 +2531,7 @@ mod errors {
             Arc::new(TestCooldown),
             Arc::new(TestRuntimePolicy),
             Arc::new(TestOAuthPending::default()),
+            Arc::new(RecordingDiagnostics::default()),
         )
     }
 
@@ -2735,4 +2737,17 @@ async fn oauth_transport_settings_preserve_tokens_refresh_schedule_and_health() 
         configuration.expose_to_provider().expose_to_provider(),
         json!({"transport":"http"}).as_object().unwrap()
     );
+}
+
+#[derive(Default)]
+struct RecordingDiagnostics(std::sync::Mutex<Vec<gateway_core::diagnostics::OperationalFailure>>);
+#[async_trait::async_trait]
+impl gateway_core::diagnostics::OperationalDiagnostics for RecordingDiagnostics {
+    async fn record_failure(
+        &self,
+        failure: gateway_core::diagnostics::OperationalFailure,
+    ) -> Result<(), gateway_core::error::StoreError> {
+        self.0.lock().unwrap().push(failure);
+        Ok(())
+    }
 }

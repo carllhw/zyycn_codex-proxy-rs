@@ -76,3 +76,5 @@ pub use types::{
     CodexCredentialData, CodexCredentialPrincipal, CodexOAuthCredentialData, CodexOAuthSecret,
     ResponsesTransport, RuntimeCodexCookie, UpsertCodexCookie,
 };
+
+mod diagnostics;

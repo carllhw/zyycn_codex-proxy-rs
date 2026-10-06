@@ -3846,10 +3846,11 @@ async fn repeated_message_too_big_closes_keep_session_on_websocket() {
         assert_eq!(detail.message(), "message too big");
         assert_eq!(detail.code(), Some("message_too_big"));
         assert_eq!(detail.error_type(), Some("invalid_request_error"));
-        assert_eq!(
-            error.upstream_code().map(|code| code.as_str()),
-            Some("websocket_close_1009")
-        );
+        assert!(error.upstream_code().is_none());
+        let close: Value =
+            serde_json::from_str(error.raw_upstream_error().unwrap().as_str()).unwrap();
+        assert_eq!(close["type"], "websocket.close");
+        assert_eq!(close["code"], 1009);
     }
 
     let second_operation = Operation::Generate(generate_with_persisted_session_context(
@@ -4653,10 +4654,10 @@ async fn ambiguous_websocket_close_reconnects_and_retains_native_continuation() 
     assert!(saw_websocket_observation);
     assert_eq!(error.send_state(), UpstreamSendState::Ambiguous);
     assert_eq!(error.pre_delivery_retry(), None);
-    assert_eq!(
-        error.upstream_code().map(|code| code.as_str()),
-        Some("websocket_close_1000")
-    );
+    assert!(error.upstream_code().is_none());
+    let close: Value = serde_json::from_str(error.raw_upstream_error().unwrap().as_str()).unwrap();
+    assert_eq!(close["type"], "websocket.close");
+    assert_eq!(close["code"], 1000);
     assert_eq!(
         error.diagnostic().and_then(|diagnostic| diagnostic.code()),
         Some("upstream_close")
@@ -5956,10 +5957,10 @@ async fn websocket_turn_state_metadata_close_does_not_authorize_replay() {
     assert_eq!(error.send_state(), UpstreamSendState::Ambiguous);
     assert!(!error.replay_is_safe());
     assert_eq!(error.pre_delivery_retry(), None);
-    assert_eq!(
-        error.upstream_code().map(|code| code.as_str()),
-        Some("websocket_close_1000")
-    );
+    assert!(error.upstream_code().is_none());
+    let close: Value = serde_json::from_str(error.raw_upstream_error().unwrap().as_str()).unwrap();
+    assert_eq!(close["type"], "websocket.close");
+    assert_eq!(close["code"], 1000);
     assert_eq!(
         error.diagnostic().map(|diagnostic| diagnostic.as_str()),
         Some(

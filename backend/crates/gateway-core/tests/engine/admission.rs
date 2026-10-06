@@ -72,7 +72,7 @@ fn client_admission_startup_recovery_should_fail_closed_at_each_boundary() {
         assert!(
             restore_client_admission_startup(
                 &RecoveryStore::success(0),
-                &ScriptedRecoveries::new(Err(ClientAdmissionError)),
+                &ScriptedRecoveries::new(Err(ClientAdmissionError(None))),
                 &RecordingAdmissions::default(),
                 now,
             )
@@ -212,7 +212,7 @@ impl ClientAdmissionPort for RecordingAdmissions {
     ) -> BoxFuture<'_, Result<ClientAdmissionRestoreResult, ClientAdmissionError>> {
         Box::pin(async move {
             if self.fail_restore {
-                return Err(ClientAdmissionError);
+                return Err(ClientAdmissionError(None));
             }
             self.restored.lock().expect("restored").push(recovery);
             Ok(ClientAdmissionRestoreResult {

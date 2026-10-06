@@ -46,11 +46,12 @@ pub enum ProviderAdminErrorKind {
 /// `message` 是 Provider 局部诊断，可能包含原始上游正文；通用管理用例不得自动把它作为公开文案
 /// 只有明确拥有原始诊断合同的调用方才能读取，`Debug` 始终只记录是否存在
 /// `public_message` 则是明确标记为可公开的静态提示，不允许携带动态上游材料
-#[derive(Clone, PartialEq, Eq, thiserror::Error)]
+#[derive(Clone, thiserror::Error)]
 #[error("provider admin operation failed: {kind:?}")]
 pub struct ProviderAdminError {
     kind: ProviderAdminErrorKind,
-    message: Option<String>,
+    #[source]
+    diagnostic: Option<Arc<ProviderAdminDiagnostic>>,
     public_message: Option<&'static str>,
 }
 
@@ -59,7 +60,7 @@ impl std::fmt::Debug for ProviderAdminError {
         formatter
             .debug_struct("ProviderAdminError")
             .field("kind", &self.kind)
-            .field("message", &self.message.as_ref().map(|_| "<redacted>"))
+            .field("message", &self.message().map(|_| "<redacted>"))
             .field("public_message", &self.public_message)
             .finish()
     }
@@ -70,14 +71,22 @@ impl ProviderAdminError {
     pub const fn new(kind: ProviderAdminErrorKind) -> Self {
         Self {
             kind,
-            message: None,
+            diagnostic: None,
             public_message: None,
         }
     }
 
     #[must_use]
+    pub fn with_source(mut self, source: impl Into<gateway_core::error::ErrorSource>) -> Self {
+        Arc::make_mut(self.diagnostic.get_or_insert_with(Default::default)).source =
+            Some(source.into());
+        self
+    }
+
+    #[must_use]
     pub fn with_message(mut self, message: impl Into<String>) -> Self {
-        self.message = Some(message.into());
+        Arc::make_mut(self.diagnostic.get_or_insert_with(Default::default)).message =
+            Some(message.into());
         self
     }
 
@@ -100,8 +109,18 @@ impl ProviderAdminError {
 
     #[must_use]
     pub fn message(&self) -> Option<&str> {
-        self.message.as_deref()
+        self.diagnostic
+            .as_ref()
+            .and_then(|diagnostic| diagnostic.message.as_deref())
     }
+}
+
+// Provider 局部消息与 typed 来源共用一个不公开的上下文，避免跨用例转换后丢失
+#[derive(Debug, Clone, Default, thiserror::Error)]
+#[error("{}", message.as_deref().unwrap_or("provider admin dependency failed"))]
+struct ProviderAdminDiagnostic {
+    message: Option<String>,
+    source: Option<gateway_core::error::ErrorSource>,
 }
 
 /// 一个具体 Provider 对管理控制面提供的解析、验证、上游交互与运行时资源回收能力

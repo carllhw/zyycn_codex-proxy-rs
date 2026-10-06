@@ -256,6 +256,7 @@ pub(crate) async fn usage_record_detail(
         .await
         .map_err(|source| postgres_unavailable("load usage record detail", source))?
         .ok_or_else(|| StoreError::NotFound {
+            source: None,
             entity: "model request",
             id: request_id.to_owned(),
         })?;

@@ -862,7 +862,7 @@ pub struct ProviderSubscription {
 }
 
 /// 按需汇聚的个人信息；资料查询失败不丢弃可用的订阅结果
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone)]
 pub struct AccountPersonalInfo {
     pub profile: Result<ProviderProfileStatistics, AdminError>,
     pub subscription: Option<ProviderSubscription>,

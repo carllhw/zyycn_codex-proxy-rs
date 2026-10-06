@@ -19,6 +19,7 @@ async fn query_stream_holds_budget_until_completion_error_or_drop() {
         None,
         Some(Ok(2)),
         Some(Err(StoreError::InvalidData {
+            source: None,
             entity: "test stream",
             message: "decode failed".to_owned(),
         })),

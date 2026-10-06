@@ -7,6 +7,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime};
 
 use futures::FutureExt as _;
+use gateway_core::diagnostics::{OperationalDiagnostics, OperationalFailure};
 use gateway_core::health::{
     WorkerHealthKey, WorkerHealthSnapshot, WorkerHealthSource, WorkerRuntimeState,
 };
@@ -48,6 +49,7 @@ impl WorkerSupervisor {
         &self,
         plan: Vec<WorkerContribution>,
         leader_lease: Arc<dyn WorkerLeaderLeasePort>,
+        diagnostics: Arc<dyn OperationalDiagnostics>,
     ) -> Result<(), WorkerStartError> {
         if self
             .started
@@ -56,7 +58,7 @@ impl WorkerSupervisor {
         {
             return Err(WorkerStartError::AlreadyStarted);
         }
-        let result = self.start_inner(plan, leader_lease);
+        let result = self.start_inner(plan, leader_lease, diagnostics);
         if result.is_err() {
             self.started.store(false, Ordering::Release);
         }
@@ -67,6 +69,7 @@ impl WorkerSupervisor {
         &self,
         plan: Vec<WorkerContribution>,
         leader_lease: Arc<dyn WorkerLeaderLeasePort>,
+        diagnostics: Arc<dyn OperationalDiagnostics>,
     ) -> Result<(), WorkerStartError> {
         tokio::runtime::Handle::try_current().map_err(|_| WorkerStartError::RuntimeUnavailable)?;
         let WorkerPlan {
@@ -91,14 +94,14 @@ impl WorkerSupervisor {
                         lease,
                         Arc::clone(&leader_lease),
                         self.cancellation.clone(),
-                        Arc::clone(&self.health),
+                        (Arc::clone(&self.health), Arc::clone(&diagnostics)),
                     )),
                     WorkerRunnable::Daemon { restart, task } => tokio::spawn(supervise_daemon(
                         id.clone(),
                         task,
                         restart,
                         self.cancellation.clone(),
-                        Arc::clone(&self.health),
+                        (Arc::clone(&self.health), Arc::clone(&diagnostics)),
                     )),
                 };
                 (id, handle)
@@ -360,8 +363,9 @@ async fn supervise_scheduled(
     lease: Option<WorkerLeaseRequest>,
     leader_lease: Arc<dyn WorkerLeaderLeasePort>,
     cancellation: CancellationToken,
-    health: Arc<WorkerHealthRegistry>,
+    observation: (Arc<WorkerHealthRegistry>, Arc<dyn OperationalDiagnostics>),
 ) {
+    let (health, diagnostics) = observation;
     let mut backoff = schedule.initial_backoff();
     loop {
         if cancellation.is_cancelled() {
@@ -397,7 +401,8 @@ async fn supervise_scheduled(
                     .min(schedule.maximum_backoff())
             }
             ScheduledOutcome::Failed(error) => {
-                let failures = health.failed(&id, error.clone());
+                record_worker_failure(diagnostics.as_ref(), &id, &error).await;
+                let failures = health.failed(&id, error.as_safe_str().to_owned());
                 let delay = take_backoff(&mut backoff, schedule.maximum_backoff());
                 tracing::warn!(
                     worker = %id,
@@ -438,8 +443,10 @@ async fn acquire_and_run(
             run_leased_cycle(id, task, guard, schedule, cancellation, health).await
         }
         Ok(Ok(WorkerLeaseAcquisition::Busy { retry_after })) => ScheduledOutcome::Busy(retry_after),
-        Ok(Err(error)) => ScheduledOutcome::Failed(error.as_safe_str().to_owned()),
-        Err(_) => ScheduledOutcome::Failed("leader lease port panicked".to_owned()),
+        Ok(Err(error)) => {
+            ScheduledOutcome::Failed(WorkerTaskError::safe(error.as_safe_str()).with_source(error))
+        }
+        Err(_) => ScheduledOutcome::Failed(WorkerTaskError::safe("leader lease port panicked")),
     }
 }
 
@@ -478,7 +485,9 @@ async fn run_leased_cycle(
 ) -> ScheduledOutcome {
     let fencing_token = match std::panic::catch_unwind(AssertUnwindSafe(|| guard.fencing_token())) {
         Ok(token) => token,
-        Err(_) => return ScheduledOutcome::Failed("leader lease guard panicked".to_owned()),
+        Err(_) => {
+            return ScheduledOutcome::Failed(WorkerTaskError::safe("leader lease guard panicked"));
+        }
     };
     health.running(id, Some(fencing_token));
     let cycle_cancel = CancellationToken::new();
@@ -518,38 +527,39 @@ async fn run_leased_cycle(
     };
     match release_guard(guard, schedule.leader_lease_renewal_interval()).await {
         Ok(()) => outcome,
-        Err(error) if matches!(outcome, ScheduledOutcome::ShuttingDown) => {
-            tracing::warn!(worker = %id, error, "leader lease 释放失败");
-            outcome
-        }
-        Err(error) => ScheduledOutcome::Failed(error),
+        Err(cleanup) => match outcome {
+            ScheduledOutcome::Failed(error) => {
+                ScheduledOutcome::Failed(error.with_cleanup(cleanup))
+            }
+            _ => ScheduledOutcome::Failed(cleanup),
+        },
     }
 }
 
 async fn renew_guard(
     guard: &mut dyn WorkerLeaderLeaseGuard,
     timeout: Duration,
-) -> Result<(), String> {
+) -> Result<(), WorkerTaskError> {
     let future = AssertUnwindSafe(guard.renew()).catch_unwind();
     match tokio::time::timeout(timeout, future).await {
         Ok(Ok(Ok(()))) => Ok(()),
-        Ok(Ok(Err(error))) => Err(error.as_safe_str().to_owned()),
-        Ok(Err(_)) => Err("leader lease renewal panicked".to_owned()),
-        Err(_) => Err("leader lease renewal timed out".to_owned()),
+        Ok(Ok(Err(error))) => Err(WorkerTaskError::safe(error.as_safe_str()).with_source(error)),
+        Ok(Err(_)) => Err(WorkerTaskError::safe("leader lease renewal panicked")),
+        Err(_) => Err(WorkerTaskError::safe("leader lease renewal timed out")),
     }
 }
 
 async fn release_guard(
     guard: Box<dyn WorkerLeaderLeaseGuard>,
     timeout: Duration,
-) -> Result<(), String> {
+) -> Result<(), WorkerTaskError> {
     let future = std::panic::catch_unwind(AssertUnwindSafe(|| guard.release()))
-        .map_err(|_| "leader lease release panicked".to_owned())?;
+        .map_err(|_| WorkerTaskError::safe("leader lease release panicked"))?;
     match tokio::time::timeout(timeout, AssertUnwindSafe(future).catch_unwind()).await {
         Ok(Ok(Ok(()))) => Ok(()),
-        Ok(Ok(Err(error))) => Err(error.as_safe_str().to_owned()),
-        Ok(Err(_)) => Err("leader lease release panicked".to_owned()),
-        Err(_) => Err("leader lease release timed out".to_owned()),
+        Ok(Ok(Err(error))) => Err(WorkerTaskError::safe(error.as_safe_str()).with_source(error)),
+        Ok(Err(_)) => Err(WorkerTaskError::safe("leader lease release panicked")),
+        Err(_) => Err(WorkerTaskError::safe("leader lease release timed out")),
     }
 }
 
@@ -558,8 +568,9 @@ async fn supervise_daemon(
     task: Box<dyn DaemonTask>,
     restart: DaemonRestartPolicy,
     cancellation: CancellationToken,
-    health: Arc<WorkerHealthRegistry>,
+    observation: (Arc<WorkerHealthRegistry>, Arc<dyn OperationalDiagnostics>),
 ) {
+    let (health, diagnostics) = observation;
     let mut backoff = restart.initial_backoff();
     loop {
         if cancellation.is_cancelled() {
@@ -579,12 +590,13 @@ async fn supervise_daemon(
         };
         let Some(result) = result else { break };
         let error = match result {
-            Ok(Ok(())) => "daemon exited unexpectedly".to_owned(),
-            Ok(Err(error)) => error.as_safe_str().to_owned(),
-            Err(_) => "daemon panicked".to_owned(),
+            Ok(Ok(())) => WorkerTaskError::safe("daemon exited unexpectedly"),
+            Ok(Err(error)) => error,
+            Err(_) => WorkerTaskError::safe("daemon panicked"),
         };
         let delay = take_backoff(&mut backoff, restart.maximum_backoff());
-        let failures = health.failed(&id, error.clone());
+        record_worker_failure(diagnostics.as_ref(), &id, &error).await;
+        let failures = health.failed(&id, error.as_safe_str().to_owned());
         tracing::warn!(
             worker = %id,
             failures,
@@ -603,7 +615,7 @@ async fn supervise_daemon(
 enum ScheduledOutcome {
     Succeeded,
     Busy(Option<Duration>),
-    Failed(String),
+    Failed(WorkerTaskError),
     ShuttingDown,
 }
 
@@ -612,8 +624,8 @@ fn task_result(
 ) -> ScheduledOutcome {
     match result {
         Ok(Ok(())) => ScheduledOutcome::Succeeded,
-        Ok(Err(error)) => ScheduledOutcome::Failed(error.as_safe_str().to_owned()),
-        Err(_) => ScheduledOutcome::Failed("worker panicked".to_owned()),
+        Ok(Err(error)) => ScheduledOutcome::Failed(error),
+        Err(_) => ScheduledOutcome::Failed(WorkerTaskError::safe("worker panicked")),
     }
 }
 
@@ -640,4 +652,18 @@ fn lock_unpoisoned<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     mutex
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+async fn record_worker_failure(
+    diagnostics: &dyn OperationalDiagnostics,
+    id: &WorkerId,
+    error: &WorkerTaskError,
+) {
+    let mut failure =
+        OperationalFailure::new("worker", "run", "worker_failed", error.as_safe_str());
+    failure.correlation_id = Some(id.to_string());
+    failure.details = error.error_details();
+    if diagnostics.record_failure(failure).await.is_err() {
+        tracing::warn!(worker = %id, "worker diagnostic could not be recorded");
+    }
 }

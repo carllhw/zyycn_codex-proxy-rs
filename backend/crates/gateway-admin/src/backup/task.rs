@@ -28,7 +28,7 @@ use crate::{
 
 impl From<BackupError> for WorkerTaskError {
     fn from(error: BackupError) -> Self {
-        WorkerTaskError::safe(error.message())
+        WorkerTaskError::safe(error.message()).with_source(error)
     }
 }
 
@@ -125,8 +125,9 @@ impl BackupTask {
         if cron.is_empty() {
             return Ok(());
         }
-        let schedule = BackupSchedule::parse(cron, self.timezone)
-            .map_err(|_| WorkerTaskError::safe("backup schedule is invalid"))?;
+        let schedule = BackupSchedule::parse(cron, self.timezone).map_err(|source| {
+            WorkerTaskError::safe("backup schedule is invalid").with_source(source)
+        })?;
 
         if settings.schedule_timezone.as_deref() != Some(timezone) {
             // 时区切换只初始化未来游标，不把旧时区计划当作应补跑任务
@@ -685,9 +686,9 @@ fn status_transition(
 }
 
 fn repo_error(error: crate::ports::store::AdminStoreError) -> WorkerTaskError {
-    WorkerTaskError::safe(format!("backup store failed: {error}"))
+    WorkerTaskError::safe("backup store failed").with_source(error)
 }
 
 fn infra_error(error: BackupError) -> WorkerTaskError {
-    WorkerTaskError::safe(error.message())
+    WorkerTaskError::safe(error.message()).with_source(error)
 }

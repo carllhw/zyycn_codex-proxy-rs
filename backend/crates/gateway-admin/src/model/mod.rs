@@ -39,12 +39,31 @@ pub enum AdminErrorKind {
     Internal,
 }
 
-/// 不携带基础设施细节、可安全返回给管理员的管理用例错误
-#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+impl AdminErrorKind {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Invalid => "invalid",
+            Self::Forbidden => "forbidden",
+            Self::Unauthorized => "unauthorized",
+            Self::NotFound => "not_found",
+            Self::Conflict => "conflict",
+            Self::RateLimited => "rate_limited",
+            Self::BadGateway => "bad_gateway",
+            Self::UpstreamResultUnknown => "upstream_result_unknown",
+            Self::Unavailable => "unavailable",
+            Self::Internal => "internal",
+        }
+    }
+}
+
+/// 管理用例的安全消息与内部原因分离，原始来源不进入响应
+#[derive(Debug, Clone, thiserror::Error)]
 #[error("{message}")]
 pub struct AdminError {
     kind: AdminErrorKind,
     message: String,
+    source: Option<gateway_core::error::ErrorSource>,
 }
 
 impl AdminError {
@@ -53,7 +72,19 @@ impl AdminError {
         Self {
             kind,
             message: message.into(),
+            source: None,
         }
+    }
+
+    #[must_use]
+    pub fn with_source(mut self, source: impl Into<gateway_core::error::ErrorSource>) -> Self {
+        self.source = Some(source.into());
+        self
+    }
+
+    #[must_use]
+    pub fn error_details(&self) -> Option<gateway_core::error::ErrorDetails> {
+        gateway_core::error::ErrorDetails::capture(self.source.as_ref(), None, false)
     }
 
     #[must_use]

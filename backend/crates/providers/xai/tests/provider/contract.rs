@@ -888,7 +888,7 @@ impl GrokSessionSelector for StubSelector {
                 GrokSessionBinding::new("acct_provider").expect("binding"),
                 (),
             )
-            .map_err(|_| GrokSessionSelectorError::InvalidSession)
+            .map_err(|_| GrokSessionSelectorError::InvalidSession(None))
         })
     }
 
@@ -938,7 +938,7 @@ impl GrokSessionSelector for SequencedAccountSelector {
                 GrokSessionBinding::new("acct_provider").expect("binding"),
                 (),
             )
-            .map_err(|_| GrokSessionSelectorError::InvalidSession)
+            .map_err(|_| GrokSessionSelectorError::InvalidSession(None))
         })
     }
 
@@ -3140,7 +3140,7 @@ async fn selection_failures_carry_a_distinguishable_client_error_code() {
             "no_eligible_account",
         ),
         (
-            GrokSessionSelectorError::Unavailable,
+            GrokSessionSelectorError::Unavailable(None),
             "account_selector_unavailable",
         ),
     ];
@@ -3172,6 +3172,57 @@ async fn selection_failures_carry_a_distinguishable_client_error_code() {
             );
         }
     }
+}
+
+#[tokio::test]
+async fn selection_failure_preserves_native_cause_without_exposing_it_to_clients() {
+    use gateway_core::error::{ErrorSource, StoreError, StoreErrorKind};
+    let source = StoreError::caused_by(
+        StoreErrorKind::Unavailable,
+        std::io::Error::other("PRIVATE_XAI_DATABASE_CAUSE"),
+    );
+    let transport = StubInferenceTransport::success();
+    let provider = provider(
+        StubSelector::failing(GrokSessionSelectorError::Unavailable(Some(
+            ErrorSource::new(source),
+        ))),
+        transport.clone(),
+    )
+    .await;
+    let error = match provider
+        .execute(
+            provider_request("xai"),
+            context(CancellationToken::new(), None),
+        )
+        .await
+    {
+        Ok(_) => panic!("selection must fail"),
+        Err(error) => error,
+    };
+    assert_eq!(error.kind(), ProviderErrorKind::Unavailable);
+    assert_eq!(error.send_state(), UpstreamSendState::NotSent);
+    assert!(
+        error
+            .error_details()
+            .expect("protected details")
+            .contains("PRIVATE_XAI_DATABASE_CAUSE")
+    );
+    let mut cause = std::error::Error::source(&error);
+    let mut native = false;
+    while let Some(error) = cause {
+        native |= error.downcast_ref::<std::io::Error>().is_some();
+        cause = error.source();
+    }
+    assert!(native);
+    assert!(!format!("{error:?} {error}").contains("PRIVATE_XAI_DATABASE_CAUSE"));
+    assert!(
+        !error
+            .client_visible_upstream_error()
+            .expect("safe detail")
+            .message()
+            .contains("PRIVATE_XAI_DATABASE_CAUSE")
+    );
+    assert_eq!(transport.calls.load(Ordering::SeqCst), 0);
 }
 
 #[tokio::test]

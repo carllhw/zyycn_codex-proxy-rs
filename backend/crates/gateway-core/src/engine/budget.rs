@@ -39,9 +39,9 @@ pub struct ClientBudgetCharge {
     pub completed_at: SystemTime,
 }
 
-#[derive(Debug, Clone, Copy, thiserror::Error)]
+#[derive(Debug, Clone, thiserror::Error)]
 #[error("client budget store is unavailable")]
-pub struct ClientBudgetError;
+pub struct ClientBudgetError(#[source] pub Option<crate::error::ErrorSource>);
 
 pub trait ClientBudgetPort: Send + Sync {
     /// 原子检查当前限额与已用金额，不创建预扣费或待结算记录

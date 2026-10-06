@@ -228,6 +228,7 @@ async fn validate_group_filter(
         Err(admin_store_error(
             ENTITY,
             StoreError::NotFound {
+                source: None,
                 entity: "account group",
                 id: group_id.as_str().to_owned(),
             },

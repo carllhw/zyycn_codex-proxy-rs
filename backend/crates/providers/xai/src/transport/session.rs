@@ -468,7 +468,7 @@ pub trait GrokSessionSelector: Send + Sync {
 }
 
 /// 不含密钥的选择器失败
-#[derive(Debug, thiserror::Error, PartialEq, Eq)]
+#[derive(Debug, thiserror::Error)]
 pub enum GrokSessionSelectorError {
     #[error(transparent)]
     QueueRejected(#[from] gateway_core::concurrency::QueueRejection),
@@ -495,10 +495,10 @@ pub enum GrokSessionSelectorError {
     },
     /// 会话元数据或 Provider 持有的明文密钥非法
     #[error("Grok Build session data is invalid")]
-    InvalidSession,
+    InvalidSession(#[source] Option<gateway_core::error::ErrorSource>),
     /// 选择器依赖的后端服务不可用
     #[error("Grok Build session selector is unavailable")]
-    Unavailable,
+    Unavailable(#[source] Option<gateway_core::error::ErrorSource>),
     /// 插件调度策略明确拒绝本次请求
     #[error("account scheduling policy rejected the request")]
     PolicyRejected,

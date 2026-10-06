@@ -401,7 +401,7 @@ impl GrokCredentialRefreshService {
         let subject = loaded
             .account
             .upstream_user_id()
-            .ok_or(GrokCredentialRepositoryError::InvalidCredentialData)?
+            .ok_or(GrokCredentialRepositoryError::InvalidCredentialData(None))?
             .to_owned();
         let credential = DueGrokCredential {
             account_id: account_id.clone(),
@@ -487,7 +487,7 @@ impl GrokCredentialRefreshService {
         let subject = loaded
             .account
             .upstream_user_id()
-            .ok_or(GrokCredentialRepositoryError::InvalidCredentialData)?
+            .ok_or(GrokCredentialRepositoryError::InvalidCredentialData(None))?
             .to_owned();
         let prepared = GrokCredentialAdmin
             .prepare_rotation(&RotateManagedGrokCredential {
@@ -918,10 +918,13 @@ impl GrokCredentialRepository {
             .cloned()
             .collect::<BTreeSet<_>>();
         let now = SystemTime::now();
-        let provider = ProviderKind::new(PROVIDER_NAME)
-            .map_err(|_| GrokCredentialRepositoryError::InvalidCredentialData)?;
+        let provider = ProviderKind::new(PROVIDER_NAME).map_err(|source| {
+            GrokCredentialRepositoryError::InvalidCredentialData(Some(
+                gateway_core::error::ErrorSource::new(source),
+            ))
+        })?;
         let limit = NonZeroU32::new(MAX_REFRESH_BATCH)
-            .ok_or(GrokCredentialRepositoryError::InvalidCredentialData)?;
+            .ok_or(GrokCredentialRepositoryError::InvalidCredentialData(None))?;
         let query = ProviderRefreshQuery::new(
             provider,
             now.checked_add(policy.margin()).unwrap_or(now),
@@ -1015,7 +1018,7 @@ fn stale_repository_error(error: &GrokCredentialRepositoryError) -> bool {
     matches!(
         error,
         GrokCredentialRepositoryError::CredentialNotFound
-            | GrokCredentialRepositoryError::Conflict
-            | GrokCredentialRepositoryError::StaleCredentialRevision
+            | GrokCredentialRepositoryError::Conflict(_)
+            | GrokCredentialRepositoryError::StaleCredentialRevision(_)
     )
 }

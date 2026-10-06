@@ -446,6 +446,7 @@ impl ProviderCatalogCachePort for RedisCredentialStateRepository {
 
 fn invalid(message: &str) -> StoreError {
     StoreError::InvalidData {
+        source: None,
         entity: "credential state cache",
         message: message.to_owned(),
     }
@@ -453,6 +454,7 @@ fn invalid(message: &str) -> StoreError {
 
 fn catalog_invalid(message: &str) -> StoreError {
     StoreError::InvalidData {
+        source: None,
         entity: "provider catalog cache",
         message: message.to_owned(),
     }

@@ -211,6 +211,7 @@ impl PgAdminAccountStore {
                 admin_store_error(
                     ENTITY,
                     StoreError::NotFound {
+                        source: None,
                         entity: ENTITY,
                         id: account_id.to_owned(),
                     },

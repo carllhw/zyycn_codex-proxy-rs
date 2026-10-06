@@ -54,7 +54,8 @@ impl ScheduledTask for CountingTask {
         Box::pin(async move {
             let run = self.runs.fetch_add(1, Ordering::SeqCst) + 1;
             if run <= self.fail_until {
-                Err(WorkerTaskError::safe("expected test failure"))
+                Err(WorkerTaskError::safe("expected test failure")
+                    .with_source(std::io::Error::other("PRIVATE_WORKER_NATIVE_CAUSE")))
             } else {
                 Ok(())
             }
@@ -343,9 +344,11 @@ async fn registry_composes_multiple_owners_but_rejects_duplicate_identity() {
     let supervisor = supervisor();
 
     assert!(matches!(
-        supervisor.start(plan, Arc::new(FakeLeasePort::default())),
-        Err(WorkerStartError::Duplicate(id)) if id.owner() == "openai"
-    ));
+            supervisor.start(plan, Arc::new(FakeLeasePort::default()),
+    Arc::new(RecordingDiagnostics::default()),
+    ),
+            Err(WorkerStartError::Duplicate(id)) if id.owner() == "openai"
+        ));
 }
 
 #[tokio::test]
@@ -360,7 +363,11 @@ async fn only_database_fact_reasons_can_disable_nonexistent_workers() {
     )));
 
     assert!(matches!(
-        supervisor().start(plan, Arc::new(FakeLeasePort::default())),
+        supervisor().start(
+            plan,
+            Arc::new(FakeLeasePort::default()),
+            Arc::new(RecordingDiagnostics::default()),
+        ),
         Err(WorkerStartError::KindDisabled(WorkerKind::OpsFlush))
     ));
 }
@@ -373,9 +380,11 @@ async fn registry_refuses_start_when_any_real_owner_kind_is_missing() {
         .collect();
 
     assert!(matches!(
-        supervisor().start(plan, Arc::new(FakeLeasePort::default())),
-        Err(WorkerStartError::Missing(missing)) if missing == vec![WorkerKind::Retention]
-    ));
+            supervisor().start(plan, Arc::new(FakeLeasePort::default()),
+    Arc::new(RecordingDiagnostics::default()),
+    ),
+            Err(WorkerStartError::Missing(missing)) if missing == vec![WorkerKind::Retention]
+        ));
 }
 
 #[tokio::test]
@@ -383,7 +392,11 @@ async fn disabled_database_facts_never_execute_or_acquire_a_lease() {
     let leases = Arc::new(FakeLeasePort::default());
     let supervisor = supervisor();
     supervisor
-        .start(complete_plan(Vec::new()), leases.clone())
+        .start(
+            complete_plan(Vec::new()),
+            leases.clone(),
+            Arc::new(RecordingDiagnostics::default()),
+        )
         .expect("complete plan");
     wait_until(|| leases.requests().len() >= ACTIVE_KINDS.len()).await;
     let snapshot = supervisor.health_source().snapshot();
@@ -422,7 +435,11 @@ async fn one_kind_runs_all_registered_owner_tasks() {
     ]);
     let supervisor = supervisor();
     supervisor
-        .start(plan, Arc::new(FakeLeasePort::default()))
+        .start(
+            plan,
+            Arc::new(FakeLeasePort::default()),
+            Arc::new(RecordingDiagnostics::default()),
+        )
         .expect("complete plan");
     wait_until(|| second.runs.load(Ordering::SeqCst) >= 1).await;
 
@@ -456,6 +473,7 @@ async fn leader_guard_lives_through_cycle_and_fence_reaches_owner() {
         .start(
             target_plan(task.clone(), long_interval_schedule()),
             leases.clone(),
+            Arc::new(RecordingDiagnostics::default()),
         )
         .expect("complete plan");
     task.entered.notified().await;
@@ -478,6 +496,7 @@ async fn long_cycle_renews_leader_lease_before_ttl() {
         .start(
             target_plan(task.clone(), renewal_schedule()),
             leases.clone(),
+            Arc::new(RecordingDiagnostics::default()),
         )
         .expect("complete plan");
     task.entered.notified().await;
@@ -500,7 +519,11 @@ async fn renewal_failure_cancels_old_cycle_before_another_leader_cycle_starts() 
     leases.renew_script(target_worker(), [RenewStep::Error]);
     let supervisor = supervisor();
     supervisor
-        .start(target_plan(task.clone(), renewal_schedule()), leases)
+        .start(
+            target_plan(task.clone(), renewal_schedule()),
+            leases,
+            Arc::new(RecordingDiagnostics::default()),
+        )
         .expect("complete plan");
     yield_until(|| task.starts.load(Ordering::SeqCst) == 1).await;
     tokio::time::advance(Duration::from_millis(10)).await;
@@ -520,6 +543,7 @@ async fn supervisor_uses_exponential_backoff_and_recovers_health() {
         .start(
             target_plan(task.clone(), backoff_schedule()),
             Arc::new(FakeLeasePort::default()),
+            Arc::new(RecordingDiagnostics::default()),
         )
         .expect("complete plan");
     yield_until(|| task.runs.load(Ordering::SeqCst) == 1).await;
@@ -548,7 +572,11 @@ async fn task_and_lease_port_panics_are_isolated_and_retried() {
     );
     let supervisor = supervisor();
     supervisor
-        .start(target_plan(task.clone(), backoff_schedule()), leases)
+        .start(
+            target_plan(task.clone(), backoff_schedule()),
+            leases,
+            Arc::new(RecordingDiagnostics::default()),
+        )
         .expect("complete plan");
     tokio::task::yield_now().await;
     tokio::time::advance(Duration::from_millis(10)).await;
@@ -578,7 +606,11 @@ async fn lease_busy_is_healthy_standby_and_retries_without_running_owner() {
     );
     let supervisor = supervisor();
     supervisor
-        .start(target_plan(task.clone(), backoff_schedule()), leases)
+        .start(
+            target_plan(task.clone(), backoff_schedule()),
+            leases,
+            Arc::new(RecordingDiagnostics::default()),
+        )
         .expect("complete plan");
     yield_until(|| task_health(&supervisor, &target_worker()).state == WorkerRuntimeState::Standby)
         .await;
@@ -598,7 +630,11 @@ async fn cooperative_shutdown_propagates_cancel_before_dropping_all_guards() {
     let leases = Arc::new(FakeLeasePort::default());
     let supervisor = supervisor();
     supervisor
-        .start(all_active_plan(task.clone()), leases.clone())
+        .start(
+            all_active_plan(task.clone()),
+            leases.clone(),
+            Arc::new(RecordingDiagnostics::default()),
+        )
         .expect("complete plan");
     wait_until(|| task.entered.load(Ordering::SeqCst) == ACTIVE_KINDS.len()).await;
     supervisor.shutdown(Duration::from_secs(1)).await;
@@ -619,6 +655,7 @@ async fn shutdown_timeout_aborts_uncooperative_task_and_drops_guard() {
         .start(
             target_plan(task.clone(), long_interval_schedule()),
             leases.clone(),
+            Arc::new(RecordingDiagnostics::default()),
         )
         .expect("complete plan");
     task.notification.notified().await;
@@ -666,7 +703,11 @@ async fn shutdown_timeout_must_not_rejoin_workers_that_already_exited() {
     let leases = Arc::new(FakeLeasePort::default());
     let supervisor = supervisor();
     supervisor
-        .start(plan, leases.clone())
+        .start(
+            plan,
+            leases.clone(),
+            Arc::new(RecordingDiagnostics::default()),
+        )
         .expect("complete plan");
     hung.notification.notified().await;
     wait_until(|| cooperative.entered.load(Ordering::SeqCst) == ACTIVE_KINDS.len() - 1).await;
@@ -691,6 +732,7 @@ async fn running_worker_becomes_unhealthy_when_last_success_is_stale() {
         .start(
             target_plan(task.clone(), freshness_schedule()),
             Arc::new(FakeLeasePort::default()),
+            Arc::new(RecordingDiagnostics::default()),
         )
         .expect("complete plan");
     task.second_cycle.notified().await;
@@ -897,4 +939,51 @@ fn lock_unpoisoned<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     mutex
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+#[derive(Default)]
+struct RecordingDiagnostics(std::sync::Mutex<Vec<gateway_core::diagnostics::OperationalFailure>>);
+#[async_trait::async_trait]
+impl gateway_core::diagnostics::OperationalDiagnostics for RecordingDiagnostics {
+    async fn record_failure(
+        &self,
+        failure: gateway_core::diagnostics::OperationalFailure,
+    ) -> Result<(), gateway_core::error::StoreError> {
+        self.0.lock().unwrap().push(failure);
+        Ok(())
+    }
+}
+
+#[tokio::test]
+async fn worker_boundary_records_one_native_failure_and_recovers_health() {
+    let supervisor = supervisor();
+    let task = CountingTask::new(1);
+    let diagnostics = Arc::new(RecordingDiagnostics::default());
+    supervisor
+        .start(
+            target_plan(task.clone(), test_schedule()),
+            Arc::new(FakeLeasePort::default()),
+            diagnostics.clone(),
+        )
+        .unwrap();
+    wait_until(|| task.runs.load(Ordering::SeqCst) >= 2).await;
+    supervisor.shutdown(Duration::from_secs(1)).await;
+    let failures = diagnostics.0.lock().unwrap();
+    assert_eq!(failures.len(), 1);
+    assert_eq!(
+        failures[0].correlation_id.as_deref(),
+        Some(target_worker().to_string().as_str())
+    );
+    assert!(
+        failures[0]
+            .details
+            .as_ref()
+            .unwrap()
+            .as_str()
+            .contains("PRIVATE_WORKER_NATIVE_CAUSE")
+    );
+    assert!(
+        !format!("{:?}", supervisor.health_source().snapshot())
+            .contains("PRIVATE_WORKER_NATIVE_CAUSE")
+    );
 }

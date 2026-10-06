@@ -213,7 +213,7 @@ impl ProviderAccountRepository for PgProviderAccountRepository {
         .bind(account.next_refresh_at)
         .bind(account.enabled)
         .bind(account.concurrency_limit.map(|limit| i64::from(limit.get())))
-        .bind(i16::try_from(account.weight.get()).map_err(|_| invalid("invalid weight"))?)
+        .bind(i16::try_from(account.weight.get()).map_err(|source| invalid("invalid weight").with_source(source))?)
         .bind(credential_state.as_str())
         .bind(account.credential_observed_at)
         .bind(account.outbound_proxy.as_ref().map(|proxy| proxy.expose_url()))
@@ -281,6 +281,7 @@ impl ProviderAccountRepository for PgProviderAccountRepository {
         .await
         .map_err(|source| postgres_unavailable("compare and swap provider credentials", source))?
         .ok_or(StoreError::Conflict {
+            source: None,
             entity: ENTITY,
             id: update.account_id,
             kind: ConflictKind::StaleRevision,
@@ -587,6 +588,7 @@ impl ProviderAccountAdminRepository for PgProviderAccountRepository {
             .await
             .map_err(|source| postgres_unavailable("recover provider account state", source))?
             .ok_or_else(|| StoreError::NotFound {
+                source: None,
                 entity: ENTITY,
                 id: command.account_id.clone(),
             })?;
@@ -659,6 +661,7 @@ async fn replace_account_group_assignments_in_transaction(
         .map_err(|source| postgres_unavailable("validate account group assignment", source))?;
         if usize::try_from(known_group_count).ok() != Some(group_ids.len()) {
             return Err(StoreError::NotFound {
+                source: None,
                 entity: "account group",
                 id: "one or more group IDs".to_owned(),
             });
@@ -757,7 +760,7 @@ pub(crate) async fn upsert_provider_account_in_transaction(
     .bind(account.next_refresh_at)
     .bind(account.enabled)
     .bind(account.concurrency_limit.map(|limit| i64::from(limit.get())))
-    .bind(i16::try_from(account.weight.get()).map_err(|_| invalid("invalid weight"))?)
+    .bind(i16::try_from(account.weight.get()).map_err(|source| invalid("invalid weight").with_source(source))?)
     .bind(credential_state.as_str())
     .bind(account.credential_observed_at)
     .bind(account.outbound_proxy.as_ref().map(|proxy| proxy.expose_url()))
@@ -771,6 +774,7 @@ pub(crate) async fn upsert_provider_account_in_transaction(
             .is_some_and(sqlx::error::DatabaseError::is_unique_violation)
         {
             StoreError::Conflict {
+                source: Some(error.into()),
                 entity: ENTITY,
                 id: account.id.clone(),
                 kind: ConflictKind::InvalidTransition,
@@ -780,6 +784,7 @@ pub(crate) async fn upsert_provider_account_in_transaction(
         }
     })?
     .ok_or_else(|| StoreError::Conflict {
+        source: None,
         entity: ENTITY,
         id: account.id.clone(),
         kind: ConflictKind::InvalidTransition,
@@ -850,6 +855,7 @@ pub(crate) async fn rotate_provider_account_in_transaction(
             .is_some_and(sqlx::error::DatabaseError::is_unique_violation)
         {
             StoreError::Conflict {
+                source: Some(error.into()),
                 entity: ENTITY,
                 id: update.account_id.clone(),
                 kind: ConflictKind::InvalidTransition,
@@ -859,6 +865,7 @@ pub(crate) async fn rotate_provider_account_in_transaction(
         }
     })?
     .ok_or_else(|| StoreError::Conflict {
+        source: None,
         entity: ENTITY,
         id: update.account_id.clone(),
         kind: ConflictKind::StaleRevision,
@@ -893,7 +900,7 @@ pub(crate) async fn update_provider_accounts_scheduling_in_transaction(
     .bind(account_ids)
     .bind(enabled)
     .bind(concurrency_limit.flatten().map(|limit| i64::from(limit.get())))
-    .bind(weight.map(|weight| i16::try_from(weight.get())).transpose().map_err(|_| invalid("invalid weight"))?)
+    .bind(weight.map(|weight| i16::try_from(weight.get())).transpose().map_err(|source| invalid("invalid weight").with_source(source))?)
     .bind(outbound_proxy.is_some())
     .bind(proxy.as_ref().map(gateway_core::account::OutboundProxy::expose_url))
     .bind(proxy_id)
@@ -909,6 +916,7 @@ pub(crate) async fn update_provider_accounts_scheduling_in_transaction(
         Ok(())
     } else {
         Err(StoreError::NotFound {
+            source: None,
             entity: ENTITY,
             id: "one or more provider account IDs".to_owned(),
         })
@@ -1018,10 +1026,10 @@ pub(crate) async fn finish_admin_transaction<T>(
             Ok(value)
         }
         Err(error) => {
-            transaction
-                .rollback()
-                .await
-                .map_err(|source| postgres_unavailable(operation, source))?;
+            let error = match transaction.rollback().await {
+                Ok(()) => error,
+                Err(cleanup) => error.with_cleanup(cleanup),
+            };
             Err(error)
         }
     }
@@ -1042,6 +1050,7 @@ pub(super) async fn import_provider_accounts_in_transaction(
         .await?;
         if current.as_ref() != Some(&binding.proxy) {
             return Err(StoreError::Conflict {
+                source: None,
                 entity: "outbound proxy",
                 id: binding.id.clone(),
                 kind: ConflictKind::StaleRevision,

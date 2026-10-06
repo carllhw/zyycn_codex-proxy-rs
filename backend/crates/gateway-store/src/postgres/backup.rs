@@ -55,12 +55,10 @@ impl BackupRepository for PgBackupRepository {
         command: UpdateBackupStorageCommand,
         context: &MutationContext,
     ) -> AdminStoreResult<(BackupSettings, AdminRevision)> {
-        let mut transaction = self
-            .pool
-            .begin()
-            .await
-            .map_err(|_| store_unavailable("begin backup storage update"))?;
-        let result = async {
+        let mut transaction = self.pool.begin().await.map_err(|source| {
+            store_unavailable("begin backup storage update").with_source(source)
+        })?;
+        let result: AdminStoreResult<_> = async {
             let current = lock_settings_in_transaction(&mut transaction).await?;
             let mut changed = storage_changed_fields(&current, &command);
             if changed.is_empty() {
@@ -68,11 +66,14 @@ impl BackupRepository for PgBackupRepository {
                     sqlx::query_scalar("select config_revision from runtime_settings where id = 1")
                         .fetch_one(&mut *transaction)
                         .await
-                        .map_err(|_| store_unavailable("load unchanged backup revision"))?;
+                        .map_err(|source| {
+                            store_unavailable("load unchanged backup revision").with_source(source)
+                        })?;
                 let revision = AdminRevision::new(
-                    u64::try_from(revision).map_err(|_| store_invalid("config revision"))?,
+                    u64::try_from(revision)
+                        .map_err(|source| store_invalid("config revision").with_source(source))?,
                 )
-                .map_err(|_| store_invalid("config revision"))?;
+                .map_err(|source| store_invalid("config revision").with_source(source))?;
                 return Ok((current, revision));
             }
             ensure_storage_identity_stable(&current, &command, &mut transaction).await?;
@@ -106,7 +107,7 @@ impl BackupRepository for PgBackupRepository {
             .bind(command.force_path_style)
             .execute(&mut *transaction)
             .await
-            .map_err(|_| store_unavailable("update backup storage"))?;
+            .map_err(|source| store_unavailable("update backup storage").with_source(source))?;
 
             let store_revision = bump_config_revision_in_transaction(&mut transaction)
                 .await
@@ -135,17 +136,16 @@ impl BackupRepository for PgBackupRepository {
         .await;
         match result {
             Ok(result) => {
-                transaction
-                    .commit()
-                    .await
-                    .map_err(|_| store_unavailable("commit backup storage update"))?;
+                transaction.commit().await.map_err(|source| {
+                    store_unavailable("commit backup storage update").with_source(source)
+                })?;
                 Ok(result)
             }
             Err(error) => {
-                transaction
-                    .rollback()
-                    .await
-                    .map_err(|_| store_unavailable("rollback backup storage update"))?;
+                let error = match transaction.rollback().await {
+                    Ok(()) => error,
+                    Err(cleanup) => error.with_cleanup(cleanup),
+                };
                 Err(error)
             }
         }
@@ -158,11 +158,9 @@ impl BackupRepository for PgBackupRepository {
         context: &MutationContext,
         timezone: gateway_core::time::DeploymentTimeZone,
     ) -> AdminStoreResult<BackupSettings> {
-        let mut transaction = self
-            .pool
-            .begin()
-            .await
-            .map_err(|_| store_unavailable("begin backup schedule update"))?;
+        let mut transaction = self.pool.begin().await.map_err(|source| {
+            store_unavailable("begin backup schedule update").with_source(source)
+        })?;
         let result = async {
             sqlx::query(
                 "update backup_settings
@@ -183,7 +181,7 @@ impl BackupRepository for PgBackupRepository {
             .bind(next_run_at)
             .execute(&mut *transaction)
             .await
-            .map_err(|_| store_unavailable("update backup schedule"))?;
+            .map_err(|source| store_unavailable("update backup schedule").with_source(source))?;
 
             let audit = crate::mutation_audit(
                 context,
@@ -205,17 +203,16 @@ impl BackupRepository for PgBackupRepository {
         .await;
         match result {
             Ok(settings) => {
-                transaction
-                    .commit()
-                    .await
-                    .map_err(|_| store_unavailable("commit backup schedule update"))?;
+                transaction.commit().await.map_err(|source| {
+                    store_unavailable("commit backup schedule update").with_source(source)
+                })?;
                 Ok(settings)
             }
             Err(error) => {
-                transaction
-                    .rollback()
-                    .await
-                    .map_err(|_| store_unavailable("rollback backup schedule update"))?;
+                let error = match transaction.rollback().await {
+                    Ok(()) => error,
+                    Err(cleanup) => error.with_cleanup(cleanup),
+                };
                 Err(error)
             }
         }
@@ -231,20 +228,23 @@ impl BackupRepository for PgBackupRepository {
                 set last_verified_at = $2, updated_at = now()
               where id = 1 and storage_revision = $1",
         )
-        .bind(i64::try_from(storage_revision).map_err(|_| store_invalid("storage revision"))?)
+        .bind(
+            i64::try_from(storage_revision)
+                .map_err(|source| store_invalid("storage revision").with_source(source))?,
+        )
         .bind(at)
         .execute(&self.pool)
         .await
-        .map_err(|_| store_unavailable("record backup storage verification"))?;
+        .map_err(|source| {
+            store_unavailable("record backup storage verification").with_source(source)
+        })?;
         Ok(result.rows_affected() == 1)
     }
 
     async fn insert_backup_record(&self, seed: BackupRecordSeed) -> AdminStoreResult<BackupRecord> {
-        let mut transaction = self
-            .pool
-            .begin()
-            .await
-            .map_err(|_| store_unavailable("begin backup record insert"))?;
+        let mut transaction = self.pool.begin().await.map_err(|source| {
+            store_unavailable("begin backup record insert").with_source(source)
+        })?;
         let result = async {
             let _ = lock_settings_in_transaction(&mut transaction).await?;
             insert_queued_in_transaction(&mut transaction, &seed).await
@@ -252,17 +252,16 @@ impl BackupRepository for PgBackupRepository {
         .await;
         match result {
             Ok(record) => {
-                transaction
-                    .commit()
-                    .await
-                    .map_err(|_| store_unavailable("commit backup record insert"))?;
+                transaction.commit().await.map_err(|source| {
+                    store_unavailable("commit backup record insert").with_source(source)
+                })?;
                 Ok(record)
             }
             Err(error) => {
-                transaction
-                    .rollback()
-                    .await
-                    .map_err(|_| store_unavailable("rollback backup record insert"))?;
+                let error = match transaction.rollback().await {
+                    Ok(()) => error,
+                    Err(cleanup) => error.with_cleanup(cleanup),
+                };
                 Err(error)
             }
         }
@@ -276,11 +275,10 @@ impl BackupRepository for PgBackupRepository {
         expected_timezone: &str,
         expected_next_run_at: Option<DateTime<Utc>>,
     ) -> AdminStoreResult<bool> {
-        let mut transaction = self
-            .pool
-            .begin()
-            .await
-            .map_err(|_| store_unavailable("begin scheduled insert"))?;
+        let mut transaction =
+            self.pool.begin().await.map_err(|source| {
+                store_unavailable("begin scheduled insert").with_source(source)
+            })?;
         // 先锁定并核对计划，防止配置变更后仍排入旧计划任务
         let advanced = sqlx::query(
             "update backup_settings set next_run_at = $1
@@ -293,52 +291,47 @@ impl BackupRepository for PgBackupRepository {
         .bind(expected_next_run_at)
         .execute(&mut *transaction)
         .await
-        .map_err(|_| store_unavailable("guard scheduled insert"))?
+        .map_err(|source| store_unavailable("guard scheduled insert").with_source(source))?
         .rows_affected()
             > 0;
         if !advanced {
-            transaction
-                .rollback()
-                .await
-                .map_err(|_| store_unavailable("rollback stale schedule"))?;
+            transaction.rollback().await.map_err(|source| {
+                store_unavailable("rollback stale schedule").with_source(source)
+            })?;
             return Ok(false);
         }
         // 唯一约束冲突只跳过本次任务；保存点避免连带撤销游标推进
         let mut insertion = transaction
             .begin()
             .await
-            .map_err(|_| store_unavailable("begin scheduled savepoint"))?;
+            .map_err(|source| store_unavailable("begin scheduled savepoint").with_source(source))?;
         let inserted = match insert_queued_in_transaction(&mut insertion, &seed).await {
             Ok(_) => {
-                insertion
-                    .commit()
-                    .await
-                    .map_err(|_| store_unavailable("release scheduled savepoint"))?;
+                insertion.commit().await.map_err(|source| {
+                    store_unavailable("release scheduled savepoint").with_source(source)
+                })?;
                 true
             }
             Err(error) if is_active_or_scheduled_conflict(&error) => {
-                insertion
-                    .rollback()
-                    .await
-                    .map_err(|_| store_unavailable("rollback scheduled savepoint"))?;
+                insertion.rollback().await.map_err(|source| {
+                    store_unavailable("rollback scheduled savepoint").with_source(source)
+                })?;
                 false
             }
-            Err(error) => {
-                insertion
-                    .rollback()
-                    .await
-                    .map_err(|_| store_unavailable("rollback scheduled savepoint"))?;
-                transaction
-                    .rollback()
-                    .await
-                    .map_err(|_| store_unavailable("rollback scheduled insert"))?;
+            Err(mut error) => {
+                if let Err(cleanup) = insertion.rollback().await {
+                    error = error.with_cleanup(cleanup);
+                }
+                if let Err(cleanup) = transaction.rollback().await {
+                    error = error.with_cleanup(cleanup);
+                }
                 return Err(error);
             }
         };
         transaction
             .commit()
             .await
-            .map_err(|_| store_unavailable("commit scheduled insert"))?;
+            .map_err(|source| store_unavailable("commit scheduled insert").with_source(source))?;
         Ok(inserted)
     }
 
@@ -361,7 +354,7 @@ impl BackupRepository for PgBackupRepository {
         .bind(trigger)
         .fetch_one(&self.pool)
         .await
-        .map_err(|_| store_unavailable("count backup records"))?;
+        .map_err(|source| store_unavailable("count backup records").with_source(source))?;
 
         let rows = sqlx::query(
             "select id, trigger_kind, status, scheduled_at, object_key, size_bytes, sha256,
@@ -376,10 +369,13 @@ impl BackupRepository for PgBackupRepository {
         .bind(status)
         .bind(trigger)
         .bind(i64::from(limit))
-        .bind(i64::try_from(offset).map_err(|_| store_invalid("page offset"))?)
+        .bind(
+            i64::try_from(offset)
+                .map_err(|source| store_invalid("page offset").with_source(source))?,
+        )
         .fetch_all(&self.pool)
         .await
-        .map_err(|_| store_unavailable("list backup records"))?;
+        .map_err(|source| store_unavailable("list backup records").with_source(source))?;
 
         let items = rows
             .iter()
@@ -387,7 +383,8 @@ impl BackupRepository for PgBackupRepository {
             .collect::<Result<Vec<_>, _>>()?;
         Ok(BackupRecordPage {
             items,
-            total: u64::try_from(total).map_err(|_| store_invalid("record count"))?,
+            total: u64::try_from(total)
+                .map_err(|source| store_invalid("record count").with_source(source))?,
             page: query.page,
             page_size: query.page_size,
         })
@@ -403,7 +400,7 @@ impl BackupRepository for PgBackupRepository {
         .bind(id)
         .fetch_optional(&self.pool)
         .await
-        .map_err(|_| store_unavailable("load backup record"))?
+        .map_err(|source| store_unavailable("load backup record").with_source(source))?
         .map(|row| backup_record_from_row(&row))
         .transpose()
     }
@@ -419,7 +416,9 @@ impl BackupRepository for PgBackupRepository {
         )
         .fetch_all(&self.pool)
         .await
-        .map_err(|_| store_unavailable("list intermediate backup records"))?;
+        .map_err(|source| {
+            store_unavailable("list intermediate backup records").with_source(source)
+        })?;
         rows.iter()
             .map(backup_record_from_row)
             .collect::<Result<Vec<_>, _>>()
@@ -439,7 +438,7 @@ impl BackupRepository for PgBackupRepository {
         .bind(i64::from(limit))
         .fetch_all(&self.pool)
         .await
-        .map_err(|_| store_unavailable("list pending deletions"))?;
+        .map_err(|source| store_unavailable("list pending deletions").with_source(source))?;
         rows.iter()
             .map(backup_record_from_row)
             .collect::<Result<Vec<_>, _>>()
@@ -463,7 +462,7 @@ impl BackupRepository for PgBackupRepository {
         .bind(i64::from(limit))
         .fetch_all(&self.pool)
         .await
-        .map_err(|_| store_unavailable("list expired backups"))?;
+        .map_err(|source| store_unavailable("list expired backups").with_source(source))?;
         rows.iter()
             .map(backup_record_from_row)
             .collect::<Result<Vec<_>, _>>()
@@ -497,7 +496,7 @@ impl BackupRepository for PgBackupRepository {
         .bind(now)
         .fetch_optional(&self.pool)
         .await
-        .map_err(|_| store_unavailable("claim queued backup task"))?
+        .map_err(|source| store_unavailable("claim queued backup task").with_source(source))?
         .map(|row| backup_record_from_row(&row))
         .transpose()
     }
@@ -513,7 +512,7 @@ impl BackupRepository for PgBackupRepository {
             .size_bytes
             .map(i64::try_from)
             .transpose()
-            .map_err(|_| store_invalid("size bytes"))?;
+            .map_err(|source| store_invalid("size bytes").with_source(source))?;
         sqlx::query(
             "update backup_records
                 set status = $1,
@@ -542,7 +541,7 @@ impl BackupRepository for PgBackupRepository {
         .bind(transition.from().as_str())
         .fetch_optional(&self.pool)
         .await
-        .map_err(|_| store_unavailable("transition backup task"))?
+        .map_err(|source| store_unavailable("transition backup task").with_source(source))?
         .map(|row| backup_record_from_row(&row))
         .transpose()
     }
@@ -564,7 +563,7 @@ impl BackupRepository for PgBackupRepository {
         .bind(id)
         .fetch_optional(&self.pool)
         .await
-        .map_err(|_| store_unavailable("transition backup to deleting"))?
+        .map_err(|source| store_unavailable("transition backup to deleting").with_source(source))?
         .map(|row| backup_record_from_row(&row))
         .transpose()
     }
@@ -575,7 +574,7 @@ impl BackupRepository for PgBackupRepository {
             .execute(&self.pool)
             .await
             .map(|_| ())
-            .map_err(|_| store_unavailable("delete backup record"))
+            .map_err(|source| store_unavailable("delete backup record").with_source(source))
     }
 
     async fn advance_schedule_cursor(
@@ -602,7 +601,9 @@ impl BackupRepository for PgBackupRepository {
         .bind(timezone)
         .execute(&self.pool)
         .await
-        .map_err(|_| store_unavailable("advance backup schedule cursor"))?;
+        .map_err(|source| {
+            store_unavailable("advance backup schedule cursor").with_source(source)
+        })?;
         Ok(result.rows_affected() == 1)
     }
 
@@ -623,7 +624,9 @@ impl BackupRepository for PgBackupRepository {
         .bind(i64::from(limit))
         .fetch_all(&self.pool)
         .await
-        .map_err(|_| store_unavailable("list scheduled completed backups"))?;
+        .map_err(|source| {
+            store_unavailable("list scheduled completed backups").with_source(source)
+        })?;
         rows.iter()
             .map(backup_record_from_row)
             .collect::<Result<Vec<_>, _>>()
@@ -649,7 +652,7 @@ async fn lock_settings_in_transaction(
     )
     .fetch_optional(&mut **transaction)
     .await
-    .map_err(|_| store_unavailable("lock backup settings"))?
+    .map_err(|source| store_unavailable("lock backup settings").with_source(source))?
     .map(|row| backup_settings_from_row(&row))
     .transpose()?
     .ok_or_else(|| store_not_found("backup settings"))
@@ -666,7 +669,7 @@ async fn load_settings_in_transaction(
     )
     .fetch_optional(&mut **transaction)
     .await
-    .map_err(|_| store_unavailable("load backup settings in transaction"))?
+    .map_err(|source| store_unavailable("load backup settings in transaction").with_source(source))?
     .map(|row| backup_settings_from_row(&row))
     .transpose()?
     .ok_or_else(|| store_not_found("backup settings"))
@@ -681,7 +684,7 @@ async fn load_backup_settings(pool: &PgPool) -> AdminStoreResult<BackupSettings>
     )
     .fetch_optional(pool)
     .await
-    .map_err(|_| store_unavailable("load backup settings"))?
+    .map_err(|source| store_unavailable("load backup settings").with_source(source))?
     .map(|row| backup_settings_from_row(&row))
     .transpose()?
     .ok_or_else(|| store_not_found("backup settings"))
@@ -761,7 +764,9 @@ async fn ensure_storage_identity_stable(
         sqlx::query_scalar::<_, bool>("select exists(select 1 from backup_records)")
             .fetch_one(&mut **transaction)
             .await
-            .map_err(|_| store_unavailable("check backup records existence"))?;
+            .map_err(|source| {
+                store_unavailable("check backup records existence").with_source(source)
+            })?;
     if records_exist {
         return Err(AdminStoreError::new(
             AdminStoreErrorKind::Conflict,
@@ -815,7 +820,8 @@ async fn append_audit_in_transaction(
 ) -> StoreResult<()> {
     event.config_revision = revision
         .map(|revision| {
-            i64::try_from(revision.get()).map_err(|_| StoreError::InvalidData {
+            i64::try_from(revision.get()).map_err(|source| StoreError::InvalidData {
+                source: Some(source.into()),
                 entity: "backup",
                 message: "revision overflow".to_owned(),
             })
@@ -849,7 +855,7 @@ fn backup_record_from_row(row: &sqlx::postgres::PgRow) -> AdminStoreResult<Backu
     let size_bytes = decode(row.try_get::<Option<i64>, _>("size_bytes"))?
         .map(u64::try_from)
         .transpose()
-        .map_err(|_| store_invalid("size_bytes"))?;
+        .map_err(|source| store_invalid("size_bytes").with_source(source))?;
     Ok(BackupRecord {
         id: decode(row.try_get("id"))?,
         trigger_kind: BackupTriggerKind::parse(decode(row.try_get::<&str, _>("trigger_kind"))?)
@@ -861,7 +867,7 @@ fn backup_record_from_row(row: &sqlx::postgres::PgRow) -> AdminStoreResult<Backu
         size_bytes,
         sha256: decode(row.try_get("sha256"))?,
         attempt_count: u32::try_from(decode(row.try_get::<i32, _>("attempt_count"))?)
-            .map_err(|_| store_invalid("attempt_count"))?,
+            .map_err(|source| store_invalid("attempt_count").with_source(source))?,
         error_code: decode(row.try_get("error_code"))?,
         error_message: decode(row.try_get("error_message"))?,
         started_at: decode(row.try_get("started_at"))?,
@@ -874,7 +880,7 @@ fn backup_record_from_row(row: &sqlx::postgres::PgRow) -> AdminStoreResult<Backu
 
 fn backup_settings_from_row(row: &sqlx::postgres::PgRow) -> AdminStoreResult<BackupSettings> {
     let storage_revision = u64::try_from(decode(row.try_get::<i64, _>("storage_revision"))?)
-        .map_err(|_| store_invalid("storage_revision"))?;
+        .map_err(|source| store_invalid("storage_revision").with_source(source))?;
     let secret = decode(row.try_get::<Option<String>, _>("secret_access_key"))?;
     Ok(BackupSettings {
         storage_revision,
@@ -889,9 +895,9 @@ fn backup_settings_from_row(row: &sqlx::postgres::PgRow) -> AdminStoreResult<Bac
         cron_expression: decode(row.try_get("cron_expression"))?,
         schedule_timezone: decode(row.try_get("schedule_timezone"))?,
         retention_days: u32::try_from(decode(row.try_get::<i64, _>("retention_days"))?)
-            .map_err(|_| store_invalid("retention_days"))?,
+            .map_err(|source| store_invalid("retention_days").with_source(source))?,
         retention_count: u32::try_from(decode(row.try_get::<i64, _>("retention_count"))?)
-            .map_err(|_| store_invalid("retention_count"))?,
+            .map_err(|source| store_invalid("retention_count").with_source(source))?,
         next_run_at: decode(row.try_get("next_run_at"))?,
         last_verified_at: decode(row.try_get("last_verified_at"))?,
         updated_at: decode(row.try_get("updated_at"))?,
@@ -911,22 +917,7 @@ fn decode<T>(result: Result<T, sqlx::Error>) -> AdminStoreResult<T> {
 
 /// StoreError → AdminStoreError 的显式映射
 fn map_admin_error(error: StoreError) -> AdminStoreError {
-    match error {
-        StoreError::Unavailable { .. } => AdminStoreError::new(
-            AdminStoreErrorKind::Unavailable,
-            "backup",
-            "backup store unavailable",
-        ),
-        StoreError::NotFound { entity, .. } => {
-            AdminStoreError::new(AdminStoreErrorKind::NotFound, entity, "not found")
-        }
-        StoreError::Conflict { entity, .. } => {
-            AdminStoreError::new(AdminStoreErrorKind::Conflict, entity, "conflict")
-        }
-        StoreError::InvalidData { entity, message } => {
-            AdminStoreError::new(AdminStoreErrorKind::Invalid, entity, message)
-        }
-    }
+    crate::admin_store_error("backup", error)
 }
 
 fn store_unavailable(operation: &'static str) -> AdminStoreError {
