@@ -24,11 +24,7 @@ use crate::account::{AccountSelectionPolicy, FastMode};
 use crate::operation::{CapabilityRequirements, Feature, OperationKind};
 use crate::validation::{IdentifierError, RoutingError, validate_text};
 
-const MAX_REQUEST_ATTEMPTS: u32 = 32;
-
-/// 单请求内允许的换号次数上限，选中账号与上一 attempt 不同的路由 attempt 记一次
-/// 初始账号和同账号重试不计入换号次数，所有尝试仍受总路由预算限制
-pub(crate) const MAX_ACCOUNT_ROTATION_ATTEMPTS: u32 = 3;
+const MAX_REQUEST_ATTEMPTS: u32 = crate::account::MAX_ACCOUNT_ROTATIONS + 1;
 
 /// 客户端请求中的模型名称
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize)]

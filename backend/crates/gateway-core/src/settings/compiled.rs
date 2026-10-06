@@ -22,7 +22,10 @@ pub(crate) struct CompiledSettings {
 
 impl CompiledSettings {
     pub(crate) fn new(settings: SettingsValues) -> Result<Self, InvalidSettings> {
-        if settings.max_waiting_per_key > 1_000
+        if !(1..=crate::account::MAX_SESSION_AFFINITY_TTL_HOURS)
+            .contains(&settings.openai_session_affinity_ttl_hours)
+            || settings.max_account_rotations > crate::account::MAX_ACCOUNT_ROTATIONS
+            || settings.max_waiting_per_key > 1_000
             || settings.max_waiting_per_account > 1_000
             || !(1..=120).contains(&settings.concurrency_wait_timeout_seconds)
         {
@@ -58,6 +61,11 @@ impl CompiledSettings {
             Duration::from_millis(settings.request_interval_ms),
         )
         .with_openai_guardian_reserved_concurrency(settings.openai_guardian_reserved_concurrency)
+        .with_openai_account_affinity(settings.openai_account_affinity)
+        .with_max_account_rotations(settings.max_account_rotations)
+        .with_openai_session_affinity_ttl(Duration::from_secs(
+            u64::from(settings.openai_session_affinity_ttl_hours) * 3600,
+        ))
         .with_smart_scheduling(settings.smart_scheduling)
         .with_queue(ConcurrencyQueuePolicy {
             max_waiting: settings.max_waiting_per_account,

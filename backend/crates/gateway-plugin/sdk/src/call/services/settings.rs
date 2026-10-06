@@ -1,7 +1,6 @@
 //! 宿主设置服务的操作标识与请求、响应数据合同
 //!
 //! 从宿主设置类型与 service/settings.rs 生成；更新命令见 SDK 维护说明
-
 use super::Operation;
 use serde::{Deserialize, Serialize};
 use std::{
@@ -14,6 +13,7 @@ pub type ProviderRequestProfileUpdates =
 pub type ModelMappings = BTreeMap<String, String>;
 pub type Revision = NonZeroU64;
 pub type RotationStrategy = String;
+pub type AccountAffinity = String;
 pub type PricingOverrides = BTreeMap<String, BTreeMap<String, ModelPriceOverride>>;
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -31,6 +31,9 @@ pub struct RuntimeSettings {
     pub max_waiting_per_account: u32,
     pub concurrency_wait_timeout_seconds: u32,
     pub openai_guardian_reserved_concurrency: u32,
+    pub openai_account_affinity: AccountAffinity,
+    pub max_account_rotations: u32,
+    pub openai_session_affinity_ttl_hours: u32,
     pub responses_max_decompressed_body_bytes: u64,
     pub smart_scheduling: SmartSchedulingConfig,
     pub rotation_strategy: RotationStrategy,
@@ -69,6 +72,9 @@ pub struct ReplaceRuntimeSettings {
     pub max_waiting_per_account: u32,
     pub concurrency_wait_timeout_seconds: u32,
     pub openai_guardian_reserved_concurrency: u32,
+    pub openai_account_affinity: AccountAffinity,
+    pub max_account_rotations: u32,
+    pub openai_session_affinity_ttl_hours: u32,
     pub responses_max_decompressed_body_bytes: u64,
     pub smart_scheduling: SmartSchedulingConfig,
     pub rotation_strategy: RotationStrategy,
@@ -264,6 +270,9 @@ impl From<RuntimeSettings> for ReplaceRuntimeSettings {
             max_waiting_per_account: settings.max_waiting_per_account,
             concurrency_wait_timeout_seconds: settings.concurrency_wait_timeout_seconds,
             openai_guardian_reserved_concurrency: settings.openai_guardian_reserved_concurrency,
+            openai_account_affinity: settings.openai_account_affinity,
+            max_account_rotations: settings.max_account_rotations,
+            openai_session_affinity_ttl_hours: settings.openai_session_affinity_ttl_hours,
             responses_max_decompressed_body_bytes: settings.responses_max_decompressed_body_bytes,
             smart_scheduling: settings.smart_scheduling,
             rotation_strategy: settings.rotation_strategy,

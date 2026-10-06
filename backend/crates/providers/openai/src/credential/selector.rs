@@ -26,7 +26,7 @@ use secrecy::ExposeSecret;
 use thiserror::Error;
 use url::Url;
 
-use super::affinity::{CODEX_ROOT_SESSION_TTL, CodexSessionAffinity};
+use super::affinity::CodexSessionAffinity;
 use super::cookie::CodexCookiePolicy;
 use super::quota::CodexCredentialQuotaService;
 use super::refresh::refresh_recovery_deadline;
@@ -342,6 +342,7 @@ impl CodexCredentialSelector {
         lease: &mut CodexCredentialLease,
         session_affinity: Option<&CodexSessionAffinity>,
         cyber_policy_session_key: Option<&ProviderSessionAffinityKey>,
+        session_ttl: Duration,
     ) -> Result<(), CredentialSelectionError> {
         let selected_account = lease.account.id().clone();
         if let Some(affinity) = session_affinity
@@ -353,7 +354,12 @@ impl CodexCredentialSelector {
                     .as_ref()
                     .is_some_and(|binding| binding.account_id() != &selected_account)
                 || !self
-                    .admit_session(affinity.key(), current.as_ref(), &selected_account)
+                    .admit_session(
+                        affinity.key(),
+                        current.as_ref(),
+                        &selected_account,
+                        session_ttl,
+                    )
                     .await?
             {
                 return Err(CredentialSelectionError::SessionBound(Box::new(
@@ -634,16 +640,28 @@ impl CodexCredentialSelector {
                     AccountCandidate { account, signals }
                 })
                 .collect::<Vec<_>>();
-            let mut affinity =
-                binding
-                    .as_ref()
-                    .map_or_else(AffinitySelection::default, |binding| {
-                        affinity_selection_for_bound_account(
-                            binding.account_id().clone(),
-                            &candidates,
-                            SystemTime::now(),
-                        )
-                    });
+            let inherited = if binding.is_none() && !diagnostic {
+                if let Some(root) = request
+                    .session_affinity_observation
+                    .and_then(CodexSessionAffinity::root_key)
+                {
+                    self.lookup_session_affinity(root).await?
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
+            let mut affinity = binding.as_ref().or(inherited.as_ref()).map_or_else(
+                AffinitySelection::default,
+                |binding| {
+                    affinity_selection_for_bound_account(
+                        binding.account_id().clone(),
+                        &candidates,
+                        SystemTime::now(),
+                    )
+                },
+            );
             let cyber_policy_scope = self
                 .prepare_cyber_policy_scope(cyber_policy_session_key)
                 .await;
@@ -654,7 +672,7 @@ impl CodexCredentialSelector {
             {
                 excluded.extend(state.excluded_accounts().iter().cloned());
             }
-            // 继续遵守既有重试排除与固定账号规则；换号时迁移共享会话绑定
+            // 继续遵守既有重试排除与固定账号规则；只迁移本请求所属绑定
             if let Some(required) = pinned_account.as_ref() {
                 excluded.extend(
                     candidates
@@ -883,7 +901,15 @@ impl CodexCredentialSelector {
                     ProviderLeaseAcquisition::Acquired(guard) => {
                         if let Some(key) = binding_key
                             && !self
-                                .admit_session(key, binding.as_ref(), account.id())
+                                .admit_session(
+                                    key,
+                                    binding.as_ref(),
+                                    account.id(),
+                                    request
+                                        .attempt
+                                        .account_selection_policy()
+                                        .openai_session_affinity_ttl(),
+                                )
                                 .await?
                         {
                             drop(guard);
@@ -959,17 +985,15 @@ impl CodexCredentialSelector {
         &self,
         turn: &ProviderSessionAffinityKey,
         session: &CodexSessionAffinity,
+        session_ttl: Duration,
     ) -> Result<(), CredentialSelectionError> {
         let applied = tokio::time::timeout(
             SESSION_AFFINITY_TIMEOUT,
             self.session_affinity.bind_alias(
                 &self.provider_kind,
                 turn,
-                &gateway_core::provider_ports::ProviderSessionAlias {
-                    session_key: session.key().clone(),
-                    follow_only: session.follow_only(),
-                },
-                CODEX_ROOT_SESSION_TTL,
+                &session.alias_record(),
+                session_ttl,
             ),
         )
         .await
@@ -986,6 +1010,7 @@ impl CodexCredentialSelector {
     pub(crate) async fn session_for_turn(
         &self,
         turn: &ProviderSessionAffinityKey,
+        mode: gateway_core::account::AccountAffinity,
     ) -> Result<Option<CodexSessionAffinity>, CredentialSelectionError> {
         tokio::time::timeout(
             SESSION_AFFINITY_TIMEOUT,
@@ -994,7 +1019,9 @@ impl CodexCredentialSelector {
         .await
         .map_err(binding_store_error)?
         .map_err(binding_store_error)
-        .map(|key| key.map(CodexSessionAffinity::from_turn_alias))
+        .map(|alias| {
+            alias.map(|alias| CodexSessionAffinity::from_turn_alias(turn.clone(), alias, mode))
+        })
     }
 
     async fn lookup_session_affinity(
@@ -1015,6 +1042,7 @@ impl CodexCredentialSelector {
         key: &ProviderSessionAffinityKey,
         expected: Option<&ProviderSessionBinding>,
         account: &ProviderAccountId,
+        session_ttl: Duration,
     ) -> Result<bool, CredentialSelectionError> {
         tokio::time::timeout(
             SESSION_AFFINITY_TIMEOUT,
@@ -1023,7 +1051,7 @@ impl CodexCredentialSelector {
                 key,
                 expected,
                 account,
-                CODEX_ROOT_SESSION_TTL,
+                session_ttl,
             ),
         )
         .await

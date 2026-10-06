@@ -14,7 +14,8 @@ use crate::StoreResult;
 
 use super::{namespace, resource_fingerprint};
 
-const MAX_SESSION_AFFINITY_TTL: Duration = Duration::from_secs(24 * 60 * 60);
+const MAX_SESSION_AFFINITY_TTL: Duration =
+    Duration::from_secs(gateway_core::account::MAX_SESSION_AFFINITY_TTL_HOURS as u64 * 3600);
 
 // 比较完整记录而非账号 ID；冲突时既不改绑定，也不续期
 const COMPARE_AND_BIND_SCRIPT: &str = r#"
@@ -55,6 +56,8 @@ impl BindingRecord {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct AliasRecord {
     session_key: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    root_session_key: Option<String>,
     follow_only: bool,
 }
 
@@ -167,6 +170,10 @@ impl ProviderSessionAffinityPort for RedisProviderSessionAffinityRepository {
                     Ok(gateway_core::provider_ports::ProviderSessionAlias {
                         session_key: ProviderSessionAffinityKey::try_new(record.session_key)?,
                         follow_only: record.follow_only,
+                        root_session_key: record
+                            .root_session_key
+                            .map(ProviderSessionAffinityKey::try_new)
+                            .transpose()?,
                     })
                 })
                 .transpose()
@@ -184,6 +191,10 @@ impl ProviderSessionAffinityPort for RedisProviderSessionAffinityRepository {
             let record = serde_json::to_string(&AliasRecord {
                 session_key: session.session_key.expose_to_store().to_owned(),
                 follow_only: session.follow_only,
+                root_session_key: session
+                    .root_session_key
+                    .as_ref()
+                    .map(|key| key.expose_to_store().to_owned()),
             })
             .map_err(|_| provider_invalid("encode session alias"))?;
             redis::Script::new("local current = redis.call('GET', KEYS[1]); if not current or current == ARGV[1] then redis.call('PSETEX', KEYS[1], tonumber(ARGV[3]), ARGV[2]); return 1 end; return 0")

@@ -1,10 +1,9 @@
 //! 逻辑会话账号绑定与线程传输隔离键的单向派生
 
-use std::time::Duration;
-
+use gateway_core::account::AccountAffinity;
 use gateway_core::operation::RawJsonPayload;
 use gateway_core::policy::ClientApiKeyId;
-use gateway_core::provider_ports::ProviderSessionAffinityKey;
+use gateway_core::provider_ports::{ProviderSessionAffinityKey, ProviderSessionAlias};
 use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
 
@@ -12,11 +11,12 @@ use crate::transport::protocol::responses::CodexResponsesRequest;
 use crate::transport::request::derive_conversation_anchor;
 
 const AFFINITY_KEY_HASH_LENGTH: usize = 12;
-pub(crate) const CODEX_ROOT_SESSION_TTL: Duration = Duration::from_secs(24 * 60 * 60);
 
 /// 一次请求派生出的账号亲和键及其结构化日志上下文
 pub(crate) struct CodexSessionAffinity {
     key: ProviderSessionAffinityKey,
+    root_key: Option<ProviderSessionAffinityKey>,
+    turn_alias: Option<(ProviderSessionAffinityKey, ProviderSessionAlias)>,
     key_hash: String,
     anchor_source: &'static str,
     anchor: String,
@@ -26,17 +26,74 @@ pub(crate) struct CodexSessionAffinity {
 
 impl CodexSessionAffinity {
     pub(crate) fn from_turn_alias(
-        alias: gateway_core::provider_ports::ProviderSessionAlias,
+        turn: ProviderSessionAffinityKey,
+        alias: ProviderSessionAlias,
+        mode: AccountAffinity,
     ) -> Self {
-        let key = alias.session_key;
+        let strict_root = alias
+            .root_session_key
+            .as_ref()
+            .filter(|_| mode == AccountAffinity::Strict);
+        // 模式切换对新请求生效，旧轮次的子线程身份在严格模式下也归入根绑定
+        let key = strict_root.unwrap_or(&alias.session_key).clone();
         Self {
             key_hash: short_key_hash(&key),
             key,
+            root_key: if strict_root.is_some() {
+                None
+            } else {
+                alias.root_session_key.clone()
+            },
             anchor_source: "turn-session",
             anchor: String::new(),
             session_id: None,
-            follow_only: alias.follow_only,
+            follow_only: strict_root.is_some() || alias.follow_only,
+            turn_alias: Some((turn, alias)),
         }
+    }
+
+    pub(crate) fn turn_alias(&self) -> Option<&ProviderSessionAffinityKey> {
+        self.turn_alias.as_ref().map(|(key, _)| key)
+    }
+
+    pub(crate) fn alias_record(&self) -> ProviderSessionAlias {
+        // 当前请求可加严跟随约束，续期仍保留轮次最初登记的身份，不能改写关联
+        self.turn_alias
+            .as_ref()
+            .map(|(_, alias)| alias.clone())
+            .unwrap_or_else(|| ProviderSessionAlias {
+                session_key: self.key.clone(),
+                follow_only: self.follow_only,
+                root_session_key: self.root_key.clone(),
+            })
+    }
+
+    pub(crate) const fn root_key(&self) -> Option<&ProviderSessionAffinityKey> {
+        self.root_key.as_ref()
+    }
+
+    fn with_policy(
+        mut self,
+        mode: AccountAffinity,
+        thread: Option<&str>,
+        follow_only: bool,
+    ) -> Self {
+        self.follow_only = follow_only;
+        if mode == AccountAffinity::Relaxed
+            && let Some(thread) = non_empty(thread)
+            && self.session_id.as_deref() != Some(thread)
+            && let Some(key) = opaque_affinity_key(
+                "child-thread",
+                &format!("{}\0{thread}", self.key.expose_to_store()),
+            )
+        {
+            self.root_key = Some(self.key);
+            self.key = key;
+            self.key_hash = short_key_hash(&self.key);
+            self.follow_only = false;
+        }
+        // 无法识别子线程时保留跟随约束，避免子请求改写根绑定
+        self
     }
 
     pub(crate) const fn follow_only(&self) -> bool {
@@ -107,6 +164,7 @@ pub(crate) fn derive_previous_response_id_hash(
 pub(crate) fn derive_codex_session_affinity(
     request: &CodexResponsesRequest,
     client_api_key_id: &ClientApiKeyId,
+    mode: AccountAffinity,
 ) -> Option<CodexSessionAffinity> {
     let session_id = non_empty(request.client_account_session_id.as_deref())?;
     session_affinity(
@@ -115,7 +173,13 @@ pub(crate) fn derive_codex_session_affinity(
         Some(session_id.to_owned()),
         client_api_key_id,
     )
-    .map(|affinity| affinity.with_follow_only(request.client_account_follow_only))
+    .map(|affinity| {
+        affinity.with_policy(
+            mode,
+            request.client_account_thread_id.as_deref(),
+            request.client_account_follow_only,
+        )
+    })
 }
 
 /// 原生 JSON 端点与 Responses 共用绑定命名空间，Search id 是逻辑会话身份
@@ -123,8 +187,9 @@ pub(crate) fn derive_codex_endpoint_session_affinity(
     payload: &RawJsonPayload,
     client_api_key_id: &ClientApiKeyId,
     body_session_field: &str,
+    mode: AccountAffinity,
 ) -> Option<CodexSessionAffinity> {
-    derive_endpoint_affinity_with_headers(payload, client_api_key_id, body_session_field, &[])
+    derive_endpoint_affinity_with_headers(payload, client_api_key_id, body_session_field, &[], mode)
 }
 
 pub(crate) fn derive_endpoint_affinity_with_headers(
@@ -132,6 +197,7 @@ pub(crate) fn derive_endpoint_affinity_with_headers(
     client_api_key_id: &ClientApiKeyId,
     body_session_field: &str,
     headers: &[gateway_core::engine::middleware::MiddlewareHeader],
+    mode: AccountAffinity,
 ) -> Option<CodexSessionAffinity> {
     let mut body = serde_json::from_slice::<Map<String, Value>>(payload.body()).unwrap_or_default();
     if let Some(session) = body.get(body_session_field).cloned() {
@@ -145,11 +211,11 @@ pub(crate) fn derive_endpoint_affinity_with_headers(
         client_api_key_id,
     )
     .map(|affinity| {
-        affinity.with_follow_only(follows_session_with_headers(
-            &body,
-            payload.context(),
-            headers,
-        ))
+        affinity.with_policy(
+            mode,
+            account_thread_with_headers(&body, payload.context(), headers).as_deref(),
+            follows_session_with_headers(&body, payload.context(), headers),
+        )
     })
 }
 
@@ -159,21 +225,11 @@ pub(crate) fn follows_session_with_headers(
     context: &Map<String, Value>,
     headers: &[gateway_core::engine::middleware::MiddlewareHeader],
 ) -> bool {
-    let header = |name: &str| {
-        headers
-            .iter()
-            .find(|h| h.name().eq_ignore_ascii_case(name))
-            .and_then(|h| std::str::from_utf8(h.value()).ok())
-    };
-    let metadata = header("x-codex-turn-metadata");
-    let thread = metadata
-        .and_then(gateway_protocol::openai::turn_metadata_thread_id)
-        .or_else(|| {
-            header("thread-id")
-                .filter(|value| !value.trim().is_empty())
-                .map(str::to_owned)
-        })
-        .or_else(|| gateway_protocol::openai::codex_account_thread_id(body, context));
+    let metadata = headers
+        .iter()
+        .find(|h| h.name().eq_ignore_ascii_case("x-codex-turn-metadata"))
+        .and_then(|h| std::str::from_utf8(h.value()).ok());
+    let thread = account_thread_with_headers(body, context, headers);
     if let Some((session, thread)) =
         account_session_with_headers(body, context, headers).zip(thread)
     {
@@ -185,6 +241,27 @@ pub(crate) fn follows_session_with_headers(
     )
     .subagent_kind
     .is_some()
+}
+
+pub(crate) fn account_thread_with_headers(
+    body: &Map<String, Value>,
+    context: &Map<String, Value>,
+    headers: &[gateway_core::engine::middleware::MiddlewareHeader],
+) -> Option<String> {
+    let header = |name: &str| {
+        headers
+            .iter()
+            .find(|h| h.name().eq_ignore_ascii_case(name))
+            .and_then(|h| std::str::from_utf8(h.value()).ok())
+    };
+    header("x-codex-turn-metadata")
+        .and_then(gateway_protocol::openai::turn_metadata_thread_id)
+        .or_else(|| {
+            header("thread-id")
+                .and_then(|value| non_empty(Some(value)))
+                .map(str::to_owned)
+        })
+        .or_else(|| gateway_protocol::openai::codex_account_thread_id(body, context))
 }
 
 /// 中间件最终请求头按实际传输的覆盖语义参与身份复验
@@ -220,6 +297,7 @@ pub(crate) fn derive_live_session_affinity(
     request: &gateway_core::operation::ProviderHttpRequest,
     headers: &[gateway_core::engine::middleware::MiddlewareHeader],
     client_api_key_id: &ClientApiKeyId,
+    mode: AccountAffinity,
 ) -> Option<CodexSessionAffinity> {
     let mut effective = headers.to_vec();
     effective.extend(
@@ -244,11 +322,11 @@ pub(crate) fn derive_live_session_affinity(
         client_api_key_id,
     )
     .map(|affinity| {
-        affinity.with_follow_only(follows_session_with_headers(
-            &Map::new(),
-            &Map::new(),
-            &effective,
-        ))
+        affinity.with_policy(
+            mode,
+            account_thread_with_headers(&Map::new(), &Map::new(), &effective).as_deref(),
+            follows_session_with_headers(&Map::new(), &Map::new(), &effective),
+        )
     })
 }
 
@@ -281,6 +359,8 @@ fn session_affinity(
     let key_hash = short_key_hash(&key);
     Some(CodexSessionAffinity {
         key,
+        root_key: None,
+        turn_alias: None,
         key_hash,
         anchor_source,
         anchor,

@@ -22,6 +22,9 @@ fn settings_with_margin(refresh_margin_seconds: u64) -> RuntimeSettingsUpdate {
         max_waiting_per_account: 0,
         concurrency_wait_timeout_seconds: 30,
         openai_guardian_reserved_concurrency: 0,
+        openai_account_affinity: gateway_core::account::AccountAffinity::Relaxed,
+        max_account_rotations: 3,
+        openai_session_affinity_ttl_hours: 24,
         responses_max_decompressed_body_bytes: 64 * 1024 * 1024,
         smart_scheduling: gateway_core::account::SmartSchedulingConfig::default(),
         rotation_strategy: "smart".to_owned(),
@@ -1090,5 +1093,75 @@ async fn warmup_cursor_resolves_dst_and_deduplicates_across_timezones() {
         .and_hms_opt(2, 30, 0)
         .unwrap();
     assert!(repository.claim_warmup_slot(zone, missing).await.is_err());
+    database.close().await;
+}
+
+#[tokio::test]
+async fn account_affinity_upgrade_defaults_and_updates_reach_the_snapshot() {
+    use gateway_core::account::AccountAffinity;
+    use gateway_store::postgres::{PgRuntimeSnapshotRepository, RuntimeSnapshotRepository};
+    let Some(database) = TestDatabase::create_through("account_affinity_upgrade", 23).await else {
+        return;
+    };
+    sqlx::query("update runtime_settings set rotation_strategy = 'sticky' where id = 1")
+        .execute(&database.pool)
+        .await
+        .unwrap();
+    super::TEST_MIGRATOR.run(&database.pool).await.unwrap();
+    let repository = PgRuntimeSettingsRepository::new(database.pool.clone());
+    let before = repository.load_runtime_settings().await.unwrap();
+    assert_eq!(before.rotation_strategy, "sticky");
+    assert_eq!(before.openai_account_affinity, AccountAffinity::Relaxed);
+    assert_eq!(before.max_account_rotations, 3);
+    assert_eq!(before.openai_session_affinity_ttl_hours, 24);
+    for (mode, budget, ttl) in [
+        (AccountAffinity::Strict, 31, 168),
+        (AccountAffinity::Relaxed, 0, 720),
+    ] {
+        let mut update = settings_with_margin(3600);
+        update.openai_account_affinity = mode;
+        update.max_account_rotations = budget;
+        update.openai_session_affinity_ttl_hours = ttl;
+        repository.update_runtime_settings(update).await.unwrap();
+        let loaded = repository.load_runtime_settings().await.unwrap();
+        assert_eq!(
+            (loaded.openai_account_affinity, loaded.max_account_rotations),
+            (mode, budget)
+        );
+        let snapshot = PgRuntimeSnapshotRepository::new(database.pool.clone())
+            .load_runtime_snapshot()
+            .await
+            .unwrap();
+        assert_eq!(
+            (
+                snapshot.settings.openai_account_affinity,
+                snapshot.settings.max_account_rotations
+            ),
+            (mode, budget)
+        );
+        assert!(snapshot.config_revision > before.config_revision);
+        assert_eq!(loaded.openai_session_affinity_ttl_hours, ttl);
+        assert_eq!(snapshot.settings.openai_session_affinity_ttl_hours, ttl);
+    }
+    let mut invalid = settings_with_margin(3600);
+    invalid.max_account_rotations = 32;
+    assert!(repository.update_runtime_settings(invalid).await.is_err());
+    for sql in [
+        "update runtime_settings set openai_session_affinity_ttl_hours = 0 where id = 1",
+        "update runtime_settings set openai_session_affinity_ttl_hours = 721 where id = 1",
+        "update runtime_settings set max_account_rotations = 32 where id = 1",
+        "update runtime_settings set max_account_rotations = -1 where id = 1",
+        "update runtime_settings set openai_account_affinity = 'unknown' where id = 1",
+    ] {
+        assert!(sqlx::query(sql).execute(&database.pool).await.is_err());
+    }
+    assert_eq!(
+        repository
+            .load_runtime_settings()
+            .await
+            .unwrap()
+            .max_account_rotations,
+        0
+    );
     database.close().await;
 }

@@ -464,7 +464,7 @@ pub struct ResponseExecutionSession<S: ?Sized> {
     /// 已发生的换号次数：选中账号与上一 attempt 不同的路由 attempt 计一次。
     /// 首个 attempt 不计；同账号钉选重试（瞬态退避、传输恢复、凭据恢复重放、
     /// continuation 精确重连）不消耗。预算耗尽后所有必然换号的重试门关闭，
-    /// 换号深度由 [`crate::routing::MAX_ACCOUNT_ROTATION_ATTEMPTS`] 封顶。
+    /// 换号深度由请求冻结的调度策略封顶
     account_rotations: u32,
     candidate_index: usize,
     excluded_accounts: BTreeSet<crate::account::ProviderAccountId>,
@@ -1129,7 +1129,7 @@ where
                         )
                         // 跨 Provider 候选推进必然换号（账号行按 Provider 隔离），
                         // 预算耗尽后不再推进，交回容量类失败的原有终态语义。
-                        && self.account_rotations < crate::routing::MAX_ACCOUNT_ROTATION_ATTEMPTS
+                        && self.account_rotations < self.plan.account_selection_policy().max_account_rotations()
                         && self.advance_provider_candidate();
                     let retryable = self
                         .apply_retry_policy(super::policy::RetryFacts {
@@ -1605,7 +1605,8 @@ where
             && transient_retry.is_none()
             && transport_recovery.is_none()
             && (ordinary_retry || account_rotation_retry)
-            && self.account_rotations < crate::routing::MAX_ACCOUNT_ROTATION_ATTEMPTS;
+            && self.account_rotations
+                < self.plan.account_selection_policy().max_account_rotations();
         let retryable = !error.retry_is_prohibited()
             && (continuation_retry
                 || same_account_retry
@@ -1848,7 +1849,8 @@ where
             // 两个排除臂都必然换号；预算耗尽后不再排除当前账号做跨账号续写重放，
             // 落回不可重试路径以原始上游错误终态。
             ContinuationAttempt::ReplayOwner | ContinuationAttempt::ReplayAny
-                if self.account_rotations >= crate::routing::MAX_ACCOUNT_ROTATION_ATTEMPTS =>
+                if self.account_rotations
+                    >= self.plan.account_selection_policy().max_account_rotations() =>
             {
                 return false;
             }
@@ -1899,9 +1901,8 @@ where
         {
             return false;
         }
-        // Native 期间所有 attempt 都在 pin 账号上，到这里预算必未耗尽；
-        // 与其余换号路径保持同一预算门，防止状态机演化后破坏换号上限。
-        if self.account_rotations >= crate::routing::MAX_ACCOUNT_ROTATION_ATTEMPTS {
+        // Native 期间仍可能配置为禁止换号，跨账号重放共用请求冻结的预算
+        if self.account_rotations >= self.plan.account_selection_policy().max_account_rotations() {
             return false;
         }
 

@@ -190,10 +190,12 @@ async fn turn_alias_cannot_be_reassigned_and_follows_session_migration() {
     let b = ProviderAccountId::new("acct_b").unwrap();
     let ttl = Duration::from_secs(60);
     let alias = gateway_core::provider_ports::ProviderSessionAlias {
+        root_session_key: None,
         session_key: session.clone(),
         follow_only: true,
     };
     let other_alias = gateway_core::provider_ports::ProviderSessionAlias {
+        root_session_key: None,
         session_key: other,
         follow_only: true,
     };
@@ -209,6 +211,7 @@ async fn turn_alias_cannot_be_reassigned_and_follows_session_migration() {
             .unwrap()
     );
     let different_role = gateway_core::provider_ports::ProviderSessionAlias {
+        root_session_key: None,
         session_key: session.clone(),
         follow_only: false,
     };
@@ -237,4 +240,99 @@ async fn turn_alias_cannot_be_reassigned_and_follows_session_migration() {
             .account_id(),
         &b
     );
+}
+
+#[tokio::test]
+async fn child_turn_alias_preserves_root_identity_without_allowing_reassignment() {
+    let Some((repo, _, _)) = affinity_repository().await else {
+        return;
+    };
+    let provider = ProviderKind::new("openai").unwrap();
+    let turn = ProviderSessionAffinityKey::try_new("child-turn").unwrap();
+    let alias = gateway_core::provider_ports::ProviderSessionAlias {
+        session_key: ProviderSessionAffinityKey::try_new("child-session").unwrap(),
+        root_session_key: Some(ProviderSessionAffinityKey::try_new("root-session").unwrap()),
+        follow_only: false,
+    };
+    let ttl = Duration::from_secs(60);
+    assert!(
+        repo.bind_alias(&provider, &turn, &alias, ttl)
+            .await
+            .unwrap()
+    );
+    assert_eq!(
+        repo.load_alias(&provider, &turn).await.unwrap(),
+        Some(alias.clone())
+    );
+    let changed = gateway_core::provider_ports::ProviderSessionAlias {
+        root_session_key: Some(ProviderSessionAffinityKey::try_new("other-root").unwrap()),
+        ..alias
+    };
+    assert!(
+        !repo
+            .bind_alias(&provider, &turn, &changed, ttl)
+            .await
+            .unwrap()
+    );
+}
+
+#[tokio::test]
+async fn binding_and_turn_alias_can_renew_beyond_one_day_and_shorten_without_scanning() {
+    let Some((repo, mut connection, namespace)) = affinity_repository().await else {
+        return;
+    };
+    let provider = ProviderKind::new("openai").unwrap();
+    let session = ProviderSessionAffinityKey::try_new("long-session").unwrap();
+    let turn = ProviderSessionAffinityKey::try_new("long-turn").unwrap();
+    let account = ProviderAccountId::new("acct_long").unwrap();
+    let alias = gateway_core::provider_ports::ProviderSessionAlias {
+        session_key: session.clone(),
+        root_session_key: None,
+        follow_only: false,
+    };
+    let mut binding = None;
+    for hours in [24, 168, 720, 1] {
+        let ttl = Duration::from_secs(hours * 3600);
+        binding = repo
+            .compare_and_bind(&provider, &session, binding.as_ref(), &account, ttl)
+            .await
+            .unwrap();
+        assert!(binding.is_some());
+        assert!(
+            repo.bind_alias(&provider, &turn, &alias, ttl)
+                .await
+                .unwrap()
+        );
+        let keys: Vec<String> = redis::cmd("KEYS")
+            .arg(format!("{namespace}:*"))
+            .query_async(&mut connection)
+            .await
+            .unwrap();
+        assert_eq!(keys.len(), 2);
+        for key in keys {
+            let remaining: u64 = redis::cmd("PTTL")
+                .arg(key)
+                .query_async(&mut connection)
+                .await
+                .unwrap();
+            let expected = hours * 3600 * 1000;
+            assert!(
+                (expected - 5000..=expected).contains(&remaining),
+                "{remaining} vs {expected}"
+            );
+        }
+    }
+    for ttl in [Duration::ZERO, Duration::from_secs(721 * 3600)] {
+        assert!(
+            repo.compare_and_bind(&provider, &session, binding.as_ref(), &account, ttl)
+                .await
+                .is_err()
+        );
+        assert!(
+            repo.bind_alias(&provider, &turn, &alias, ttl)
+                .await
+                .is_err()
+        );
+    }
+    assert_eq!(repo.load(&provider, &session).await.unwrap(), binding);
 }

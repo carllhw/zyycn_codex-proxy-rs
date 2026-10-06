@@ -13,6 +13,8 @@ export interface RequestLocation {
   timezone: string
 }
 
+export type AccountAffinity = 'relaxed' | 'strict'
+
 export type RotationStrategy = 'smart' | 'quota_reset_priority' | 'round_robin' | 'sticky'
 
 export interface SmartSchedulingConfig {
@@ -40,6 +42,9 @@ export interface RuntimeSettings {
   refreshConcurrency: number
   maxConcurrentPerAccount: number
   openaiGuardianReservedConcurrency: number
+  openaiAccountAffinity: AccountAffinity
+  maxAccountRotations: number
+  openaiSessionAffinityTtlHours: number
   requestIntervalMs: number
   maxWaitingPerKey: number
   maxWaitingPerAccount: number

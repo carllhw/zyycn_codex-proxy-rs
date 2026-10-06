@@ -1233,11 +1233,11 @@ HTTP 请求头及新建 WS 的握手提示按当时的最终出站档位构造�
 `response.create`；空闲连接不占名额，内部重试不重复占用。
 修改 Key 策略对既有 WebSocket 连接的下一次请求同样生效，已开始的请求保持原有快照
 
-运行设置可以分别启用 Key 与账号的有界排队。Key 并发满时按 Key 等待；OpenAI 根线程按配置等待当前账号，
-或沿既有调度策略重选账号并迁移会话绑定。内置调度中的后代线程只等待当前会话账号，不自行换号；
-根线程迁移后，后代线程跟随新账号。没有绑定的后代线程等待根线程首次认领
+运行设置可以分别启用 Key 与账号的有界排队。Key 并发满时按 Key 等待；OpenAI 宽松亲和下各线程独立调度，
+新子线程优先沿用根账号，必要时可分流；已有子绑定不随根账号迁移。严格亲和下后代线程只等待当前会话账号，
+根线程迁移后跟随新账号，没有绑定时等待根线程首次认领
 
-后代线程始终排队，沿用 `concurrencyWaitTimeoutSeconds` 和请求截止时间；
+严格亲和下的后代线程始终排队，沿用 `concurrencyWaitTimeoutSeconds` 和请求截止时间；
 `maxWaitingPerAccount` 为 0 时使用每队列 1,000 人上限，否则沿用配置的上限。
 可识别来源的 Search、Images、Live 创建请求采用同样规则，身份与轮次关联见[会话绑定](architecture.md#6-路由账号范围与-continuation)。
 插件显式选号保留原有行为。普通请求关闭账号排队且没有可用容量时返回 `503` / `account_capacity_unavailable`，
@@ -1290,6 +1290,9 @@ maxConcurrentPerAccount
 maxWaitingPerKey
 maxWaitingPerAccount
 openaiGuardianReservedConcurrency
+openaiAccountAffinity
+openaiSessionAffinityTtlHours
+maxAccountRotations
 concurrencyWaitTimeoutSeconds
 responsesMaxDecompressedBodyBytes
 requestIntervalMs
@@ -1333,7 +1336,7 @@ accountWarmupModel
 `maxWaitingPerKey` 与 `maxWaitingPerAccount` 是全局统一的普通排队容量，取值 0～1,000，默认 0（关闭）；
 每个 Key、每个账号各自独立计数，没有单对象覆盖字段。执行并发为 5、最大排队数为 5 时，
 该对象最多容纳 5 个执行请求与 5 个等待请求。Key 并发为 0（不限）时跳过 Key 排队。
-OpenAI 后代线程的会话账号等待不随普通账号排队关闭，见 [Client Key 等待规则](#7-client-key)。
+OpenAI 严格亲和下后代线程的会话账号等待不随普通账号排队关闭，见 [Client Key 等待规则](#7-client-key)。
 `concurrencyWaitTimeoutSeconds` 取值 1～120，默认 30，从首次入队开始计时，密钥与账号两层共享该等待时限；
 切换账号或内部重试不重新计时；若插件设置了请求总时限，等待也计入该时限。排队超时不用于中断已开始的上游生成。
 设置更新请求须包含这三个字段，新请求使用更新后的快照
@@ -1344,6 +1347,21 @@ Guardian 以 `subagent_kind` 或 `client_metadata.x-openai-subagent` 值 `guardi
 开启账号排队后，Guardian 排在同账号已有 Guardian 之后、全部普通等待者之前，不受单账号排队上限约束，
 仍受总等待容量与等待时限约束。不限并发的账号和关闭排队时的其余行为不变。
 设置更新请求须包含该字段
+
+`openaiAccountAffinity` 控制 OpenAI 账号亲和，默认 `relaxed`（宽松），也可设置为 `strict`（严格）。
+宽松模式允许子代理按模型权限、可用性与容量独立分流，各线程保留自己的账号绑定；严格模式让同一会话共用账号，
+子代理等待当前账号。需要选号时仍使用 `rotationStrategy` 指定的调度策略。
+插件显式选号及原生续写的状态归属约束仍然生效，缺少可识别线程身份的子请求仍按跟随方式处理
+
+`openaiSessionAffinityTtlHours` 是账号绑定及其会话关联的滑动保留时长，单位小时，默认 24，取值 1～720。
+各类请求统一在发送前成功准入时按请求冻结值续期。
+响应完成不回写或续期。调整时长不扫描已有 Redis 键，已有记录保留原到期时间，下一次成功准入时使用新值；
+真正过期或丢失后按缺失绑定处理，存储读取错误不会被当作过期
+
+`maxAccountRotations` 是单请求最大换号次数，默认 3，取值 0～31；0 表示不换号。
+首次选号、同账号重试和选号时过滤不可用候选不计入换号次数，总路由尝试仍最多 32 次。
+提高该值允许请求尝试更多账号，但不放宽安全重放或交付后的重试限制。
+设置更新请求须包含账号亲和、亲和时长与最大换号次数，保存后对新请求生效，执行中请求及其重试沿用冻结值
 
 `responsesMaxDecompressedBodyBytes` 是压缩 Responses HTTP 请求的解压输出上限，单位字节，默认
 67108864（64 MiB）。必须为正整数，且可表示为进程平台的 `isize`；管理端以整数 MiB 编辑。

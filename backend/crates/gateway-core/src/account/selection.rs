@@ -46,6 +46,40 @@ impl RotationStrategy {
     }
 }
 
+/// 单请求换号预算不能超过路由尝试总数减一
+pub const MAX_ACCOUNT_ROTATIONS: u32 = 31;
+
+/// 会话绑定与轮次关联共用的保留时长上限，单位小时
+pub const MAX_SESSION_AFFINITY_TTL_HOURS: u32 = 720;
+
+/// OpenAI 会话账号亲和；具体线程身份由 Provider 解释
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AccountAffinity {
+    #[default]
+    Relaxed,
+    Strict,
+}
+
+impl AccountAffinity {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Relaxed => "relaxed",
+            Self::Strict => "strict",
+        }
+    }
+
+    #[must_use]
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "relaxed" => Some(Self::Relaxed),
+            "strict" => Some(Self::Strict),
+            _ => None,
+        }
+    }
+}
+
 /// 从 `runtime_settings` 冻结到一次请求计划的账号调度策略
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct AccountSelectionPolicy {
@@ -55,6 +89,9 @@ pub struct AccountSelectionPolicy {
     request_interval: Duration,
     queue_policy: ConcurrencyQueuePolicy,
     openai_guardian_reserved_concurrency: u32,
+    openai_account_affinity: AccountAffinity,
+    max_account_rotations: u32,
+    openai_session_affinity_ttl: Duration,
 }
 
 impl AccountSelectionPolicy {
@@ -70,11 +107,47 @@ impl AccountSelectionPolicy {
             max_concurrent_per_account: max_concurrent_per_account.into(),
             request_interval,
             openai_guardian_reserved_concurrency: 0,
+            openai_account_affinity: AccountAffinity::Relaxed,
+            max_account_rotations: 3,
+            openai_session_affinity_ttl: Duration::from_secs(24 * 3600),
             queue_policy: ConcurrencyQueuePolicy {
                 max_waiting: 0,
                 timeout: Duration::ZERO,
             },
         }
+    }
+
+    #[must_use]
+    pub const fn with_openai_account_affinity(mut self, affinity: AccountAffinity) -> Self {
+        self.openai_account_affinity = affinity;
+        self
+    }
+
+    #[must_use]
+    pub const fn openai_account_affinity(self) -> AccountAffinity {
+        self.openai_account_affinity
+    }
+
+    #[must_use]
+    pub const fn with_max_account_rotations(mut self, rotations: u32) -> Self {
+        self.max_account_rotations = rotations;
+        self
+    }
+
+    #[must_use]
+    pub const fn max_account_rotations(self) -> u32 {
+        self.max_account_rotations
+    }
+
+    #[must_use]
+    pub const fn with_openai_session_affinity_ttl(mut self, ttl: Duration) -> Self {
+        self.openai_session_affinity_ttl = ttl;
+        self
+    }
+
+    #[must_use]
+    pub const fn openai_session_affinity_ttl(self) -> Duration {
+        self.openai_session_affinity_ttl
     }
 
     /// 只传递冻结的运行设置，Guardian 分类与预留策略由 OpenAI Provider 解释

@@ -31,6 +31,9 @@ pub struct RuntimeSettings {
     pub max_waiting_per_account: u32,
     pub concurrency_wait_timeout_seconds: u32,
     pub openai_guardian_reserved_concurrency: u32,
+    pub openai_account_affinity: gateway_core::account::AccountAffinity,
+    pub max_account_rotations: u32,
+    pub openai_session_affinity_ttl_hours: u32,
     pub responses_max_decompressed_body_bytes: u64,
     pub smart_scheduling: gateway_core::account::SmartSchedulingConfig,
     pub rotation_strategy: String,
@@ -134,6 +137,9 @@ pub struct RuntimeSettingsUpdate {
     pub max_waiting_per_account: u32,
     pub concurrency_wait_timeout_seconds: u32,
     pub openai_guardian_reserved_concurrency: u32,
+    pub openai_account_affinity: gateway_core::account::AccountAffinity,
+    pub max_account_rotations: u32,
+    pub openai_session_affinity_ttl_hours: u32,
     pub responses_max_decompressed_body_bytes: u64,
     pub smart_scheduling: gateway_core::account::SmartSchedulingConfig,
     pub rotation_strategy: String,
@@ -195,6 +201,9 @@ impl RuntimeSettingsUpdate {
             || !valid_probe_model(self.account_warmup_model.as_deref())
             || (self.account_warmup_enabled && self.account_warmup_model.is_none())
             || RotationStrategy::parse(&self.rotation_strategy).is_none()
+            || self.max_account_rotations > gateway_core::account::MAX_ACCOUNT_ROTATIONS
+            || !(1..=gateway_core::account::MAX_SESSION_AFFINITY_TTL_HOURS)
+                .contains(&self.openai_session_affinity_ttl_hours)
             || self.request_profile_updates.len() > 256
             || self
                 .request_profile_updates
@@ -265,7 +274,7 @@ pub(crate) async fn load_runtime_settings_from_pool(pool: &PgPool) -> StoreResul
                     refresh_concurrency, max_concurrent_per_account, request_interval_ms,
                     rotation_strategy, smart_scheduling_json, model_mappings_json, usage_retention_days, ops_event_retention_days,
                     audit_retention_days, min_codex_desktop_version,
-                    min_codex_cli_version, updated_at, responses_max_decompressed_body_bytes, max_waiting_per_key, max_waiting_per_account, concurrency_wait_timeout_seconds, openai_guardian_reserved_concurrency,
+                    min_codex_cli_version, updated_at, responses_max_decompressed_body_bytes, max_waiting_per_key, max_waiting_per_account, concurrency_wait_timeout_seconds, openai_guardian_reserved_concurrency, openai_account_affinity, max_account_rotations, openai_session_affinity_ttl_hours,
                     account_auto_freeze_enabled, account_auto_freeze_threshold,
                     account_auto_freeze_window_seconds, account_auto_freeze_duration_seconds,
                     account_auto_freeze_probe_enabled, account_auto_freeze_probe_model,
@@ -443,7 +452,7 @@ pub(crate) async fn load_runtime_settings_in_transaction(
                 refresh_concurrency, max_concurrent_per_account, request_interval_ms,
                 rotation_strategy, smart_scheduling_json, model_mappings_json, usage_retention_days, ops_event_retention_days,
                 audit_retention_days, min_codex_desktop_version,
-                min_codex_cli_version, updated_at, responses_max_decompressed_body_bytes, max_waiting_per_key, max_waiting_per_account, concurrency_wait_timeout_seconds, openai_guardian_reserved_concurrency,
+                min_codex_cli_version, updated_at, responses_max_decompressed_body_bytes, max_waiting_per_key, max_waiting_per_account, concurrency_wait_timeout_seconds, openai_guardian_reserved_concurrency, openai_account_affinity, max_account_rotations, openai_session_affinity_ttl_hours,
                 account_auto_freeze_enabled, account_auto_freeze_threshold,
                 account_auto_freeze_window_seconds, account_auto_freeze_duration_seconds,
                 account_auto_freeze_probe_enabled, account_auto_freeze_probe_model,
@@ -520,6 +529,9 @@ pub(crate) async fn update_runtime_settings_in_transaction(
                      account_warmup_model = $29,
                      smart_scheduling_json = $30,
                      openai_guardian_reserved_concurrency = $31,
+                     openai_account_affinity = $32,
+                     max_account_rotations = $33,
+                     openai_session_affinity_ttl_hours = $34,
 	                 updated_at = now()
 	             where id = 1
 	             returning config_revision",
@@ -567,6 +579,9 @@ pub(crate) async fn update_runtime_settings_in_transaction(
     .bind(update.account_warmup_model.as_deref())
     .bind(sqlx::types::Json(update.smart_scheduling))
     .bind(i64::from(update.openai_guardian_reserved_concurrency))
+    .bind(update.openai_account_affinity.as_str())
+    .bind(i64::from(update.max_account_rotations))
+    .bind(i64::from(update.openai_session_affinity_ttl_hours))
     .fetch_optional(&mut **transaction)
     .await
     .map_err(|source| postgres_unavailable("update runtime settings in transaction", source))?
@@ -642,6 +657,9 @@ struct RuntimeSettingsRow {
     max_waiting_per_account: i64,
     concurrency_wait_timeout_seconds: i64,
     openai_guardian_reserved_concurrency: i64,
+    openai_account_affinity: String,
+    max_account_rotations: i64,
+    openai_session_affinity_ttl_hours: i64,
     responses_max_decompressed_body_bytes: i64,
     account_auto_freeze_enabled: bool,
     account_auto_freeze_threshold: i64,
@@ -696,6 +714,16 @@ fn runtime_settings_from_row(row: RuntimeSettingsRow) -> StoreResult<RuntimeSett
         max_waiting_per_account: to_u32(row.max_waiting_per_account)?,
         concurrency_wait_timeout_seconds: to_u32(row.concurrency_wait_timeout_seconds)?,
         openai_guardian_reserved_concurrency: to_u32(row.openai_guardian_reserved_concurrency)?,
+        openai_account_affinity: gateway_core::account::AccountAffinity::parse(
+            &row.openai_account_affinity,
+        )
+        .ok_or_else(|| StoreError::InvalidData {
+            entity: "runtime settings",
+            message: "invalid account affinity".to_owned(),
+            source: None,
+        })?,
+        max_account_rotations: to_u32(row.max_account_rotations)?,
+        openai_session_affinity_ttl_hours: to_u32(row.openai_session_affinity_ttl_hours)?,
         responses_max_decompressed_body_bytes: to_u64(row.responses_max_decompressed_body_bytes)?,
         account_auto_freeze_enabled: row.account_auto_freeze_enabled,
         account_auto_freeze_threshold: to_u32(row.account_auto_freeze_threshold)?,

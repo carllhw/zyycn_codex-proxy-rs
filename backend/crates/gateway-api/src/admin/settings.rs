@@ -55,6 +55,9 @@ pub struct RuntimeSettingsView {
     pub max_waiting_per_account: u32,
     pub concurrency_wait_timeout_seconds: u32,
     pub openai_guardian_reserved_concurrency: u32,
+    pub openai_account_affinity: gateway_core::account::AccountAffinity,
+    pub max_account_rotations: u32,
+    pub openai_session_affinity_ttl_hours: u32,
     pub responses_max_decompressed_body_bytes: u64,
     pub smart_scheduling: gateway_core::account::SmartSchedulingConfig,
     pub rotation_strategy: String,
@@ -101,6 +104,9 @@ pub struct UpdateRuntimeSettingsRequest {
     pub max_waiting_per_account: u32,
     pub concurrency_wait_timeout_seconds: u32,
     pub openai_guardian_reserved_concurrency: u32,
+    pub openai_account_affinity: gateway_core::account::AccountAffinity,
+    pub max_account_rotations: u32,
+    pub openai_session_affinity_ttl_hours: u32,
     pub responses_max_decompressed_body_bytes: u64,
     pub smart_scheduling: gateway_core::account::SmartSchedulingConfig,
     pub rotation_strategy: String,
@@ -128,6 +134,14 @@ impl UpdateRuntimeSettingsRequest {
             .validate()
             .map_err(|_| WireValidationError::new("requestLocation"))?;
         validate_model_mappings(&self.model_mappings)?;
+        if !(1..=gateway_core::account::MAX_SESSION_AFFINITY_TTL_HOURS)
+            .contains(&self.openai_session_affinity_ttl_hours)
+        {
+            return Err(WireValidationError::new("openaiSessionAffinityTtlHours"));
+        }
+        if self.max_account_rotations > gateway_core::account::MAX_ACCOUNT_ROTATIONS {
+            return Err(WireValidationError::new("maxAccountRotations"));
+        }
         for (value, field) in [
             (self.max_waiting_per_key, "maxWaitingPerKey"),
             (self.max_waiting_per_account, "maxWaitingPerAccount"),
@@ -237,6 +251,9 @@ impl UpdateRuntimeSettingsRequest {
             max_waiting_per_account: self.max_waiting_per_account,
             concurrency_wait_timeout_seconds: self.concurrency_wait_timeout_seconds,
             openai_guardian_reserved_concurrency: self.openai_guardian_reserved_concurrency,
+            openai_account_affinity: self.openai_account_affinity,
+            max_account_rotations: self.max_account_rotations,
+            openai_session_affinity_ttl_hours: self.openai_session_affinity_ttl_hours,
             responses_max_decompressed_body_bytes: self.responses_max_decompressed_body_bytes,
             smart_scheduling: self.smart_scheduling,
             rotation_strategy: RotationStrategy::parse(&self.rotation_strategy)
@@ -287,6 +304,9 @@ impl From<(RuntimeSettings, crate::time::TimePresenter)> for RuntimeSettingsView
             max_waiting_per_account: settings.max_waiting_per_account,
             concurrency_wait_timeout_seconds: settings.concurrency_wait_timeout_seconds,
             openai_guardian_reserved_concurrency: settings.openai_guardian_reserved_concurrency,
+            openai_account_affinity: settings.openai_account_affinity,
+            max_account_rotations: settings.max_account_rotations,
+            openai_session_affinity_ttl_hours: settings.openai_session_affinity_ttl_hours,
             responses_max_decompressed_body_bytes: settings.responses_max_decompressed_body_bytes,
             smart_scheduling: settings.smart_scheduling,
             smart_scheduling_defaults: gateway_core::account::SmartSchedulingConfig::default(),

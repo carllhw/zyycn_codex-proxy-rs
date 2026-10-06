@@ -5,6 +5,7 @@ import { Save, Undo2 } from '@lucide/vue'
 import { computed, reactive, shallowRef, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 
+import AccountAffinityCard from './components/AccountAffinityCard.vue'
 import AccountAutoFreezeCard from './components/AccountAutoFreezeCard.vue'
 import AccountWarmupCard from './components/AccountWarmupCard.vue'
 import SettingsBackupSection from './components/backup/SettingsBackupSection.vue'
@@ -61,6 +62,8 @@ const {
   refreshConcurrencyValue,
   maxConcurrentPerAccountValue,
   openaiGuardianReservedConcurrencyValue,
+  maxAccountRotationsValue,
+  openaiSessionAffinityTtlHoursValue,
   requestIntervalMsValue,
   maxWaitingPerKeyValue,
   maxWaitingPerAccountValue,
@@ -150,6 +153,12 @@ watch(section, (value) => {
             :smart-defaults="smartSchedulingDefaults"
             :disabled="disabled"
             :options="rotationOptions"
+          />
+          <AccountAffinityCard
+            v-model="form.openaiAccountAffinity"
+            v-model:ttl-hours="openaiSessionAffinityTtlHoursValue"
+            v-model:max-account-rotations="maxAccountRotationsValue"
+            :disabled="disabled"
           />
           <ConcurrencyPolicyCard
             v-model:max-concurrent-per-account="maxConcurrentPerAccountValue"

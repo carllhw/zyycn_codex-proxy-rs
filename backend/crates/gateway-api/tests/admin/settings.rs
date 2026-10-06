@@ -53,6 +53,9 @@ fn update_body() -> Value {
         "maxWaitingPerKey": 0,
         "maxWaitingPerAccount": 0,
         "openaiGuardianReservedConcurrency": 0,
+        "openaiAccountAffinity": "relaxed",
+        "maxAccountRotations": 3,
+        "openaiSessionAffinityTtlHours": 24,
         "concurrencyWaitTimeoutSeconds": 30,
         "responsesMaxDecompressedBodyBytes": 67108864,
         "rotationStrategy": "round_robin",
@@ -224,6 +227,9 @@ fn settings_response_should_cover_the_full_runtime_settings_contract() {
         max_waiting_per_account: 0,
         concurrency_wait_timeout_seconds: 30,
         openai_guardian_reserved_concurrency: 0,
+        openai_account_affinity: gateway_core::account::AccountAffinity::Relaxed,
+        max_account_rotations: 3,
+        openai_session_affinity_ttl_hours: 24,
         responses_max_decompressed_body_bytes: 64 * 1024 * 1024,
         smart_scheduling: gateway_core::account::SmartSchedulingConfig::default(),
         rotation_strategy: RotationStrategy::RoundRobin,
@@ -273,6 +279,9 @@ fn settings_response_should_cover_the_full_runtime_settings_contract() {
             "maxWaitingPerKey": 0,
             "maxWaitingPerAccount": 0,
             "openaiGuardianReservedConcurrency": 0,
+            "openaiAccountAffinity": "relaxed",
+            "maxAccountRotations": 3,
+            "openaiSessionAffinityTtlHours": 24,
             "concurrencyWaitTimeoutSeconds": 30,
             "responsesMaxDecompressedBodyBytes": 67108864,
             "rotationStrategy": "round_robin",
@@ -343,6 +352,9 @@ fn settings_request_and_response_fields_should_stay_in_lockstep() {
         max_waiting_per_account: 0,
         concurrency_wait_timeout_seconds: 30,
         openai_guardian_reserved_concurrency: 0,
+        openai_account_affinity: gateway_core::account::AccountAffinity::Relaxed,
+        max_account_rotations: 3,
+        openai_session_affinity_ttl_hours: 24,
         responses_max_decompressed_body_bytes: 64 * 1024 * 1024,
         smart_scheduling: request.smart_scheduling,
         rotation_strategy: RotationStrategy::parse(&request.rotation_strategy)
@@ -1328,4 +1340,77 @@ async fn guardian_reservation_round_trips_and_rejects_invalid_values() {
         .unwrap()
         .remove("openaiGuardianReservedConcurrency");
     assert!(serde_json::from_value::<UpdateRuntimeSettingsRequest>(omitted).is_err());
+}
+
+#[tokio::test]
+async fn account_affinity_and_rotation_budget_round_trip_and_reject_invalid_values() {
+    for (mode, rotations, ttl) in [("relaxed", 0, 1), ("strict", 31, 720)] {
+        let fixture = AdminTestFixture::new().await;
+        fixture.auth.insert_session("valid-session");
+        let mut body = update_body();
+        body["openaiAccountAffinity"] = json!(mode);
+        body["maxAccountRotations"] = json!(rotations);
+        body["openaiSessionAffinityTtlHours"] = json!(ttl);
+        let response = app(fixture.state())
+            .oneshot(request(
+                Method::POST,
+                "/api/admin/settings/update",
+                Some(body),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let response = response_json(response).await;
+        assert_eq!(response["data"]["openaiAccountAffinity"], mode);
+        assert_eq!(response["data"]["maxAccountRotations"], rotations);
+        assert_eq!(response["data"]["openaiSessionAffinityTtlHours"], ttl);
+    }
+    // 类型错误沿用 AdminJson 的 422，合法类型越界由字段校验返回 400
+    for (field, value, expected_status) in [
+        (
+            "openaiAccountAffinity",
+            json!("unknown"),
+            StatusCode::UNPROCESSABLE_ENTITY,
+        ),
+        (
+            "maxAccountRotations",
+            json!(-1),
+            StatusCode::UNPROCESSABLE_ENTITY,
+        ),
+        ("maxAccountRotations", json!(32), StatusCode::BAD_REQUEST),
+        (
+            "maxAccountRotations",
+            json!(1.5),
+            StatusCode::UNPROCESSABLE_ENTITY,
+        ),
+        (
+            "openaiSessionAffinityTtlHours",
+            json!(0),
+            StatusCode::BAD_REQUEST,
+        ),
+        (
+            "openaiSessionAffinityTtlHours",
+            json!(721),
+            StatusCode::BAD_REQUEST,
+        ),
+        (
+            "openaiSessionAffinityTtlHours",
+            json!(1.5),
+            StatusCode::UNPROCESSABLE_ENTITY,
+        ),
+    ] {
+        let fixture = AdminTestFixture::new().await;
+        fixture.auth.insert_session("valid-session");
+        let mut body = update_body();
+        body[field] = value;
+        let response = app(fixture.state())
+            .oneshot(request(
+                Method::POST,
+                "/api/admin/settings/update",
+                Some(body),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), expected_status, "{field}");
+    }
 }

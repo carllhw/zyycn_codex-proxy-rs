@@ -63,6 +63,7 @@ impl CodexProvider {
             context.client_api_key_ref(),
             "session_id",
             headers,
+            context.account_selection_policy().openai_account_affinity(),
         );
         let turn = headers
             .iter()
@@ -78,7 +79,10 @@ impl CodexProvider {
             turn.and_then(|turn| derive_turn_alias(turn, context.client_api_key_ref()))
         {
             self.selector
-                .session_for_turn(&alias)
+                .session_for_turn(
+                    &alias,
+                    context.account_selection_policy().openai_account_affinity(),
+                )
                 .await
                 .map_err(map_selection_error)?
         } else {
@@ -87,7 +91,9 @@ impl CodexProvider {
         if explicit
             .as_ref()
             .zip(inferred.as_ref())
-            .is_some_and(|(explicit, inferred)| explicit.key() != inferred.key())
+            .is_some_and(|(explicit, inferred)| {
+                explicit.key() != inferred.key() && Some(explicit.key()) != inferred.root_key()
+            })
         {
             return Err(provider_error(
                 ProviderErrorKind::InvalidRequest,
@@ -97,9 +103,12 @@ impl CodexProvider {
         }
         let follow_only = inferred
             .as_ref()
-            .is_some_and(CodexSessionAffinity::follow_only);
-        Ok(explicit
-            .or(inferred)
+            .is_some_and(CodexSessionAffinity::follow_only)
+            || explicit
+                .as_ref()
+                .is_some_and(CodexSessionAffinity::follow_only);
+        Ok(inferred
+            .or(explicit)
             .map(|affinity| affinity.with_follow_only(follow_only)))
     }
 
@@ -125,6 +134,7 @@ impl CodexProvider {
             search.payload(),
             context.client_api_key_ref(),
             "id",
+            context.account_selection_policy().openai_account_affinity(),
         );
         let response_origin = self.search_url.clone();
         self.execute_raw_json_endpoint(
@@ -211,12 +221,20 @@ impl CodexProvider {
                 context.client_api_key_ref(),
                 "id",
                 &middleware_headers,
+                context.account_selection_policy().openai_account_affinity(),
             ),
             _ => None,
         };
         if !context.is_diagnostic_required_account() {
             self.selector
-                .validate_translated_selection(&mut lease, affinity.as_ref(), None)
+                .validate_translated_selection(
+                    &mut lease,
+                    affinity.as_ref(),
+                    None,
+                    context
+                        .account_selection_policy()
+                        .openai_session_affinity_ttl(),
+                )
                 .await
                 .map_err(map_selection_error)?;
         }
@@ -266,6 +284,21 @@ impl CodexProvider {
                     UpstreamSendState::NotSent,
                 ));
             }
+        }
+        if !context.is_diagnostic_required_account()
+            && let Some(affinity) = affinity.as_ref()
+            && let Some(turn) = affinity.turn_alias()
+        {
+            self.selector
+                .remember_turn(
+                    turn,
+                    affinity,
+                    context
+                        .account_selection_policy()
+                        .openai_session_affinity_ttl(),
+                )
+                .await
+                .map_err(map_selection_error)?;
         }
         let allows_account_state_mutation = lease.allows_account_state_mutation();
         let provider_kind = ProviderKind::new(PROVIDER_NAME)

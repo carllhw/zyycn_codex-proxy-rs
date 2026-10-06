@@ -297,6 +297,7 @@ impl ProviderSessionBinding {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProviderSessionAlias {
     pub session_key: ProviderSessionAffinityKey,
+    pub root_session_key: Option<ProviderSessionAffinityKey>,
     pub follow_only: bool,
 }
 

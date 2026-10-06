@@ -1,5 +1,5 @@
 import type { rotationOptions } from '../constants'
-import type { SmartSchedulingConfig } from '@/api'
+import type { AccountAffinity, SmartSchedulingConfig } from '@/api'
 import type { ProviderRequestProfiles, ProviderRequestProfileUpdates } from '@/api/modules/settings/profiles'
 import { toast } from '@codex-proxy/ui'
 import { cloneDeep, isEqual } from 'es-toolkit'
@@ -32,6 +32,9 @@ export function useSettingsForm() {
     refreshConcurrency: null as number | null,
     maxConcurrentPerAccount: null as number | null,
     openaiGuardianReservedConcurrency: null as number | null,
+    openaiAccountAffinity: '' as AccountAffinity | '',
+    maxAccountRotations: null as number | null,
+    openaiSessionAffinityTtlHours: null as number | null,
     requestIntervalMs: null as number | null,
     maxWaitingPerKey: null as number | null,
     maxWaitingPerAccount: null as number | null,
@@ -73,7 +76,7 @@ export function useSettingsForm() {
     mappings.value = initial.mappings
   }
 
-  function numericModel(key: 'refreshMarginSeconds' | 'refreshConcurrency' | 'maxConcurrentPerAccount' | 'openaiGuardianReservedConcurrency' | 'requestIntervalMs' | 'maxWaitingPerKey' | 'maxWaitingPerAccount' | 'concurrencyWaitTimeoutSeconds' | 'responsesMaxDecompressedBodyMiB' | 'accountAutoFreezeThreshold' | 'accountAutoFreezeWindowSeconds' | 'accountAutoFreezeDurationSeconds') {
+  function numericModel(key: 'refreshMarginSeconds' | 'refreshConcurrency' | 'maxConcurrentPerAccount' | 'openaiGuardianReservedConcurrency' | 'maxAccountRotations' | 'openaiSessionAffinityTtlHours' | 'requestIntervalMs' | 'maxWaitingPerKey' | 'maxWaitingPerAccount' | 'concurrencyWaitTimeoutSeconds' | 'responsesMaxDecompressedBodyMiB' | 'accountAutoFreezeThreshold' | 'accountAutoFreezeWindowSeconds' | 'accountAutoFreezeDurationSeconds') {
     return computed({
       get: () => (form[key] === null ? '' : String(form[key])),
       set: (value: string) => {
@@ -91,6 +94,8 @@ export function useSettingsForm() {
   const refreshConcurrencyValue = numericModel('refreshConcurrency')
   const maxConcurrentPerAccountValue = numericModel('maxConcurrentPerAccount')
   const openaiGuardianReservedConcurrencyValue = numericModel('openaiGuardianReservedConcurrency')
+  const maxAccountRotationsValue = numericModel('maxAccountRotations')
+  const openaiSessionAffinityTtlHoursValue = numericModel('openaiSessionAffinityTtlHours')
   const requestIntervalMsValue = numericModel('requestIntervalMs')
   const maxWaitingPerKeyValue = numericModel('maxWaitingPerKey')
   const maxWaitingPerAccountValue = numericModel('maxWaitingPerAccount')
@@ -116,6 +121,9 @@ export function useSettingsForm() {
     form.refreshConcurrency = data.refreshConcurrency
     form.maxConcurrentPerAccount = data.maxConcurrentPerAccount
     form.openaiGuardianReservedConcurrency = data.openaiGuardianReservedConcurrency
+    form.openaiAccountAffinity = data.openaiAccountAffinity
+    form.maxAccountRotations = data.maxAccountRotations
+    form.openaiSessionAffinityTtlHours = data.openaiSessionAffinityTtlHours
     form.requestIntervalMs = data.requestIntervalMs
     form.maxWaitingPerKey = data.maxWaitingPerKey
     form.maxWaitingPerAccount = data.maxWaitingPerAccount
@@ -201,9 +209,17 @@ export function useSettingsForm() {
     const savedSettings = saved.value
     if (saving.value || loading.value || !savedSettings)
       return
-    const { refreshMarginSeconds, refreshConcurrency, maxConcurrentPerAccount, openaiGuardianReservedConcurrency, requestIntervalMs, rotationStrategy, maxWaitingPerKey, maxWaitingPerAccount, concurrencyWaitTimeoutSeconds, responsesMaxDecompressedBodyMiB, accountAutoFreezeThreshold, accountAutoFreezeWindowSeconds, accountAutoFreezeDurationSeconds } = form
-    if (refreshMarginSeconds === null || refreshConcurrency === null || maxConcurrentPerAccount === null || openaiGuardianReservedConcurrency === null || requestIntervalMs === null || !rotationStrategy || maxWaitingPerKey === null || maxWaitingPerAccount === null || concurrencyWaitTimeoutSeconds === null) {
+    const { refreshMarginSeconds, refreshConcurrency, maxConcurrentPerAccount, openaiGuardianReservedConcurrency, openaiAccountAffinity, maxAccountRotations, openaiSessionAffinityTtlHours, requestIntervalMs, rotationStrategy, maxWaitingPerKey, maxWaitingPerAccount, concurrencyWaitTimeoutSeconds, responsesMaxDecompressedBodyMiB, accountAutoFreezeThreshold, accountAutoFreezeWindowSeconds, accountAutoFreezeDurationSeconds } = form
+    if (!openaiAccountAffinity || maxAccountRotations === null || openaiSessionAffinityTtlHours === null || refreshMarginSeconds === null || refreshConcurrency === null || maxConcurrentPerAccount === null || openaiGuardianReservedConcurrency === null || requestIntervalMs === null || !rotationStrategy || maxWaitingPerKey === null || maxWaitingPerAccount === null || concurrencyWaitTimeoutSeconds === null) {
       toast.warning('请完整填写并发、队列、凭据刷新参数和调度策略')
+      return
+    }
+    if (!Number.isInteger(openaiSessionAffinityTtlHours) || openaiSessionAffinityTtlHours < 1 || openaiSessionAffinityTtlHours > 720) {
+      toast.warning('亲和时长应为 1～720 小时的整数')
+      return
+    }
+    if (!Number.isInteger(maxAccountRotations) || maxAccountRotations < 0 || maxAccountRotations > 31) {
+      toast.warning('最大换号次数应为 0～31 的整数，0 表示不换号')
       return
     }
     if (!Number.isInteger(maxConcurrentPerAccount) || maxConcurrentPerAccount < 0 || maxConcurrentPerAccount > 4294967295) {
@@ -281,6 +297,9 @@ export function useSettingsForm() {
         refreshConcurrency,
         maxConcurrentPerAccount,
         openaiGuardianReservedConcurrency,
+        openaiAccountAffinity,
+        maxAccountRotations,
+        openaiSessionAffinityTtlHours,
         requestIntervalMs,
         maxWaitingPerKey,
         maxWaitingPerAccount,
@@ -330,6 +349,8 @@ export function useSettingsForm() {
     refreshConcurrencyValue,
     maxConcurrentPerAccountValue,
     openaiGuardianReservedConcurrencyValue,
+    maxAccountRotationsValue,
+    openaiSessionAffinityTtlHoursValue,
     requestIntervalMsValue,
     maxWaitingPerKeyValue,
     maxWaitingPerAccountValue,

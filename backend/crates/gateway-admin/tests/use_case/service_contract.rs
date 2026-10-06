@@ -273,6 +273,7 @@ fn sdk_settings_contract_matches_host_declarations() {
         pub type ModelMappings = BTreeMap<String, String>;
         pub type Revision = NonZeroU64;
         pub type RotationStrategy = String;
+        pub type AccountAffinity = String;
         pub type PricingOverrides = BTreeMap<String, BTreeMap<String, ModelPriceOverride>>;
         #(#types)*
         #(#operations)*

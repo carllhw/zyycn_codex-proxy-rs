@@ -33,6 +33,9 @@ pub struct SnapshotRuntimeSettings {
     pub max_waiting_per_account: u32,
     pub concurrency_wait_timeout_seconds: u32,
     pub openai_guardian_reserved_concurrency: u32,
+    pub openai_account_affinity: gateway_core::account::AccountAffinity,
+    pub max_account_rotations: u32,
+    pub openai_session_affinity_ttl_hours: u32,
     pub responses_max_decompressed_body_bytes: u64,
     pub smart_scheduling: gateway_core::account::SmartSchedulingConfig,
     pub rotation_strategy: String,
@@ -170,6 +173,9 @@ impl SnapshotStorePort for PgRuntimeSnapshotRepository {
             .with_openai_guardian_reserved_concurrency(
                 data.settings.openai_guardian_reserved_concurrency,
             )
+            .with_openai_account_affinity(data.settings.openai_account_affinity)
+            .with_max_account_rotations(data.settings.max_account_rotations)
+            .with_openai_session_affinity_ttl_hours(data.settings.openai_session_affinity_ttl_hours)
             .with_smart_scheduling(data.settings.smart_scheduling)
             .with_request_profiles(data.settings.request_profiles)
             .with_pricing(data.settings.pricing)
@@ -272,6 +278,9 @@ struct SnapshotSettingsRow {
     max_waiting_per_account: i64,
     concurrency_wait_timeout_seconds: i64,
     openai_guardian_reserved_concurrency: i64,
+    openai_account_affinity: String,
+    max_account_rotations: i64,
+    openai_session_affinity_ttl_hours: i64,
     request_location_json: sqlx::types::Json<gateway_core::account::RequestLocation>,
     request_location_enabled: bool,
     responses_max_decompressed_body_bytes: i64,
@@ -283,7 +292,7 @@ async fn load_settings(
     transaction: &mut Transaction<'_, Postgres>,
 ) -> StoreResult<(Revision, SnapshotRuntimeSettings)> {
     let row = sqlx::query_as::<_, SnapshotSettingsRow>(
-        "select config_revision, refresh_margin_seconds, refresh_concurrency, max_concurrent_per_account, request_interval_ms, rotation_strategy, smart_scheduling_json, model_mappings_json, min_codex_desktop_version, min_codex_cli_version, max_waiting_per_key, max_waiting_per_account, concurrency_wait_timeout_seconds, openai_guardian_reserved_concurrency, request_location_json, request_location_enabled, responses_max_decompressed_body_bytes, provider_request_profiles_json, pricing_overrides_json, pricing_synced_json from runtime_settings where id = 1",
+        "select config_revision, refresh_margin_seconds, refresh_concurrency, max_concurrent_per_account, request_interval_ms, rotation_strategy, smart_scheduling_json, model_mappings_json, min_codex_desktop_version, min_codex_cli_version, max_waiting_per_key, max_waiting_per_account, concurrency_wait_timeout_seconds, openai_guardian_reserved_concurrency, openai_account_affinity, max_account_rotations, openai_session_affinity_ttl_hours, request_location_json, request_location_enabled, responses_max_decompressed_body_bytes, provider_request_profiles_json, pricing_overrides_json, pricing_synced_json from runtime_settings where id = 1",
     )
     .fetch_optional(&mut **transaction)
     .await
@@ -323,6 +332,12 @@ async fn load_settings(
             max_waiting_per_account: to_u32(row.max_waiting_per_account)?,
             concurrency_wait_timeout_seconds: to_u32(row.concurrency_wait_timeout_seconds)?,
             openai_guardian_reserved_concurrency: to_u32(row.openai_guardian_reserved_concurrency)?,
+            openai_account_affinity: gateway_core::account::AccountAffinity::parse(
+                &row.openai_account_affinity,
+            )
+            .ok_or_else(|| invalid("invalid account affinity"))?,
+            max_account_rotations: to_u32(row.max_account_rotations)?,
+            openai_session_affinity_ttl_hours: to_u32(row.openai_session_affinity_ttl_hours)?,
         },
     ))
 }
