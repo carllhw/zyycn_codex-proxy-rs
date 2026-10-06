@@ -76,8 +76,8 @@ export async function sessionPlugin(context: RequestContext, send: RequestNext) 
     if (!isSessionRequired(error) || config.signal?.aborted || generation !== sessionGeneration)
       throw error
     if (!config.skipSessionRecovery && sessionRecoveryHandler
-      && (successfulRecoveries !== recovered || await recoverSession())) {
-      // 40101 表示认证阶段拒绝；恢复成功后原请求最多重放一次
+      && await (sessionRecovery ?? (successfulRecoveries !== recovered ? true : recoverSession()))) {
+      // 迟到的 40101 也须等待当前续期；Cookie 更新完成后原请求最多重放一次
       if (config.signal?.aborted || generation !== sessionGeneration)
         throw error
       try {

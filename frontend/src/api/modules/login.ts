@@ -43,6 +43,9 @@ export function getAuthStatus() {
   return request<AuthStatusResponse>({
     url: '/api/auth/status',
     method: 'GET',
+    skipSessionRecovery: true,
+    silent: true,
+    timeout: 10_000,
   })
 }
 

@@ -3,7 +3,7 @@ import type { AuthSession } from '@/api'
 import { defineStore } from 'pinia'
 import { computed, shallowRef } from 'vue'
 
-import { login as apiLogin, logout as apiLogout, refreshAuthSession } from '@/api'
+import { login as apiLogin, logout as apiLogout, getAuthStatus, refreshAuthSession } from '@/api'
 import { resetUnauthorizedHandling } from '@/api/request'
 
 export const useAuthStore = defineStore('auth', () => {
@@ -19,8 +19,22 @@ export const useAuthStore = defineStore('auth', () => {
   function checkAuth(): Promise<boolean> {
     if (pendingCheck.value)
       return pendingCheck.value
-    const currentRevision = revision
-    const check = refreshAuthSession().then((status) => {
+    const check = loadSession(getAuthStatus).finally(() => {
+      if (pendingCheck.value === check)
+        pendingCheck.value = undefined
+    })
+    pendingCheck.value = check
+    return check
+  }
+
+  function refreshSession() {
+    // 并发续期由请求层协调，不能复用只读状态检查来释放失败请求
+    return loadSession(refreshAuthSession)
+  }
+
+  function loadSession(load: typeof getAuthStatus): Promise<boolean> {
+    const currentRevision = ++revision
+    return load().then((status) => {
       // 登录或退出之后到达的旧状态响应，不覆盖新会话。
       if (currentRevision === revision) {
         const wasAuthenticated = isAuthenticated.value
@@ -30,13 +44,7 @@ export const useAuthStore = defineStore('auth', () => {
           resetUnauthorizedHandling()
       }
       return isAuthenticated.value
-    }).finally(() => {
-      if (pendingCheck.value === check) {
-        pendingCheck.value = undefined
-      }
     })
-    pendingCheck.value = check
-    return check
   }
 
   async function login(payload: Parameters<typeof apiLogin>[0]) {
@@ -90,5 +98,5 @@ export const useAuthStore = defineStore('auth', () => {
     resetUnauthorizedHandling()
   }
 
-  return { session, isAuthenticated, isAdmin, sessionChecked, loading, checking, checkAuth, login, logout, invalidateSession }
+  return { session, isAuthenticated, isAdmin, sessionChecked, loading, checking, checkAuth, refreshSession, login, logout, invalidateSession }
 })
