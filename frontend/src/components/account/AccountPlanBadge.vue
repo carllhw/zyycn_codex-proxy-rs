@@ -53,10 +53,10 @@ const paletteClass = computed(() => {
 
 <template>
   <span
-    class="inline-flex shrink-0 items-center justify-center whitespace-nowrap leading-none shadow-cp-tertiary"
+    class="inline-flex min-w-0 max-w-full items-center justify-center whitespace-nowrap leading-none shadow-cp-tertiary"
     :class="[sizeClass, paletteClass]"
-    :title="rawPlanType || undefined"
+    :title="displayText || undefined"
   >
-    <span>{{ displayText }}</span>
+    <span class="truncate">{{ displayText }}</span>
   </span>
 </template>
