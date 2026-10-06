@@ -6,7 +6,7 @@ use super::{InvalidSettings, SettingsValues};
 use crate::{
     account::{AccountConcurrency, AccountSelectionPolicy, RotationStrategy},
     concurrency::ConcurrencyQueuePolicy,
-    policy::{CodexClientMinVersions, CodexClientVersion},
+    policy::CodexClientMinVersions,
 };
 
 // 持久快照和请求覆盖共用同一编译结果，避免参数校验与派生规则分叉
@@ -22,37 +22,24 @@ pub(crate) struct CompiledSettings {
 
 impl CompiledSettings {
     pub(crate) fn new(settings: SettingsValues) -> Result<Self, InvalidSettings> {
-        if !(1..=crate::account::MAX_SESSION_AFFINITY_TTL_HOURS)
-            .contains(&settings.openai_session_affinity_ttl_hours)
-            || settings.max_account_rotations > crate::account::MAX_ACCOUNT_ROTATIONS
-            || settings.max_waiting_per_key > 1_000
-            || settings.max_waiting_per_account > 1_000
-            || !(1..=120).contains(&settings.concurrency_wait_timeout_seconds)
-        {
-            return Err(InvalidSettings);
-        }
+        super::validate_request_limits(
+            settings.max_waiting_per_key,
+            settings.max_waiting_per_account,
+            settings.concurrency_wait_timeout_seconds,
+            settings.max_account_rotations,
+            settings.openai_session_affinity_ttl_hours,
+        )
+        .map_err(|_| InvalidSettings)?;
         let queue_timeout =
             Duration::from_secs(u64::from(settings.concurrency_wait_timeout_seconds));
         let responses_max_decompressed_body_bytes =
-            isize::try_from(settings.responses_max_decompressed_body_bytes)
-                .ok()
-                .and_then(|bytes| usize::try_from(bytes).ok())
-                .and_then(std::num::NonZeroUsize::new)
-                .ok_or(InvalidSettings)?;
-        let min_codex_client_versions = CodexClientMinVersions::new(
-            settings
-                .min_codex_desktop_version
-                .as_deref()
-                .map(CodexClientVersion::parse)
-                .transpose()
-                .map_err(|_| InvalidSettings)?,
-            settings
-                .min_codex_cli_version
-                .as_deref()
-                .map(CodexClientVersion::parse)
-                .transpose()
-                .map_err(|_| InvalidSettings)?,
-        );
+            super::response_body_limit(settings.responses_max_decompressed_body_bytes)
+                .map_err(|_| InvalidSettings)?;
+        let min_codex_client_versions = super::client_min_versions(
+            settings.min_codex_desktop_version.as_deref(),
+            settings.min_codex_cli_version.as_deref(),
+        )
+        .map_err(|_| InvalidSettings)?;
         let strategy =
             RotationStrategy::parse(&settings.rotation_strategy).ok_or(InvalidSettings)?;
         let account_selection_policy = AccountSelectionPolicy::new(

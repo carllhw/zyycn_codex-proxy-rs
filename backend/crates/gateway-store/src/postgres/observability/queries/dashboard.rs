@@ -616,7 +616,10 @@ pub(crate) fn optional_percentile(
 ) -> StoreResult<Option<PercentileMilliseconds>> {
     row.try_get::<Option<f64>, _>(column)
         .map_err(|source| postgres_unavailable("decode latency percentile", source))?
-        .map(PercentileMilliseconds::new)
+        .map(|value| {
+            PercentileMilliseconds::new(value)
+                .map_err(|source| postgres_unavailable("decode latency percentile", source))
+        })
         .transpose()
 }
 

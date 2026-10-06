@@ -28,6 +28,27 @@ use super::{
     WireValidationError, wire::map_admin_service_error,
 };
 
+/// 账号、代理与 Client Key 共用的分组引用
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AccountGroupRefView {
+    pub id: String,
+    pub name: String,
+    pub color: String,
+    pub enabled: bool,
+}
+
+impl From<gateway_admin::model::account_groups::AccountGroupRef> for AccountGroupRefView {
+    fn from(group: gateway_admin::model::account_groups::AccountGroupRef) -> Self {
+        Self {
+            id: group.id.to_string(),
+            name: group.name,
+            color: group.color.as_str().to_owned(),
+            enabled: group.enabled,
+        }
+    }
+}
+
 const DEFAULT_PAGE_SIZE: u32 = 50;
 const MAX_PAGE_SIZE: u32 = 200;
 
@@ -420,16 +441,8 @@ fn group_color(value: &str) -> Result<AccountGroupColor, AdminError> {
 }
 
 fn validate_group_fields(name: &str, description: Option<&str>) -> Result<(), AdminError> {
-    if name.trim() != name
-        || name.is_empty()
-        || name.chars().count() > 100
-        || name.chars().any(char::is_control)
-        || description
-            .is_some_and(|value| value.len() > 4096 || value.chars().any(char::is_control))
-    {
-        return Err(AdminError::bad_request("账号组请求不合法"));
-    }
-    Ok(())
+    gateway_admin::model::account_groups::validate_group_fields(name, description)
+        .map_err(|_| AdminError::bad_request("账号组请求不合法"))
 }
 
 fn map_wire_error(_: WireValidationError) -> AdminError {

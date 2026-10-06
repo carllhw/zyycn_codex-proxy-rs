@@ -44,28 +44,8 @@ pub(crate) fn store_usage_query(
         range: store_range(query.range)?,
         filter: store_usage_filter(query.filter),
         current_page: query.current_page,
-        page_size: ObservabilityPageSize::new(query.page_size.get())
-            .map_err(observability_error)?,
+        page_size: query.page_size,
     })
-}
-
-pub(crate) fn store_ops_error_filter(
-    filter: admin_observability::OpsErrorFilter,
-) -> OpsErrorFilter {
-    OpsErrorFilter {
-        client_api_key_ref: filter.client_api_key_ref,
-        request_id: filter.request_id,
-        provider_account_ref: filter.provider_account_ref,
-        provider_kind: filter.provider_kind,
-        operation: filter.operation,
-        model: filter.model,
-        transport: filter.transport,
-        attempt_index: filter.attempt_index,
-        response_id: filter.response_id,
-        upstream_request_id: filter.upstream_request_id,
-        status_code: filter.status_code,
-        search: filter.search,
-    }
 }
 
 pub(crate) fn store_ops_error_query(
@@ -73,10 +53,9 @@ pub(crate) fn store_ops_error_query(
 ) -> AdminStoreResult<OpsErrorQuery> {
     Ok(OpsErrorQuery {
         range: store_range(query.range)?,
-        filter: store_ops_error_filter(query.filter),
+        filter: query.filter,
         current_page: query.current_page,
-        page_size: ObservabilityPageSize::new(query.page_size.get())
-            .map_err(observability_error)?,
+        page_size: query.page_size,
     })
 }
 
@@ -96,7 +75,7 @@ pub(crate) const fn store_diagnostic_dimension(
 
 pub(crate) fn admin_dashboard_observation(
     observation: DashboardObservation,
-) -> AdminStoreResult<admin_observability::DashboardObservation> {
+) -> admin_observability::DashboardObservation {
     let DashboardObservation {
         range,
         totals,
@@ -105,35 +84,17 @@ pub(crate) fn admin_dashboard_observation(
         account_usage,
         recent_requests,
     } = observation;
-    Ok(admin_observability::DashboardObservation {
+    admin_observability::DashboardObservation {
         range: admin_range(range),
-        totals: admin_dashboard_totals(totals)?,
-        provider_accounts: admin_account_pool_metrics(provider_accounts),
-        trend: trend
-            .into_iter()
-            .map(admin_request_metric_point)
-            .collect::<AdminStoreResult<_>>()?,
+        totals,
+        provider_accounts,
+        trend: trend.into_iter().map(admin_request_metric_point).collect(),
         account_usage: account_usage
             .into_iter()
             .map(admin_dashboard_account_usage)
-            .collect::<AdminStoreResult<_>>()?,
-        recent_requests: recent_requests
-            .into_iter()
-            .map(admin_usage_list_record)
-            .collect::<AdminStoreResult<_>>()?,
-    })
-}
-
-pub(crate) fn admin_dashboard_totals(
-    totals: DashboardTotals,
-) -> AdminStoreResult<admin_observability::DashboardTotals> {
-    Ok(admin_observability::DashboardTotals {
-        request_count: totals.request_count,
-        input_tokens: totals.input_tokens,
-        cached_tokens: totals.cached_tokens,
-        total_tokens: totals.total_tokens,
-        billing_usd: admin_optional_decimal_amount(totals.billing_usd)?,
-    })
+            .collect(),
+        recent_requests,
+    }
 }
 
 pub(crate) const fn admin_range(range: ObservabilityRange) -> admin_observability::TimeRange {
@@ -145,8 +106,8 @@ pub(crate) const fn admin_range(range: ObservabilityRange) -> admin_observabilit
 
 pub(crate) fn admin_request_metrics(
     metrics: RequestMetrics,
-) -> AdminStoreResult<admin_observability::RequestMetrics> {
-    Ok(admin_observability::RequestMetrics {
+) -> admin_observability::RequestMetrics {
+    admin_observability::RequestMetrics {
         request_count: metrics.request_count,
         success_count: metrics.success_count,
         failure_count: metrics.failure_count,
@@ -165,18 +126,12 @@ pub(crate) fn admin_request_metrics(
         latency_count: metrics.latency_count,
         min_latency_ms: metrics.min_latency_ms,
         max_latency_ms: metrics.max_latency_ms,
-        latency_percentiles: admin_latency_percentiles(metrics.latency_percentiles)?,
-        first_token_latency_percentiles: admin_latency_percentiles(
-            metrics.first_token_latency_percentiles,
-        )?,
+        latency_percentiles: metrics.latency_percentiles,
+        first_token_latency_percentiles: metrics.first_token_latency_percentiles,
         admission_decision_count: metrics.admission_decision_count,
-        admission_decision_percentiles: admin_latency_percentiles(
-            metrics.admission_decision_percentiles,
-        )?,
+        admission_decision_percentiles: metrics.admission_decision_percentiles,
         account_selection_wait_count: metrics.account_selection_wait_count,
-        account_selection_wait_percentiles: admin_latency_percentiles(
-            metrics.account_selection_wait_percentiles,
-        )?,
+        account_selection_wait_percentiles: metrics.account_selection_wait_percentiles,
         output_throughput_p10: metrics.output_throughput_p10,
         output_throughput_p50: metrics.output_throughput_p50,
         output_throughput_p90: metrics.output_throughput_p90,
@@ -185,43 +140,13 @@ pub(crate) fn admin_request_metrics(
         capacity_utilization_p95_basis_points: metrics.capacity_utilization_p95_basis_points,
         cache_eligible_request_count: metrics.cache_eligible_request_count,
         cache_hit_request_count: metrics.cache_hit_request_count,
-    })
-}
-
-pub(crate) fn admin_latency_percentiles(
-    percentiles: LatencyPercentiles,
-) -> AdminStoreResult<admin_observability::LatencyPercentiles> {
-    Ok(admin_observability::LatencyPercentiles {
-        p50_ms: percentiles
-            .p50_ms
-            .map(|value| admin_observability::PercentileMilliseconds::new(value.as_f64()))
-            .transpose()
-            .map_err(|_| invalid_admin_percentile())?,
-        p95_ms: percentiles
-            .p95_ms
-            .map(|value| admin_observability::PercentileMilliseconds::new(value.as_f64()))
-            .transpose()
-            .map_err(|_| invalid_admin_percentile())?,
-        p99_ms: percentiles
-            .p99_ms
-            .map(|value| admin_observability::PercentileMilliseconds::new(value.as_f64()))
-            .transpose()
-            .map_err(|_| invalid_admin_percentile())?,
-    })
-}
-
-pub(crate) fn invalid_admin_percentile() -> gateway_admin::ports::store::AdminStoreError {
-    observability_error(StoreError::InvalidData {
-        source: None,
-        entity: "observability latency percentile",
-        message: "latency percentile is outside the admin contract".to_owned(),
-    })
+    }
 }
 
 pub(crate) fn admin_attempt_metrics(
     metrics: AttemptMetrics,
-) -> AdminStoreResult<admin_observability::AttemptMetrics> {
-    Ok(admin_observability::AttemptMetrics {
+) -> admin_observability::AttemptMetrics {
+    admin_observability::AttemptMetrics {
         attempt_count: metrics.attempt_count,
         success_count: metrics.success_count,
         failure_count: metrics.failure_count,
@@ -231,8 +156,8 @@ pub(crate) fn admin_attempt_metrics(
         auth_failure_count: metrics.auth_failure_count,
         provider_5xx_count: metrics.provider_5xx_count,
         cost_coverage: admin_cost_coverage(metrics.cost_coverage),
-        costs: admin_currency_costs(metrics.costs)?,
-    })
+        costs: metrics.costs,
+    }
 }
 
 pub(crate) const fn admin_cost_coverage(
@@ -247,55 +172,10 @@ pub(crate) const fn admin_cost_coverage(
     }
 }
 
-pub(crate) fn admin_currency_costs(
-    costs: Vec<CurrencyCostTotal>,
-) -> AdminStoreResult<Vec<admin_observability::CurrencyCost>> {
-    costs
-        .into_iter()
-        .map(|cost| {
-            Ok(admin_observability::CurrencyCost {
-                currency: cost.currency,
-                amount: admin_decimal_amount(cost.amount)?,
-            })
-        })
-        .collect()
-}
-
-pub(crate) fn admin_decimal_amount(
-    amount: DecimalAmount,
-) -> AdminStoreResult<admin_observability::DecimalAmount> {
-    admin_observability::DecimalAmount::from_str(amount.as_str()).map_err(|_| {
-        observability_error(StoreError::InvalidData {
-            source: None,
-            entity: "observability decimal amount",
-            message: "amount is outside the admin numeric contract".to_owned(),
-        })
-    })
-}
-
-pub(crate) fn admin_optional_decimal_amount(
-    amount: Option<DecimalAmount>,
-) -> AdminStoreResult<Option<admin_observability::DecimalAmount>> {
-    amount.map(admin_decimal_amount).transpose()
-}
-
-pub(crate) const fn admin_account_pool_metrics(
-    metrics: ProviderAccountMetrics,
-) -> admin_observability::AccountPoolMetrics {
-    admin_observability::AccountPoolMetrics {
-        total: metrics.total,
-        normal: metrics.normal,
-        quota_exhausted: metrics.quota_exhausted,
-        rate_limited: metrics.rate_limited,
-        disabled: metrics.disabled,
-        error: metrics.error,
-    }
-}
-
 pub(crate) fn admin_dashboard_account_usage(
     usage: ProviderAccountUsageObservation,
-) -> AdminStoreResult<admin_observability::DashboardAccountUsage> {
-    Ok(admin_observability::DashboardAccountUsage {
+) -> admin_observability::DashboardAccountUsage {
+    admin_observability::DashboardAccountUsage {
         account_id: usage.account_id,
         provider_kind: usage.provider_kind,
         authentication_kind: usage.authentication_kind,
@@ -316,32 +196,23 @@ pub(crate) fn admin_dashboard_account_usage(
         image_request_failed_count: usage.image_request_failed_count,
         total_tokens: usage.total_tokens,
         cost_coverage: admin_cost_coverage(usage.cost_coverage),
-        costs: admin_currency_costs(usage.costs)?,
+        costs: usage.costs,
         last_used_at: usage.last_used_at,
-        request_buckets: usage
-            .request_buckets
-            .into_iter()
-            .map(
-                |bucket| admin_observability::DashboardAccountRequestBucket {
-                    bucket_start: bucket.bucket_start,
-                    request_count: bucket.request_count,
-                },
-            )
-            .collect(),
+        request_buckets: usage.request_buckets,
         quota_used_percent: None,
         quota_window: None,
         models: usage
             .models
             .into_iter()
-            .map(admin_dashboard_account_model_usage)
-            .collect::<AdminStoreResult<_>>()?,
-    })
+            .map(admin_account_model_usage)
+            .collect(),
+    }
 }
 
-pub(crate) fn admin_dashboard_account_model_usage(
+pub(crate) fn admin_account_model_usage(
     usage: ProviderAccountModelUsageObservation,
-) -> AdminStoreResult<admin_observability::DashboardAccountModelUsage> {
-    Ok(admin_observability::DashboardAccountModelUsage {
+) -> admin_observability::AccountModelUsage {
+    admin_observability::AccountModelUsage {
         model: usage.model,
         request_count: usage.request_count,
         success_count: usage.success_count,
@@ -356,27 +227,27 @@ pub(crate) fn admin_dashboard_account_model_usage(
         image_request_failed_count: usage.image_request_failed_count,
         total_tokens: usage.total_tokens,
         cost_coverage: admin_cost_coverage(usage.cost_coverage),
-        costs: admin_currency_costs(usage.costs)?,
+        costs: usage.costs,
         last_used_at: usage.last_used_at,
-    })
+    }
 }
 
 pub(crate) fn admin_request_metric_point(
     point: RequestMetricPoint,
-) -> AdminStoreResult<admin_observability::RequestMetricPoint> {
-    Ok(admin_observability::RequestMetricPoint {
+) -> admin_observability::RequestMetricPoint {
+    admin_observability::RequestMetricPoint {
         bucket_start: point.bucket_start,
         granularity: admin_granularity(point.granularity),
-        metrics: admin_request_metrics(point.metrics)?,
+        metrics: admin_request_metrics(point.metrics),
         cost_coverage: admin_cost_coverage(point.cost_coverage),
-        costs: admin_currency_costs(point.costs)?,
-    })
+        costs: point.costs,
+    }
 }
 
 pub(crate) fn admin_calculated_usage_billing_fact(
     fact: CalculatedUsageBillingFact,
-) -> AdminStoreResult<admin_observability::UsageCalculatedBillingFact> {
-    Ok(admin_observability::UsageCalculatedBillingFact {
+) -> admin_observability::UsageCalculatedBillingFact {
+    admin_observability::UsageCalculatedBillingFact {
         breakdown: fact
             .billing_snapshot_json
             .as_ref()
@@ -389,11 +260,8 @@ pub(crate) fn admin_calculated_usage_billing_fact(
         output_tokens: fact.output_tokens,
         cached_tokens: fact.cached_tokens,
         cache_write_tokens: fact.cache_write_tokens,
-        total: admin_observability::CurrencyCost {
-            currency: fact.total.currency,
-            amount: admin_decimal_amount(fact.total.amount)?,
-        },
-    })
+        total: fact.total,
+    }
 }
 
 pub(crate) const fn admin_granularity(
@@ -404,21 +272,6 @@ pub(crate) const fn admin_granularity(
         ObservationGranularity::Hour => admin_observability::Granularity::Hour,
         ObservationGranularity::Day => admin_observability::Granularity::Day,
     }
-}
-
-pub(crate) fn admin_usage_page(
-    page: UsageRecordPage,
-) -> AdminStoreResult<admin_observability::UsagePage> {
-    Ok(admin_observability::UsagePage {
-        items: page
-            .items
-            .into_iter()
-            .map(admin_usage_list_record)
-            .collect::<AdminStoreResult<_>>()?,
-        current_page: page.current_page,
-        page_size: page.page_size,
-        total: page.total,
-    })
 }
 
 fn restore_billing_snapshot(
@@ -437,257 +290,27 @@ fn restore_billing_snapshot(
     billing
 }
 
-pub(crate) fn admin_usage_list_record(
-    record: UsageListRecord,
-) -> AdminStoreResult<admin_observability::UsageListRecord> {
-    let billing = match (&record.cost_amount, &record.cost_currency) {
-        (Some(amount), Some(currency)) => Some(admin_observability::UsageBilling::Total {
-            source: record.cost_source.clone(),
-            total: admin_observability::CurrencyCost {
-                currency: currency.clone(),
-                amount: admin_decimal_amount(amount.clone())?,
-            },
-        }),
-        (None, None) => None,
-        _ => {
-            return Err(observability_error(StoreError::InvalidData {
-                source: None,
-                entity: "observability request billing",
-                message: "cost amount and currency must be present together".to_owned(),
-            }));
-        }
-    };
-    let billing = restore_billing_snapshot(billing, record.billing_snapshot_json.as_ref());
-    Ok(admin_observability::UsageListRecord {
-        client_api_key_name: record.client_api_key_name,
-        id: record.id,
-        endpoint: record.endpoint,
-        client_transport: record.client_transport,
-        requested_model_id: record.requested_model_id,
-        provider_kind: record.provider_kind,
-        provider_account_ref: record.provider_account_ref,
-        provider_account_name: record.provider_account_name,
-        provider_account_email: record.provider_account_email,
-        provider_account_notes: record.provider_account_notes,
-        provider_account_plan_type: record.provider_account_plan_type,
-        provider_account_plan_type_display: None,
-        provider_account_authentication_kind: record.provider_account_authentication_kind,
-        upstream_model_id: record.upstream_model_id,
-        upstream_transport: record.upstream_transport,
-        upstream_response_model: record.upstream_response_model,
-        service_tier: record.service_tier,
-        input_tokens: record.input_tokens,
-        output_tokens: record.output_tokens,
-        cached_tokens: record.cached_tokens,
-        cache_write_tokens: record.cache_write_tokens,
-        reasoning_tokens: record.reasoning_tokens,
-        image_input_tokens: record.image_input_tokens,
-        image_output_tokens: record.image_output_tokens,
-        total_tokens: record.total_tokens,
-        cost_source: record.cost_source,
-        cost_amount: admin_optional_decimal_amount(record.cost_amount)?,
-        cost_currency: record.cost_currency,
-        billing,
-        transport_decision_wait_ms: record.transport_decision_wait_ms,
-        connect_ms: record.connect_ms,
-        headers_ms: record.headers_ms,
-        first_event_ms: record.first_event_ms,
-        first_reasoning_ms: record.first_reasoning_ms,
-        first_text_ms: record.first_text_ms,
-        first_token_ms: record.first_token_ms,
-        provider_processing_ms: record.provider_processing_ms,
-        latency_ms: record.latency_ms,
-        admission_decision_ms: record.admission_decision_ms,
-        account_selection_wait_ms: record.account_selection_wait_ms,
-        capacity_used_slots: record.capacity_used_slots,
-        capacity_total_slots: record.capacity_total_slots,
-        client_ip: record.client_ip,
-        user_agent: record.user_agent,
-        reasoning_effort: record.reasoning_effort,
-        reasoning_preset: record.reasoning_preset,
-        subagent_kind: record.subagent_kind,
-        compact: record.compact,
-        started_at: record.started_at,
-    })
-}
-
-pub(crate) fn admin_usage_record(
-    record: UsageRecord,
-) -> AdminStoreResult<admin_observability::UsageRecord> {
-    let billing = match (&record.cost_amount, &record.cost_currency) {
-        (Some(amount), Some(currency)) => Some(admin_observability::UsageBilling::Total {
-            source: record.cost_source.clone(),
-            total: admin_observability::CurrencyCost {
-                currency: currency.clone(),
-                amount: admin_decimal_amount(amount.clone())?,
-            },
-        }),
-        (None, None) => None,
-        _ => {
-            return Err(observability_error(StoreError::InvalidData {
-                source: None,
-                entity: "observability request billing",
-                message: "cost amount and currency must be present together".to_owned(),
-            }));
-        }
-    };
-    let billing = restore_billing_snapshot(billing, record.billing_snapshot_json.as_ref());
-    Ok(admin_observability::UsageRecord {
-        id: record.id,
-        client_api_key_ref: record.client_api_key_ref,
-        config_revision: record.config_revision,
-        routing_scope: record.routing_scope,
-        routing_group_refs: record.routing_group_refs,
-        routing_group_names_snapshot: record.routing_group_names_snapshot,
-        protocol: record.protocol,
-        operation: record.operation,
-        endpoint: record.endpoint,
-        client_transport: record.client_transport,
-        requested_model_id: record.requested_model_id,
-        provider_kind: record.provider_kind,
-        provider_account_ref: record.provider_account_ref,
-        provider_account_name: record.provider_account_name,
-        provider_account_email: record.provider_account_email,
-        provider_account_authentication_kind: record.provider_account_authentication_kind,
-        upstream_model_id: record.upstream_model_id,
-        upstream_transport: record.upstream_transport,
-        http_version: record.http_version,
-        websocket_pool: record.websocket_pool,
-        upstream_response_model: record.upstream_response_model,
-        service_tier: record.service_tier,
-        provider_metadata_json: record.provider_metadata_json,
-        attempt_count: record.attempt_count,
-        upstream_send_state: record.upstream_send_state,
-        downstream_committed_at: record.downstream_committed_at,
-        outcome: admin_request_outcome(&record.outcome)?,
-        client_status_code: record.client_status_code,
-        upstream_status_code: record.upstream_status_code,
-        client_response_id: record.client_response_id,
-        upstream_request_id: record.upstream_request_id,
-        upstream_response_id: record.upstream_response_id,
-        error_kind: record.error_kind,
-        provider_error_code: record.provider_error_code,
-        error_message: record.error_message,
-        retry_after_ms: record.retry_after_ms,
-        input_tokens: record.input_tokens,
-        output_tokens: record.output_tokens,
-        cached_tokens: record.cached_tokens,
-        cache_write_tokens: record.cache_write_tokens,
-        reasoning_tokens: record.reasoning_tokens,
-        image_input_tokens: record.image_input_tokens,
-        image_output_tokens: record.image_output_tokens,
-        total_tokens: record.total_tokens,
-        cost_source: record.cost_source,
-        cost_amount: admin_optional_decimal_amount(record.cost_amount)?,
-        cost_currency: record.cost_currency,
-        billing,
-        transport_decision_wait_ms: record.transport_decision_wait_ms,
-        connect_ms: record.connect_ms,
-        headers_ms: record.headers_ms,
-        first_event_ms: record.first_event_ms,
-        first_reasoning_ms: record.first_reasoning_ms,
-        first_text_ms: record.first_text_ms,
-        first_token_ms: record.first_token_ms,
-        provider_processing_ms: record.provider_processing_ms,
-        latency_ms: record.latency_ms,
-        admission_decision_ms: record.admission_decision_ms,
-        account_selection_wait_ms: record.account_selection_wait_ms,
-        capacity_used_slots: record.capacity_used_slots,
-        capacity_total_slots: record.capacity_total_slots,
-        client_ip: record.client_ip,
-        user_agent: record.user_agent,
-        reasoning_effort: record.reasoning_effort,
-        reasoning_preset: record.reasoning_preset,
-        request_kind: record.request_kind,
-        subagent_kind: record.subagent_kind,
-        compact: record.compact,
-        image_generation_requested: record.image_generation_requested,
-        image_generation_succeeded: record.image_generation_succeeded,
-        started_at: record.started_at,
-        deadline_at: record.deadline_at,
-        completed_at: record.completed_at,
-    })
-}
-
-pub(crate) fn admin_request_outcome(
-    outcome: &str,
-) -> AdminStoreResult<admin_observability::RequestOutcome> {
+pub(crate) fn request_outcome(outcome: &str) -> StoreResult<admin_observability::RequestOutcome> {
     admin_observability::RequestOutcome::new(outcome.to_owned()).map_err(|_| {
-        observability_error(StoreError::InvalidData {
+        StoreError::InvalidData {
             source: None,
             entity: "observability request outcome",
             message: "invalid request outcome".to_owned(),
-        })
+        }
     })
 }
 
-pub(crate) fn admin_usage_detail(
-    detail: UsageRecordDetail,
-) -> AdminStoreResult<admin_observability::UsageDetail> {
-    Ok(admin_observability::UsageDetail {
-        trace: detail.trace,
-        related_requests: detail.related_requests,
-        request: admin_usage_record(detail.request)?,
-        attempts: detail
-            .attempts
-            .into_iter()
-            .map(admin_usage_attempt)
-            .collect::<AdminStoreResult<_>>()?,
-    })
-}
-
-pub(crate) fn admin_usage_attempt(
-    attempt: UsageAttemptObservation,
-) -> AdminStoreResult<admin_observability::UsageAttempt> {
-    Ok(admin_observability::UsageAttempt {
-        source: attempt.source,
-        id: attempt.id,
-        attempt_index: attempt.attempt_index,
-        component: attempt.component,
-        operation: attempt.operation,
-        provider_kind: attempt.provider_kind,
-        provider_account_ref: attempt.provider_account_ref,
-        provider_account_name: attempt.provider_account_name,
-        provider_account_email: attempt.provider_account_email,
-        provider_account_authentication_kind: attempt.provider_account_authentication_kind,
-        upstream_model_id: attempt.upstream_model_id,
-        upstream_transport: attempt.upstream_transport,
-        upstream_send_state: attempt.upstream_send_state,
-        outcome: admin_request_outcome(&attempt.outcome)?,
-        downstream_committed: attempt.downstream_committed,
-        status_code: attempt.status_code,
-        provider_error_code: attempt.provider_error_code,
-        failure_kind: attempt.failure_kind,
-        retry_after_ms: attempt.retry_after_ms,
-        upstream_request_id: attempt.upstream_request_id,
-        latency_ms: attempt.latency_ms,
-        message: attempt.message,
-        input_tokens: attempt.input_tokens,
-        output_tokens: attempt.output_tokens,
-        cached_tokens: attempt.cached_tokens,
-        cache_write_tokens: attempt.cache_write_tokens,
-        reasoning_tokens: attempt.reasoning_tokens,
-        total_tokens: attempt.total_tokens,
-        cost_source: attempt.cost_source,
-        cost_amount: admin_optional_decimal_amount(attempt.cost_amount)?,
-        cost_currency: attempt.cost_currency,
-        occurred_at: attempt.occurred_at,
-    })
-}
-
-pub(crate) fn admin_usage_overview(
-    overview: UsageOverview,
-) -> AdminStoreResult<admin_observability::UsageOverview> {
-    Ok(admin_observability::UsageOverview {
+pub(crate) fn admin_usage_overview(overview: UsageOverview) -> admin_observability::UsageOverview {
+    admin_observability::UsageOverview {
         range: admin_range(overview.range),
-        requests: admin_request_metrics(overview.requests)?,
-        attempts: admin_attempt_metrics(overview.attempts)?,
+        requests: admin_request_metrics(overview.requests),
+        attempts: admin_attempt_metrics(overview.attempts),
         providers: overview
             .providers
             .into_iter()
             .map(admin_provider_observation)
             .collect(),
-    })
+    }
 }
 
 pub(crate) fn admin_provider_observation(
@@ -704,21 +327,21 @@ pub(crate) fn admin_provider_observation(
 
 pub(crate) fn admin_diagnostics_observation(
     observation: DiagnosticsObservation,
-) -> AdminStoreResult<admin_observability::DiagnosticsObservation> {
-    Ok(admin_observability::DiagnosticsObservation {
+) -> admin_observability::DiagnosticsObservation {
+    admin_observability::DiagnosticsObservation {
         total_request_count: observation.total_request_count,
         items: observation
             .items
             .into_iter()
             .map(admin_diagnostic_observation)
-            .collect::<AdminStoreResult<_>>()?,
-    })
+            .collect(),
+    }
 }
 
 fn admin_diagnostic_observation(
     observation: DiagnosticObservation,
-) -> AdminStoreResult<admin_observability::DiagnosticObservation> {
-    Ok(admin_observability::DiagnosticObservation {
+) -> admin_observability::DiagnosticObservation {
+    admin_observability::DiagnosticObservation {
         key: observation.key,
         name: observation.name,
         account_provider_kind: observation.account_provider_kind,
@@ -735,85 +358,25 @@ fn admin_diagnostic_observation(
         retry_count: observation.retry_count,
         retried_request_count: observation.retried_request_count,
         cost_coverage: admin_cost_coverage(observation.cost_coverage),
-        costs: admin_currency_costs(observation.costs)?,
-    })
-}
-
-pub(crate) fn admin_ops_error_page(
-    page: OpsErrorPage,
-) -> AdminStoreResult<admin_observability::OpsErrorPage> {
-    Ok(admin_observability::OpsErrorPage {
-        items: page.items.into_iter().map(admin_ops_error).collect(),
-        current_page: page.current_page,
-        page_size: page.page_size,
-        total: page.total,
-    })
-}
-
-pub(crate) fn admin_ops_error(error: OpsErrorRecord) -> admin_observability::OpsError {
-    admin_observability::OpsError {
-        client_api_key_name: error.client_api_key_name,
-        source: error.source,
-        event_id: error.event_id,
-        request_id: error.request_id,
-        attempt_index: error.attempt_index,
-        client_api_key_ref: error.client_api_key_ref,
-        component: error.component,
-        operation: error.operation,
-        protocol: error.protocol,
-        client_transport: error.client_transport,
-        requested_model_id: error.requested_model_id,
-        service_tier: error.service_tier,
-        endpoint: error.endpoint,
-        provider_kind: error.provider_kind,
-        provider_account_ref: error.provider_account_ref,
-        provider_account_name: error.provider_account_name,
-        provider_account_email: error.provider_account_email,
-        provider_account_plan_type: error.provider_account_plan_type,
-        provider_account_plan_type_display: None,
-        provider_account_authentication_kind: error.provider_account_authentication_kind,
-        upstream_model_id: error.upstream_model_id,
-        upstream_transport: error.upstream_transport,
-        failure_kind: error.failure_kind,
-        upstream_send_state: error.upstream_send_state,
-        client_status_code: error.client_status_code,
-        upstream_status_code: error.upstream_status_code,
-        provider_error_code: error.provider_error_code,
-        client_response_id: error.client_response_id,
-        upstream_request_id: error.upstream_request_id,
-        latency_ms: error.latency_ms,
-        message: error.message,
-        error_details: error.error_details,
-        client_ip: error.client_ip,
-        user_agent: error.user_agent,
-        reasoning_effort: error.reasoning_effort,
-        reasoning_preset: error.reasoning_preset,
-        request_kind: error.request_kind,
-        subagent_kind: error.subagent_kind,
-        compact: error.compact,
-        continuation_affinity_hash: error.continuation_affinity_hash,
-        continuation_previous_response_id_hash: error.continuation_previous_response_id_hash,
-        continuation_unavailable_reason: error.continuation_unavailable_reason,
-        upstream_connection_id: error.upstream_connection_id,
-        upstream_connection_exit_reason: error.upstream_connection_exit_reason,
-        upstream_connection_age_ms: error.upstream_connection_age_ms,
-        upstream_connection_idle_ms: error.upstream_connection_idle_ms,
-        recovery_request_id: error.recovery_request_id,
-        recovered_at: error.recovered_at,
-        recovery_attempt_count: error.recovery_attempt_count,
-        recovery_retry_delay_ms: error.recovery_retry_delay_ms,
-        recovery_total_latency_ms: error.recovery_total_latency_ms,
-        occurred_at: error.occurred_at,
-        stable_sort_id: error.stable_sort_id,
+        costs: observation.costs,
     }
 }
 
 pub(crate) fn usage_list_record_from_row(
     row: &sqlx::postgres::PgRow,
 ) -> StoreResult<UsageListRecord> {
+    let cost_source: String = get(row, "cost_source")?;
+    let cost_amount = optional_decimal(row, "cost_amount")?;
+    let cost_currency: Option<String> = get(row, "cost_currency")?;
+    let billing = billing_from_row(
+        row,
+        &cost_source,
+        cost_amount.as_ref(),
+        cost_currency.as_deref(),
+    )?;
     Ok(UsageListRecord {
         client_api_key_name: get(row, "client_api_key_name")?,
-        billing_snapshot_json: get(row, "billing_snapshot_json")?,
+        billing,
         id: get(row, "id")?,
         endpoint: get(row, "endpoint")?,
         client_transport: get(row, "client_transport")?,
@@ -824,6 +387,7 @@ pub(crate) fn usage_list_record_from_row(
         provider_account_email: get(row, "provider_account_email")?,
         provider_account_notes: get(row, "provider_account_notes")?,
         provider_account_plan_type: get(row, "provider_account_plan_type")?,
+        provider_account_plan_type_display: None,
         provider_account_authentication_kind: get(row, "provider_account_authentication_kind")?,
         upstream_model_id: get(row, "upstream_model_id")?,
         upstream_transport: get(row, "upstream_transport")?,
@@ -837,9 +401,9 @@ pub(crate) fn usage_list_record_from_row(
         image_input_tokens: optional_unsigned(row, "image_input_tokens")?,
         image_output_tokens: optional_unsigned(row, "image_output_tokens")?,
         total_tokens: optional_unsigned(row, "total_tokens")?,
-        cost_source: get(row, "cost_source")?,
-        cost_amount: optional_decimal(row, "cost_amount")?,
-        cost_currency: get(row, "cost_currency")?,
+        cost_source,
+        cost_amount,
+        cost_currency,
         transport_decision_wait_ms: optional_unsigned(row, "transport_decision_wait_ms")?,
         connect_ms: optional_unsigned(row, "connect_ms")?,
         headers_ms: optional_unsigned(row, "headers_ms")?,
@@ -864,8 +428,17 @@ pub(crate) fn usage_list_record_from_row(
 }
 
 pub(crate) fn usage_record_from_row(row: &sqlx::postgres::PgRow) -> StoreResult<UsageRecord> {
+    let cost_source: String = get(row, "cost_source")?;
+    let cost_amount = optional_decimal(row, "cost_amount")?;
+    let cost_currency: Option<String> = get(row, "cost_currency")?;
+    let billing = billing_from_row(
+        row,
+        &cost_source,
+        cost_amount.as_ref(),
+        cost_currency.as_deref(),
+    )?;
     Ok(UsageRecord {
-        billing_snapshot_json: get(row, "billing_snapshot_json")?,
+        billing,
         id: get(row, "id")?,
         client_api_key_ref: get(row, "client_api_key_ref")?,
         config_revision: unsigned(row, "config_revision")?,
@@ -899,7 +472,7 @@ pub(crate) fn usage_record_from_row(row: &sqlx::postgres::PgRow) -> StoreResult<
         attempt_count: to_u32(get(row, "attempt_count")?)?,
         upstream_send_state: get(row, "upstream_send_state")?,
         downstream_committed_at: get(row, "downstream_committed_at")?,
-        outcome: get(row, "outcome")?,
+        outcome: request_outcome(&get::<String>(row, "outcome")?)?,
         client_status_code: optional_status(row, "client_status_code")?,
         upstream_status_code: optional_status(row, "upstream_status_code")?,
         client_response_id: opaque_response_id(row, "client_response_id")?,
@@ -917,9 +490,9 @@ pub(crate) fn usage_record_from_row(row: &sqlx::postgres::PgRow) -> StoreResult<
         image_input_tokens: optional_unsigned(row, "image_input_tokens")?,
         image_output_tokens: optional_unsigned(row, "image_output_tokens")?,
         total_tokens: optional_unsigned(row, "total_tokens")?,
-        cost_source: get(row, "cost_source")?,
-        cost_amount: optional_decimal(row, "cost_amount")?,
-        cost_currency: get(row, "cost_currency")?,
+        cost_source,
+        cost_amount,
+        cost_currency,
         transport_decision_wait_ms: optional_unsigned(row, "transport_decision_wait_ms")?,
         connect_ms: optional_unsigned(row, "connect_ms")?,
         headers_ms: optional_unsigned(row, "headers_ms")?,
@@ -970,6 +543,7 @@ pub(crate) fn ops_error_from_row(row: &sqlx::postgres::PgRow) -> StoreResult<Ops
         provider_account_name: get(row, "provider_account_name")?,
         provider_account_email: get(row, "provider_account_email")?,
         provider_account_plan_type: get(row, "provider_account_plan_type")?,
+        provider_account_plan_type_display: None,
         provider_account_authentication_kind: get(row, "provider_account_authentication_kind")?,
         upstream_model_id: get(row, "upstream_model_id")?,
         upstream_transport: get(row, "upstream_transport")?,
@@ -1010,7 +584,7 @@ pub(crate) fn ops_error_from_row(row: &sqlx::postgres::PgRow) -> StoreResult<Ops
 pub(crate) fn cost_from_row(row: &sqlx::postgres::PgRow) -> StoreResult<CurrencyCostTotal> {
     Ok(CurrencyCostTotal {
         currency: get(row, "cost_currency")?,
-        amount: DecimalAmount::from_str(&get::<String>(row, "amount")?)?,
+        amount: parse_decimal_amount(&get::<String>(row, "amount")?)?,
     })
 }
 
@@ -1036,7 +610,7 @@ pub(crate) fn optional_decimal(
     column: &'static str,
 ) -> StoreResult<Option<DecimalAmount>> {
     get::<Option<String>>(row, column)?
-        .map(|value| DecimalAmount::from_str(&value))
+        .map(|value| parse_decimal_amount(&value))
         .transpose()
 }
 
@@ -1125,4 +699,39 @@ pub(crate) fn invalid(message: &str) -> StoreError {
         entity: "observability",
         message: message.to_owned(),
     }
+}
+
+fn parse_decimal_amount(value: &str) -> StoreResult<DecimalAmount> {
+    DecimalAmount::from_str(value).map_err(|source| StoreError::InvalidData {
+        source: Some(source.into()),
+        entity: "decimal amount",
+        message: "expected a non-negative numeric(20,10) value".to_owned(),
+    })
+}
+
+fn billing_from_row(
+    row: &sqlx::postgres::PgRow,
+    source: &str,
+    amount: Option<&DecimalAmount>,
+    currency: Option<&str>,
+) -> StoreResult<Option<admin_observability::UsageBilling>> {
+    let billing = match (amount, currency) {
+        (Some(amount), Some(currency)) => Some(admin_observability::UsageBilling::Total {
+            source: source.to_owned(),
+            total: admin_observability::CurrencyCost {
+                currency: currency.to_owned(),
+                amount: amount.clone(),
+            },
+        }),
+        (None, None) => None,
+        _ => {
+            return Err(StoreError::InvalidData {
+                source: None,
+                entity: "observability request billing",
+                message: "cost amount and currency must be present together".to_owned(),
+            });
+        }
+    };
+    let snapshot: Option<serde_json::Value> = get(row, "billing_snapshot_json")?;
+    Ok(restore_billing_snapshot(billing, snapshot.as_ref()))
 }

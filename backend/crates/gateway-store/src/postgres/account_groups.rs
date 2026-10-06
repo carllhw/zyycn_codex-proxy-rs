@@ -628,16 +628,8 @@ fn validate_page_query(query: &AccountGroupListQuery) -> AdminStoreResult<()> {
 }
 
 fn validate_group_fields(name: &str, description: Option<&str>) -> AdminStoreResult<()> {
-    if name.trim() != name
-        || name.is_empty()
-        || name.chars().count() > 100
-        || name.chars().any(char::is_control)
-        || description
-            .is_some_and(|value| value.len() > 4096 || value.chars().any(char::is_control))
-    {
-        return Err(invalid_admin("invalid account group fields"));
-    }
-    Ok(())
+    gateway_admin::model::account_groups::validate_group_fields(name, description)
+        .map_err(|_| invalid_admin("invalid account group fields"))
 }
 
 fn require_one(rows: u64, id: &str) -> StoreResult<()> {

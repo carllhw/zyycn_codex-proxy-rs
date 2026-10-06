@@ -10,7 +10,7 @@ use std::{
 use chrono::{TimeDelta, Utc};
 use futures::future::BoxFuture;
 use gateway_admin::{
-    model::{PageSize, observability as admin_observability},
+    model::observability as admin_observability,
     ports::store::ObservabilityStore as AdminObservabilityStore,
 };
 use gateway_core::{
@@ -218,7 +218,7 @@ async fn usage_list_and_diagnostics_should_resolve_current_account_metadata_by_i
                 range,
                 filter: admin_observability::UsageFilter::default(),
                 current_page: 1,
-                page_size: PageSize::new(10).expect("page size"),
+                page_size: ObservabilityPageSize::new(10).expect("page size"),
             })
             .await
             .expect("usage list with current notes");
@@ -300,7 +300,7 @@ async fn usage_list_and_diagnostics_should_resolve_current_account_metadata_by_i
                 ..admin_observability::UsageFilter::default()
             },
             current_page: 1,
-            page_size: PageSize::new(10).expect("page size"),
+            page_size: ObservabilityPageSize::new(10).expect("page size"),
         })
         .await
         .expect("deleted account history");
@@ -695,7 +695,7 @@ async fn ops_errors_should_use_each_event_accounts_current_subscription() {
         .expect("ops range"),
         filter: admin_observability::OpsErrorFilter::default(),
         current_page: 1,
-        page_size: PageSize::new(10).expect("page size"),
+        page_size: ObservabilityPageSize::new(10).expect("page size"),
     };
     let store = admin_observability_store(&database.pool);
     for plan in [Some("pro"), Some("plus"), None] {
@@ -797,7 +797,7 @@ async fn ops_should_include_incomplete_upstream_errors() {
                 ..admin_observability::OpsErrorFilter::default()
             },
             current_page: 1,
-            page_size: PageSize::new(10).unwrap(),
+            page_size: ObservabilityPageSize::new(10).unwrap(),
         })
         .await
         .expect("incomplete request must be available in admin error troubleshooting");
@@ -1396,7 +1396,7 @@ async fn admin_observability_adapter_preserves_utc_queries_metrics_costs_and_det
             range,
             filter: admin_observability::UsageFilter::default(),
             current_page: 1,
-            page_size: PageSize::new(1).expect("page size"),
+            page_size: ObservabilityPageSize::new(1).expect("page size"),
         })
         .await
         .expect("first usage page");
@@ -1414,7 +1414,7 @@ async fn admin_observability_adapter_preserves_utc_queries_metrics_costs_and_det
             range,
             filter: admin_observability::UsageFilter::default(),
             current_page: 129,
-            page_size: PageSize::new(1).expect("page size"),
+            page_size: ObservabilityPageSize::new(1).expect("page size"),
         })
         .await
         .expect("direct deep usage page");
@@ -1442,7 +1442,7 @@ async fn admin_observability_adapter_preserves_utc_queries_metrics_costs_and_det
                 search: Some("req_observe_success".to_owned()),
             },
             current_page: 1,
-            page_size: PageSize::new(10).expect("page size"),
+            page_size: ObservabilityPageSize::new(10).expect("page size"),
         })
         .await
         .expect("fully filtered usage page");
@@ -1461,7 +1461,7 @@ async fn admin_observability_adapter_preserves_utc_queries_metrics_costs_and_det
                 ..admin_observability::UsageFilter::default()
             },
             current_page: 1,
-            page_size: PageSize::new(10).expect("page size"),
+            page_size: ObservabilityPageSize::new(10).expect("page size"),
         })
         .await
         .expect("other outcome filter should reach PostgreSQL");
@@ -1541,7 +1541,7 @@ async fn admin_observability_adapter_preserves_utc_queries_metrics_costs_and_det
                 ..admin_observability::OpsErrorFilter::default()
             },
             current_page: 1,
-            page_size: PageSize::new(10).expect("page size"),
+            page_size: ObservabilityPageSize::new(10).expect("page size"),
         })
         .await
         .expect("admin ops errors");
@@ -1553,7 +1553,7 @@ async fn admin_observability_adapter_preserves_utc_queries_metrics_costs_and_det
             range,
             filter: admin_observability::OpsErrorFilter::default(),
             current_page: 129,
-            page_size: PageSize::new(1).expect("page size"),
+            page_size: ObservabilityPageSize::new(1).expect("page size"),
         })
         .await
         .expect("direct deep ops page");
@@ -1593,7 +1593,7 @@ async fn admin_observability_adapter_preserves_utc_queries_metrics_costs_and_det
                 range,
                 filter,
                 current_page: 1,
-                page_size: PageSize::new(10).expect("page size"),
+                page_size: ObservabilityPageSize::new(10).expect("page size"),
             })
             .await
             .expect("fully forwarded ops filter");

@@ -378,14 +378,7 @@ pub struct QuotaForecastSourceView {
     pub usd_display: String,
 }
 
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct AccountGroupRefView {
-    pub id: String,
-    pub name: String,
-    pub color: String,
-    pub enabled: bool,
-}
+pub use crate::admin::account_groups::AccountGroupRefView;
 
 /// Provider quota 安全视图
 #[derive(Debug, Clone, Serialize)]

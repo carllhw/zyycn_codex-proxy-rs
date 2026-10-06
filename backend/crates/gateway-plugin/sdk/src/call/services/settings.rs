@@ -18,11 +18,8 @@ pub type PricingOverrides = BTreeMap<String, BTreeMap<String, ModelPriceOverride
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RuntimeSettings {
-    pub request_profiles: ProviderRequestProfiles,
-    pub config_revision: Revision,
     pub request_location_enabled: bool,
     pub request_location: RequestLocation,
-    pub model_mappings: ModelMappings,
     pub refresh_margin_seconds: u64,
     pub refresh_concurrency: u32,
     pub max_concurrent_per_account: u32,
@@ -36,7 +33,6 @@ pub struct RuntimeSettings {
     pub openai_session_affinity_ttl_hours: u32,
     pub responses_max_decompressed_body_bytes: u64,
     pub smart_scheduling: SmartSchedulingConfig,
-    pub rotation_strategy: RotationStrategy,
     pub min_codex_desktop_version: Option<String>,
     pub min_codex_cli_version: Option<String>,
     pub usage_retention_days: u32,
@@ -52,18 +48,17 @@ pub struct RuntimeSettings {
     pub account_warmup_enabled: bool,
     pub account_warmup_schedule_time: String,
     pub account_warmup_model: Option<String>,
+    pub request_profiles: ProviderRequestProfiles,
+    pub config_revision: Revision,
+    pub model_mappings: ModelMappings,
+    pub rotation_strategy: RotationStrategy,
     pub updated_at: String,
 }
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ReplaceRuntimeSettings {
-    /// 读取设置时的版本；与写入在同一事务内比较，防止覆盖并发更新
-    pub expected_revision: Revision,
-    /// 只覆盖提交的 Provider；未提交项保留当前持久值
-    pub request_profile_updates: ProviderRequestProfileUpdates,
     pub request_location_enabled: bool,
     pub request_location: RequestLocation,
-    pub model_mappings: ModelMappings,
     pub refresh_margin_seconds: u64,
     pub refresh_concurrency: u32,
     pub max_concurrent_per_account: u32,
@@ -77,7 +72,6 @@ pub struct ReplaceRuntimeSettings {
     pub openai_session_affinity_ttl_hours: u32,
     pub responses_max_decompressed_body_bytes: u64,
     pub smart_scheduling: SmartSchedulingConfig,
-    pub rotation_strategy: RotationStrategy,
     pub min_codex_desktop_version: Option<String>,
     pub min_codex_cli_version: Option<String>,
     pub usage_retention_days: u32,
@@ -93,6 +87,12 @@ pub struct ReplaceRuntimeSettings {
     pub account_warmup_enabled: bool,
     pub account_warmup_schedule_time: String,
     pub account_warmup_model: Option<String>,
+    /// 读取设置时的版本；与写入在同一事务内比较，防止覆盖并发更新
+    pub expected_revision: Revision,
+    /// 只覆盖提交的 Provider；未提交项保留当前持久值
+    pub request_profile_updates: ProviderRequestProfileUpdates,
+    pub model_mappings: ModelMappings,
+    pub rotation_strategy: RotationStrategy,
 }
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -253,15 +253,8 @@ impl Operation for PreviewClientProfile {
 impl From<RuntimeSettings> for ReplaceRuntimeSettings {
     fn from(settings: RuntimeSettings) -> Self {
         Self {
-            expected_revision: settings.config_revision,
-            request_profile_updates: settings
-                .request_profiles
-                .into_iter()
-                .map(|(provider, value)| (provider, Some(value)))
-                .collect(),
             request_location_enabled: settings.request_location_enabled,
             request_location: settings.request_location,
-            model_mappings: settings.model_mappings,
             refresh_margin_seconds: settings.refresh_margin_seconds,
             refresh_concurrency: settings.refresh_concurrency,
             max_concurrent_per_account: settings.max_concurrent_per_account,
@@ -275,7 +268,6 @@ impl From<RuntimeSettings> for ReplaceRuntimeSettings {
             openai_session_affinity_ttl_hours: settings.openai_session_affinity_ttl_hours,
             responses_max_decompressed_body_bytes: settings.responses_max_decompressed_body_bytes,
             smart_scheduling: settings.smart_scheduling,
-            rotation_strategy: settings.rotation_strategy,
             min_codex_desktop_version: settings.min_codex_desktop_version,
             min_codex_cli_version: settings.min_codex_cli_version,
             usage_retention_days: settings.usage_retention_days,
@@ -292,6 +284,14 @@ impl From<RuntimeSettings> for ReplaceRuntimeSettings {
             account_warmup_enabled: settings.account_warmup_enabled,
             account_warmup_schedule_time: settings.account_warmup_schedule_time,
             account_warmup_model: settings.account_warmup_model,
+            expected_revision: settings.config_revision,
+            request_profile_updates: settings
+                .request_profiles
+                .into_iter()
+                .map(|(provider, value)| (provider, Some(value)))
+                .collect(),
+            model_mappings: settings.model_mappings,
+            rotation_strategy: settings.rotation_strategy,
         }
     }
 }

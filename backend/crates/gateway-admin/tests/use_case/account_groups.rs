@@ -297,3 +297,46 @@ fn unused() -> AdminStoreError {
         "unused test operation",
     )
 }
+
+#[tokio::test]
+async fn invalid_group_fields_are_rejected_before_store_mutations() {
+    use gateway_admin::model::{AdminErrorKind, MutationActor, account_groups::CreateAccountGroup};
+    let service = AdminHarness::new()
+        .account_groups(Arc::new(FakeGroupStore::default()))
+        .build()
+        .await;
+    let context = MutationContext {
+        actor: MutationActor::System,
+        request_id: "invalid-group".to_owned(),
+    };
+    let record = group_record();
+    let created = service
+        .account_groups()
+        .create(
+            &context,
+            CreateAccountGroup {
+                fast_mode: FastMode::Default,
+                name: " invalid".to_owned(),
+                description: None,
+                color: record.color.clone(),
+            },
+        )
+        .await
+        .unwrap_err();
+    let updated = service
+        .account_groups()
+        .update(
+            &context,
+            UpdateAccountGroup {
+                fast_mode: None,
+                id: record.id,
+                name: "valid".to_owned(),
+                description: Some("invalid\n".to_owned()),
+                color: record.color,
+            },
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(created.kind(), AdminErrorKind::Invalid);
+    assert_eq!(updated.kind(), AdminErrorKind::Invalid);
+}

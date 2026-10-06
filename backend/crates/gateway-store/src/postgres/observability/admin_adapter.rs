@@ -137,7 +137,8 @@ impl ObservabilityRepository for PgObservabilityRepository {
                 ..UsageRecordFilter::default()
             },
             current_page: 1,
-            page_size: ObservabilityPageSize::new(10)?,
+            page_size: ObservabilityPageSize::new(10)
+                .map_err(|_| invalid("invalid dashboard page size"))?,
         };
         // 每条 SQL 独立取一个全局观测槽位，避免整包预留造成队头阻塞
         let (totals, (provider_accounts, _)) = futures::try_join!(
@@ -307,7 +308,7 @@ impl AdminObservabilityStore for PgAdminObservabilityStore {
             .dashboard_summary(store_range(range)?, observed_at)
             .await
             .map_err(observability_error)?;
-        admin_dashboard_observation(observation)
+        Ok(admin_dashboard_observation(observation))
     }
 
     async fn dashboard_runtime_slots(
@@ -378,13 +379,14 @@ impl AdminObservabilityStore for PgAdminObservabilityStore {
         &self,
         range: admin_observability::TimeRange,
     ) -> AdminStoreResult<Vec<admin_observability::RequestMetricPoint>> {
-        self.repository
+        Ok(self
+            .repository
             .dashboard_trend(store_range(range)?)
             .await
             .map_err(observability_error)?
             .into_iter()
             .map(admin_request_metric_point)
-            .collect()
+            .collect())
     }
 
     async fn usage_trend(
@@ -392,13 +394,14 @@ impl AdminObservabilityStore for PgAdminObservabilityStore {
         range: admin_observability::TimeRange,
         filter: admin_observability::UsageFilter,
     ) -> AdminStoreResult<Vec<admin_observability::RequestMetricPoint>> {
-        self.repository
+        Ok(self
+            .repository
             .usage_trend(store_range(range)?, store_usage_filter(filter))
             .await
             .map_err(observability_error)?
             .into_iter()
             .map(admin_request_metric_point)
-            .collect()
+            .collect())
     }
 
     fn usage_calculated_billing_facts(
@@ -413,7 +416,7 @@ impl AdminObservabilityStore for PgAdminObservabilityStore {
         self.repository
             .usage_calculated_billing_facts(range, store_usage_filter(filter))
             .map_err(observability_error)
-            .map(|fact| fact.and_then(admin_calculated_usage_billing_fact))
+            .map_ok(admin_calculated_usage_billing_fact)
             .boxed()
     }
 
@@ -426,7 +429,7 @@ impl AdminObservabilityStore for PgAdminObservabilityStore {
             .list_usage_records(store_usage_query(query)?)
             .await
             .map_err(observability_error)?;
-        admin_usage_page(page)
+        Ok(page)
     }
 
     async fn usage_record_detail(
@@ -438,7 +441,7 @@ impl AdminObservabilityStore for PgAdminObservabilityStore {
             .usage_record_detail(request_id)
             .await
             .map_err(observability_error)?;
-        admin_usage_detail(detail)
+        Ok(detail)
     }
 
     async fn usage_summary(
@@ -451,7 +454,7 @@ impl AdminObservabilityStore for PgAdminObservabilityStore {
             .usage_summary(store_range(range)?, store_usage_filter(filter))
             .await
             .map_err(observability_error)?;
-        admin_usage_overview(overview)
+        Ok(admin_usage_overview(overview))
     }
 
     async fn usage_diagnostics(
@@ -469,7 +472,7 @@ impl AdminObservabilityStore for PgAdminObservabilityStore {
             )
             .await
             .map_err(observability_error)?;
-        admin_diagnostics_observation(observation)
+        Ok(admin_diagnostics_observation(observation))
     }
 
     async fn list_ops_errors(
@@ -481,7 +484,7 @@ impl AdminObservabilityStore for PgAdminObservabilityStore {
             .list_ops_errors(store_ops_error_query(query)?)
             .await
             .map_err(observability_error)?;
-        admin_ops_error_page(page)
+        Ok(page)
     }
 }
 

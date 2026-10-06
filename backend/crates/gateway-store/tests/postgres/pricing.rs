@@ -112,29 +112,27 @@ async fn concurrent_price_edits_preserve_other_models_and_sync_preserves_manual_
     }
     let snapshot = PgRuntimeSnapshotRepository::new(database.pool.clone());
     let frozen = snapshot.load_runtime_snapshot().await.unwrap();
-    assert_eq!(
-        frozen.settings.pricing["openai"]["model-a"].multiplier_bps,
-        20000
-    );
-    assert_eq!(
-        frozen.settings.pricing["openai"]["model-a"].bands,
-        pricing.bands
-    );
+    let frozen_pricing: gateway_core::metering::PricingOverrides =
+        serde_json::from_value(serde_json::to_value(&frozen.settings).unwrap()["pricing"].clone())
+            .unwrap();
+    assert_eq!(frozen_pricing["openai"]["model-a"].multiplier_bps, 20000);
+    assert_eq!(frozen_pricing["openai"]["model-a"].bands, pricing.bands);
 
     settings
         .update_pricing(update("model-a", PricingChange::Reset), &context)
         .await
         .unwrap();
     let restored = snapshot.load_runtime_snapshot().await.unwrap();
+    let restored_pricing: gateway_core::metering::PricingOverrides = serde_json::from_value(
+        serde_json::to_value(&restored.settings).unwrap()["pricing"].clone(),
+    )
+    .unwrap();
     assert_eq!(
-        restored.settings.pricing["openai"]["model-a"],
+        restored_pricing["openai"]["model-a"],
         source["openai"]["model-a"]
     );
-    assert_eq!(restored.settings.pricing["openai"]["model-b"], pricing);
-    assert_eq!(
-        frozen.settings.pricing["openai"]["model-a"].multiplier_bps,
-        20000
-    );
+    assert_eq!(restored_pricing["openai"]["model-b"], pricing);
+    assert_eq!(frozen_pricing["openai"]["model-a"].multiplier_bps, 20000);
     let audits: i64 = sqlx::query_scalar("select count(*) from admin_audit_events where action in ('pricing.update', 'pricing.sync')")
         .fetch_one(&database.pool).await.unwrap();
     assert_eq!(audits, 6);
@@ -185,6 +183,9 @@ async fn deleting_pricing_removes_both_layers_and_preserves_other_models_and_fro
         .unwrap();
     let repository = PgRuntimeSnapshotRepository::new(database.pool.clone());
     let frozen = repository.load_runtime_snapshot().await.unwrap();
+    let frozen_pricing: gateway_core::metering::PricingOverrides =
+        serde_json::from_value(serde_json::to_value(&frozen.settings).unwrap()["pricing"].clone())
+            .unwrap();
     let synced_at = settings.load_pricing().await.unwrap().synced_at;
     settings
         .update_pricing(
@@ -212,9 +213,12 @@ async fn deleting_pricing_removes_both_layers_and_preserves_other_models_and_fro
     );
     assert_eq!(stored.synced_at, synced_at);
     let current = repository.load_runtime_snapshot().await.unwrap();
-    assert_eq!(current.settings.pricing["openai"].len(), 1);
-    assert!(current.settings.pricing["xai"].contains_key("shared"));
-    assert_eq!(frozen.settings.pricing["openai"].len(), 4);
+    let current_pricing: gateway_core::metering::PricingOverrides =
+        serde_json::from_value(serde_json::to_value(&current.settings).unwrap()["pricing"].clone())
+            .unwrap();
+    assert_eq!(current_pricing["openai"].len(), 1);
+    assert!(current_pricing["xai"].contains_key("shared"));
+    assert_eq!(frozen_pricing["openai"].len(), 4);
     let audits: i64 = sqlx::query_scalar(
         "select count(*) from admin_audit_events where action = 'pricing.update'",
     )
@@ -267,7 +271,11 @@ async fn concurrent_pricing_syncs_merge_selected_changes_and_remove_only_selecte
         .load_runtime_snapshot()
         .await
         .unwrap();
-    assert!(snapshot.settings.pricing["xai"].contains_key("model-a"));
+    let snapshot_pricing: gateway_core::metering::PricingOverrides = serde_json::from_value(
+        serde_json::to_value(&snapshot.settings).unwrap()["pricing"].clone(),
+    )
+    .unwrap();
+    assert!(snapshot_pricing["xai"].contains_key("model-a"));
     settings
         .sync_pricing(patch(json!({"openai": {"model-a": null}})), &context)
         .await

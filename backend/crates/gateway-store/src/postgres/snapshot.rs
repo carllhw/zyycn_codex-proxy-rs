@@ -19,36 +19,10 @@ use crate::{Revision, StoreError, StoreResult, postgres_unavailable};
 use super::ClientApiKeySnapshot;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SnapshotRuntimeSettings {
-    pub pricing: gateway_core::metering::PricingOverrides,
-    pub request_profiles:
-        BTreeMap<gateway_core::routing::ProviderKind, gateway_core::account::OpaqueProviderData>,
-    pub request_location_enabled: bool,
-    pub request_location: gateway_core::account::RequestLocation,
-    pub refresh_margin_seconds: u64,
-    pub refresh_concurrency: u32,
-    pub max_concurrent_per_account: u32,
-    pub request_interval_ms: u64,
-    pub max_waiting_per_key: u32,
-    pub max_waiting_per_account: u32,
-    pub concurrency_wait_timeout_seconds: u32,
-    pub openai_guardian_reserved_concurrency: u32,
-    pub openai_account_affinity: gateway_core::account::AccountAffinity,
-    pub max_account_rotations: u32,
-    pub openai_session_affinity_ttl_hours: u32,
-    pub responses_max_decompressed_body_bytes: u64,
-    pub smart_scheduling: gateway_core::account::SmartSchedulingConfig,
-    pub rotation_strategy: String,
-    pub model_mappings: BTreeMap<String, String>,
-    pub min_codex_desktop_version: Option<String>,
-    pub min_codex_cli_version: Option<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RuntimeSnapshotData {
     pub config_revision: Revision,
     pub observed_current_revision: Revision,
-    pub settings: SnapshotRuntimeSettings,
+    pub settings: SettingsValues,
     pub client_api_keys: Vec<ClientApiKeySnapshot>,
     pub account_groups: Vec<SnapshotAccountGroupData>,
     pub provider_accounts: Vec<SnapshotProviderAccountData>,
@@ -159,35 +133,7 @@ impl SnapshotStorePort for PgRuntimeSnapshotRepository {
                 .map_err(|_| SnapshotStoreError::unavailable())?;
             let config_revision = core_revision(data.config_revision)?;
             let observed_current_revision = core_revision(data.observed_current_revision)?;
-            let settings = SettingsValues::new(
-                data.settings.max_concurrent_per_account,
-                data.settings.request_interval_ms,
-                data.settings.rotation_strategy,
-                data.settings.model_mappings,
-                data.settings.min_codex_desktop_version,
-                data.settings.min_codex_cli_version,
-            )
-            .with_responses_max_decompressed_body_bytes(
-                data.settings.responses_max_decompressed_body_bytes,
-            )
-            .with_openai_guardian_reserved_concurrency(
-                data.settings.openai_guardian_reserved_concurrency,
-            )
-            .with_openai_account_affinity(data.settings.openai_account_affinity)
-            .with_max_account_rotations(data.settings.max_account_rotations)
-            .with_openai_session_affinity_ttl_hours(data.settings.openai_session_affinity_ttl_hours)
-            .with_smart_scheduling(data.settings.smart_scheduling)
-            .with_request_profiles(data.settings.request_profiles)
-            .with_pricing(data.settings.pricing)
-            .with_request_location(
-                data.settings.request_location,
-                data.settings.request_location_enabled,
-            )
-            .with_concurrency_queues(
-                data.settings.max_waiting_per_key,
-                data.settings.max_waiting_per_account,
-                data.settings.concurrency_wait_timeout_seconds,
-            );
+            let settings = data.settings;
             let client_policies = data
                 .client_api_keys
                 .into_iter()
@@ -265,8 +211,6 @@ struct SnapshotSettingsRow {
     pricing_synced_json: sqlx::types::Json<gateway_core::metering::PricingOverrides>,
     pricing_overrides_json: sqlx::types::Json<gateway_core::metering::PricingOverrides>,
     config_revision: i64,
-    refresh_margin_seconds: i64,
-    refresh_concurrency: i64,
     max_concurrent_per_account: i64,
     request_interval_ms: i64,
     smart_scheduling_json: sqlx::types::Json<gateway_core::account::SmartSchedulingConfig>,
@@ -290,9 +234,9 @@ struct SnapshotSettingsRow {
 
 async fn load_settings(
     transaction: &mut Transaction<'_, Postgres>,
-) -> StoreResult<(Revision, SnapshotRuntimeSettings)> {
+) -> StoreResult<(Revision, SettingsValues)> {
     let row = sqlx::query_as::<_, SnapshotSettingsRow>(
-        "select config_revision, refresh_margin_seconds, refresh_concurrency, max_concurrent_per_account, request_interval_ms, rotation_strategy, smart_scheduling_json, model_mappings_json, min_codex_desktop_version, min_codex_cli_version, max_waiting_per_key, max_waiting_per_account, concurrency_wait_timeout_seconds, openai_guardian_reserved_concurrency, openai_account_affinity, max_account_rotations, openai_session_affinity_ttl_hours, request_location_json, request_location_enabled, responses_max_decompressed_body_bytes, provider_request_profiles_json, pricing_overrides_json, pricing_synced_json from runtime_settings where id = 1",
+        "select config_revision, max_concurrent_per_account, request_interval_ms, rotation_strategy, smart_scheduling_json, model_mappings_json, min_codex_desktop_version, min_codex_cli_version, max_waiting_per_key, max_waiting_per_account, concurrency_wait_timeout_seconds, openai_guardian_reserved_concurrency, openai_account_affinity, max_account_rotations, openai_session_affinity_ttl_hours, request_location_json, request_location_enabled, responses_max_decompressed_body_bytes, provider_request_profiles_json, pricing_overrides_json, pricing_synced_json from runtime_settings where id = 1",
     )
     .fetch_optional(&mut **transaction)
     .await
@@ -304,41 +248,44 @@ async fn load_settings(
     })?;
     Ok((
         revision_from_i64(row.config_revision)?,
-        SnapshotRuntimeSettings {
-            pricing: {
-                super::pricing::validate_pricing(&row.pricing_synced_json.0)?;
-                super::pricing::validate_pricing(&row.pricing_overrides_json.0)?;
-                gateway_core::metering::merge_pricing(
-                    row.pricing_synced_json.0,
-                    &row.pricing_overrides_json.0,
-                )
-            },
-            request_profiles: decode_request_profiles(row.provider_request_profiles_json.0)?,
-            responses_max_decompressed_body_bytes: to_u64(
-                row.responses_max_decompressed_body_bytes,
-            )?,
-            request_location_enabled: row.request_location_enabled,
-            request_location: row.request_location_json.0,
-            refresh_margin_seconds: to_u64(row.refresh_margin_seconds)?,
-            refresh_concurrency: to_u32(row.refresh_concurrency)?,
-            max_concurrent_per_account: to_u32(row.max_concurrent_per_account)?,
-            request_interval_ms: to_u64(row.request_interval_ms)?,
-            smart_scheduling: row.smart_scheduling_json.0,
-            rotation_strategy: row.rotation_strategy,
-            model_mappings: row.model_mappings_json.0,
-            min_codex_desktop_version: row.min_codex_desktop_version,
-            min_codex_cli_version: row.min_codex_cli_version,
-            max_waiting_per_key: to_u32(row.max_waiting_per_key)?,
-            max_waiting_per_account: to_u32(row.max_waiting_per_account)?,
-            concurrency_wait_timeout_seconds: to_u32(row.concurrency_wait_timeout_seconds)?,
-            openai_guardian_reserved_concurrency: to_u32(row.openai_guardian_reserved_concurrency)?,
-            openai_account_affinity: gateway_core::account::AccountAffinity::parse(
-                &row.openai_account_affinity,
+        SettingsValues::new(
+            to_u32(row.max_concurrent_per_account)?,
+            to_u64(row.request_interval_ms)?,
+            row.rotation_strategy,
+            row.model_mappings_json.0,
+            row.min_codex_desktop_version,
+            row.min_codex_cli_version,
+        )
+        .with_responses_max_decompressed_body_bytes(to_u64(
+            row.responses_max_decompressed_body_bytes,
+        )?)
+        .with_openai_guardian_reserved_concurrency(to_u32(
+            row.openai_guardian_reserved_concurrency,
+        )?)
+        .with_openai_account_affinity(
+            gateway_core::account::AccountAffinity::parse(&row.openai_account_affinity)
+                .ok_or_else(|| invalid("invalid account affinity"))?,
+        )
+        .with_max_account_rotations(to_u32(row.max_account_rotations)?)
+        .with_openai_session_affinity_ttl_hours(to_u32(row.openai_session_affinity_ttl_hours)?)
+        .with_smart_scheduling(row.smart_scheduling_json.0)
+        .with_request_profiles(decode_request_profiles(
+            row.provider_request_profiles_json.0,
+        )?)
+        .with_pricing({
+            super::pricing::validate_pricing(&row.pricing_synced_json.0)?;
+            super::pricing::validate_pricing(&row.pricing_overrides_json.0)?;
+            gateway_core::metering::merge_pricing(
+                row.pricing_synced_json.0,
+                &row.pricing_overrides_json.0,
             )
-            .ok_or_else(|| invalid("invalid account affinity"))?,
-            max_account_rotations: to_u32(row.max_account_rotations)?,
-            openai_session_affinity_ttl_hours: to_u32(row.openai_session_affinity_ttl_hours)?,
-        },
+        })
+        .with_request_location(row.request_location_json.0, row.request_location_enabled)
+        .with_concurrency_queues(
+            to_u32(row.max_waiting_per_key)?,
+            to_u32(row.max_waiting_per_account)?,
+            to_u32(row.concurrency_wait_timeout_seconds)?,
+        ),
     ))
 }
 

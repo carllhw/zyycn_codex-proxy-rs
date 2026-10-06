@@ -157,6 +157,8 @@ impl ClientKeyService for DefaultClientKeyService {
         context: &MutationContext,
         command: CreateClientKey,
     ) -> Result<CreatedClientKey, AdminError> {
+        crate::model::client_keys::validate_group_ids(&command.group_ids)
+            .map_err(|_| AdminError::invalid("Client API Key 分组不合法"))?;
         for (provider, profile) in &command.request_profile_overrides {
             self.providers
                 .require(provider)
@@ -199,6 +201,8 @@ impl ClientKeyService for DefaultClientKeyService {
         context: &MutationContext,
         command: UpdateClientKey,
     ) -> Result<ClientKeyMutation, AdminError> {
+        crate::model::client_keys::validate_group_ids(&command.group_ids)
+            .map_err(|_| AdminError::invalid("Client API Key 分组不合法"))?;
         for (provider, profile) in &command.request_profile_override_updates {
             if let Some(profile) = profile {
                 self.providers

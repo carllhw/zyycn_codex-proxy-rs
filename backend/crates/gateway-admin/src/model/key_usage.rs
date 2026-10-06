@@ -1,10 +1,10 @@
 //! 单页 Key 用量的查询合同；身份范围不由调用方提供
 
 use super::{
-    PageSize,
     client_keys::ClientKeyRecord,
     observability::{
-        HealthTimeline, OpsErrorPage, RequestMetricPoint, TimeRange, UsageOverview, UsagePage,
+        HealthTimeline, ObservabilityPageSize, OpsErrorPage, RequestMetricPoint, TimeRange,
+        UsageOverview, UsagePage,
     },
 };
 
@@ -25,7 +25,7 @@ pub struct KeyUsageRecordsQuery {
     pub usage: KeyUsageQuery,
     pub kind: KeyUsageRecordKind,
     pub current_page: u32,
-    pub page_size: PageSize,
+    pub page_size: ObservabilityPageSize,
 }
 
 pub struct KeyUsageOverview {

@@ -4,7 +4,9 @@ use std::collections::BTreeMap;
 
 use axum::{Router, extract::State, http::StatusCode, response::IntoResponse, routing::get};
 use chrono::{DateTime, Utc};
-use gateway_admin::model::{PageSize as DomainPageSize, observability as domain};
+use gateway_admin::model::observability::{
+    self as domain, ObservabilityPageSize as DomainPageSize,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 

@@ -460,11 +460,12 @@ impl AccountStore for PgAdminAccountStore {
     ) -> AdminStoreResult<Vec<AccountUsage>> {
         let range = ObservabilityRange::new(range.start, range.end)
             .map_err(|error| admin_store_error(ENTITY, error))?;
-        self.usage_observations(range, account_ids)
+        Ok(self
+            .usage_observations(range, account_ids)
             .await?
             .into_iter()
             .map(admin_account_usage)
-            .collect()
+            .collect())
     }
 
     async fn load_account_usage_by_windows(

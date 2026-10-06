@@ -414,3 +414,41 @@ fn unused() -> AdminStoreError {
         "unused in this test",
     )
 }
+
+#[tokio::test]
+async fn duplicate_group_ids_are_rejected_before_key_creation_or_update() {
+    let store = Arc::new(TestClientKeyStore::default());
+    let services = super::AdminHarness::new()
+        .client_keys(store.clone())
+        .build()
+        .await;
+    let group =
+        gateway_core::routing::AccountGroupId::new("grp_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa").unwrap();
+    let mut command = create_command(None);
+    command.group_ids = vec![group.clone(), group.clone()];
+    let created = services
+        .client_keys()
+        .create(&mutation_context(), command)
+        .await
+        .unwrap_err();
+    let updated = services
+        .client_keys()
+        .update(
+            &mutation_context(),
+            UpdateClientKey {
+                request_profile_override_updates: Default::default(),
+                id: ClientApiKeyId::new("key_existing").unwrap(),
+                name: "Migration".to_owned(),
+                label: None,
+                group_ids: vec![group.clone(), group],
+                limits: RateLimits::unlimited(),
+                daily_limit_usd: None,
+                weekly_limit_usd: None,
+            },
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(created.kind(), AdminErrorKind::Invalid);
+    assert_eq!(updated.kind(), AdminErrorKind::Invalid);
+    assert!(store.plaintexts.lock().unwrap().is_empty());
+}

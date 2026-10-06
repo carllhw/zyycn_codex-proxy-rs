@@ -18,7 +18,6 @@ use gateway_admin::model::client_distribution::{
 use gateway_admin::model::settings::{
     ModelMappings as DomainModelMappings, ReplaceRuntimeSettings, RotationStrategy, RuntimeSettings,
 };
-use gateway_core::policy::CodexClientVersion;
 use gateway_core::routing::{PublicModelId, UpstreamModelId};
 use serde::{Deserialize, Serialize};
 
@@ -33,20 +32,12 @@ pub type ProviderRequestProfiles = BTreeMap<String, serde_json::Map<String, serd
 pub type ProviderRequestProfileUpdates =
     BTreeMap<String, Option<serde_json::Map<String, serde_json::Value>>>;
 
-/// 运行配置投影与设置页字段的聚合响应
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+/// HTTP 读写共用的设置字段；仅保留 wire 数值类型与命名
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct RuntimeSettingsView {
-    pub config_revision: u64,
-    pub smart_scheduling_defaults: gateway_core::account::SmartSchedulingConfig,
-    pub provider_request_profiles: ProviderRequestProfiles,
-    /// 固定兼容字段；值始终从 provider_request_profiles 派生
-    pub openai_client_profile: Option<serde_json::Map<String, serde_json::Value>>,
-    /// 固定兼容字段；值始终从 provider_request_profiles 派生
-    pub xai_client_profile: Option<serde_json::Map<String, serde_json::Value>>,
+pub struct RuntimeSettingsFields {
     pub request_location_enabled: bool,
     pub request_location: gateway_core::account::RequestLocation,
-    pub model_mappings: ModelMappings,
     pub refresh_margin_seconds: u64,
     pub refresh_concurrency: u64,
     pub max_concurrent_per_account: u64,
@@ -60,7 +51,6 @@ pub struct RuntimeSettingsView {
     pub openai_session_affinity_ttl_hours: u32,
     pub responses_max_decompressed_body_bytes: u64,
     pub smart_scheduling: gateway_core::account::SmartSchedulingConfig,
-    pub rotation_strategy: String,
     pub min_codex_desktop_version: Option<String>,
     pub min_codex_cli_version: Option<String>,
     pub usage_retention_days: u64,
@@ -76,6 +66,23 @@ pub struct RuntimeSettingsView {
     pub account_warmup_enabled: bool,
     pub account_warmup_schedule_time: String,
     pub account_warmup_model: Option<String>,
+}
+
+/// 运行配置投影与设置页字段的聚合响应
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RuntimeSettingsView {
+    #[serde(flatten)]
+    pub values: RuntimeSettingsFields,
+    pub config_revision: u64,
+    pub smart_scheduling_defaults: gateway_core::account::SmartSchedulingConfig,
+    pub provider_request_profiles: ProviderRequestProfiles,
+    /// 固定兼容字段；值始终从 provider_request_profiles 派生
+    pub openai_client_profile: Option<serde_json::Map<String, serde_json::Value>>,
+    /// 固定兼容字段；值始终从 provider_request_profiles 派生
+    pub xai_client_profile: Option<serde_json::Map<String, serde_json::Value>>,
+    pub model_mappings: ModelMappings,
+    pub rotation_strategy: String,
     pub updated_at: DateTime<Utc>,
     pub updated_at_display: String,
 }
@@ -84,6 +91,8 @@ pub struct RuntimeSettingsView {
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct UpdateRuntimeSettingsRequest {
+    #[serde(flatten)]
+    pub values: RuntimeSettingsFields,
     pub config_revision: u64,
     #[serde(default)]
     pub provider_request_profiles: ProviderRequestProfileUpdates,
@@ -93,139 +102,22 @@ pub struct UpdateRuntimeSettingsRequest {
     /// 兼容既有 wire；与泛化字段冲突时拒绝整个请求
     #[serde(default, deserialize_with = "deserialize_profile_update")]
     pub xai_client_profile: Option<serde_json::Map<String, serde_json::Value>>,
-    pub request_location_enabled: bool,
-    pub request_location: gateway_core::account::RequestLocation,
     pub model_mappings: ModelMappings,
-    pub refresh_margin_seconds: u64,
-    pub refresh_concurrency: u64,
-    pub max_concurrent_per_account: u64,
-    pub request_interval_ms: u64,
-    pub max_waiting_per_key: u32,
-    pub max_waiting_per_account: u32,
-    pub concurrency_wait_timeout_seconds: u32,
-    pub openai_guardian_reserved_concurrency: u32,
-    pub openai_account_affinity: gateway_core::account::AccountAffinity,
-    pub max_account_rotations: u32,
-    pub openai_session_affinity_ttl_hours: u32,
-    pub responses_max_decompressed_body_bytes: u64,
-    pub smart_scheduling: gateway_core::account::SmartSchedulingConfig,
     pub rotation_strategy: String,
-    pub min_codex_desktop_version: Option<String>,
-    pub min_codex_cli_version: Option<String>,
-    pub usage_retention_days: u64,
-    pub ops_event_retention_days: u64,
-    pub audit_retention_days: u64,
-    pub account_auto_freeze_enabled: bool,
-    pub account_auto_freeze_threshold: u64,
-    pub account_auto_freeze_window_seconds: u64,
-    pub account_auto_freeze_duration_seconds: u64,
-    pub account_auto_freeze_probe_enabled: bool,
-    pub account_auto_freeze_probe_model: Option<String>,
-    pub account_auto_freeze_adaptive_concurrency: bool,
-    pub account_warmup_enabled: bool,
-    pub account_warmup_schedule_time: String,
-    pub account_warmup_model: Option<String>,
 }
 
 impl UpdateRuntimeSettingsRequest {
     /// 校验公共运行参数
     pub fn validate(&self) -> Result<(), WireValidationError> {
-        self.request_location
-            .validate()
-            .map_err(|_| WireValidationError::new("requestLocation"))?;
         validate_model_mappings(&self.model_mappings)?;
-        if !(1..=gateway_core::account::MAX_SESSION_AFFINITY_TTL_HOURS)
-            .contains(&self.openai_session_affinity_ttl_hours)
-        {
-            return Err(WireValidationError::new("openaiSessionAffinityTtlHours"));
-        }
-        if self.max_account_rotations > gateway_core::account::MAX_ACCOUNT_ROTATIONS {
-            return Err(WireValidationError::new("maxAccountRotations"));
-        }
-        for (value, field) in [
-            (self.max_waiting_per_key, "maxWaitingPerKey"),
-            (self.max_waiting_per_account, "maxWaitingPerAccount"),
-        ] {
-            if value > 1_000 {
-                return Err(WireValidationError::new(field));
-            }
-        }
-        if self.responses_max_decompressed_body_bytes == 0
-            || isize::try_from(self.responses_max_decompressed_body_bytes).is_err()
-        {
-            return Err(WireValidationError::new(
-                "responsesMaxDecompressedBodyBytes",
-            ));
-        }
-        if !(1..=120).contains(&self.concurrency_wait_timeout_seconds) {
-            return Err(WireValidationError::new("concurrencyWaitTimeoutSeconds"));
-        }
-        for (value, field) in [
-            (self.refresh_margin_seconds, "refreshMarginSeconds"),
-            (self.refresh_concurrency, "refreshConcurrency"),
-            (self.usage_retention_days, "usageRetentionDays"),
-            (self.ops_event_retention_days, "opsEventRetentionDays"),
-            (self.audit_retention_days, "auditRetentionDays"),
-        ] {
-            require_positive_i64(value, field)?;
-        }
-        if i64::try_from(self.request_interval_ms).is_err() {
-            return Err(WireValidationError::new("requestIntervalMs"));
-        }
         if RotationStrategy::parse(&self.rotation_strategy).is_none() {
             return Err(WireValidationError::new("rotationStrategy"));
         }
-        validate_optional_client_version(
-            self.min_codex_desktop_version.as_deref(),
-            "minCodexDesktopVersion",
-        )?;
-        validate_optional_client_version(
-            self.min_codex_cli_version.as_deref(),
-            "minCodexCliVersion",
-        )?;
-        for (value, field) in [
-            (
-                self.account_auto_freeze_threshold,
-                "accountAutoFreezeThreshold",
-            ),
-            (
-                self.account_auto_freeze_window_seconds,
-                "accountAutoFreezeWindowSeconds",
-            ),
-            (
-                self.account_auto_freeze_duration_seconds,
-                "accountAutoFreezeDurationSeconds",
-            ),
-        ] {
-            require_positive_i64(value, field)?;
-        }
-        if !(2..=1_000).contains(&self.account_auto_freeze_threshold) {
-            return Err(WireValidationError::new("accountAutoFreezeThreshold"));
-        }
-        if !(60..=3_600).contains(&self.account_auto_freeze_window_seconds) {
-            return Err(WireValidationError::new("accountAutoFreezeWindowSeconds"));
-        }
-        if !(300..=604_800).contains(&self.account_auto_freeze_duration_seconds) {
-            return Err(WireValidationError::new("accountAutoFreezeDurationSeconds"));
-        }
-        validate_optional_probe_model(
-            self.account_auto_freeze_probe_model.as_deref(),
-            "accountAutoFreezeProbeModel",
-        )?;
-        if !gateway_core::provider_ports::valid_warmup_schedule_time(
-            &self.account_warmup_schedule_time,
-        ) {
-            return Err(WireValidationError::new("accountWarmupScheduleTime"));
-        }
-        validate_optional_probe_model(self.account_warmup_model.as_deref(), "accountWarmupModel")?;
-        if self.account_warmup_enabled && self.account_warmup_model.is_none() {
-            return Err(WireValidationError::new("accountWarmupModel"));
-        }
-        Ok(())
+        self.values.clone().into_values().map(|_| ())
     }
 
     fn into_command(self) -> Result<ReplaceRuntimeSettings, WireValidationError> {
-        self.validate()?;
+        validate_model_mappings(&self.model_mappings)?;
         let request_profile_updates = normalize_request_profile_updates(
             self.provider_request_profiles,
             self.openai_client_profile,
@@ -235,48 +127,10 @@ impl UpdateRuntimeSettingsRequest {
             expected_revision: gateway_admin::model::Revision::new(self.config_revision)
                 .map_err(|_| WireValidationError::new("configRevision"))?,
             request_profile_updates,
-            request_location_enabled: self.request_location_enabled,
-            request_location: self
-                .request_location
-                .normalized()
-                .map_err(|_| WireValidationError::new("requestLocation"))?,
             model_mappings: domain_model_mappings(self.model_mappings)?,
-            refresh_margin_seconds: self.refresh_margin_seconds,
-            refresh_concurrency: u32::try_from(self.refresh_concurrency)
-                .map_err(|_| WireValidationError::new("settingsRefreshConcurrencyOverflow"))?,
-            max_concurrent_per_account: u32::try_from(self.max_concurrent_per_account)
-                .map_err(|_| WireValidationError::new("settingsMaxConcurrencyOverflow"))?,
-            request_interval_ms: self.request_interval_ms,
-            max_waiting_per_key: self.max_waiting_per_key,
-            max_waiting_per_account: self.max_waiting_per_account,
-            concurrency_wait_timeout_seconds: self.concurrency_wait_timeout_seconds,
-            openai_guardian_reserved_concurrency: self.openai_guardian_reserved_concurrency,
-            openai_account_affinity: self.openai_account_affinity,
-            max_account_rotations: self.max_account_rotations,
-            openai_session_affinity_ttl_hours: self.openai_session_affinity_ttl_hours,
-            responses_max_decompressed_body_bytes: self.responses_max_decompressed_body_bytes,
-            smart_scheduling: self.smart_scheduling,
             rotation_strategy: RotationStrategy::parse(&self.rotation_strategy)
                 .ok_or_else(|| WireValidationError::new("rotationStrategy"))?,
-            min_codex_desktop_version: self.min_codex_desktop_version,
-            min_codex_cli_version: self.min_codex_cli_version,
-            usage_retention_days: u32::try_from(self.usage_retention_days)
-                .map_err(|_| WireValidationError::new("settingsUsageRetentionOverflow"))?,
-            ops_event_retention_days: u32::try_from(self.ops_event_retention_days)
-                .map_err(|_| WireValidationError::new("settingsOpsRetentionOverflow"))?,
-            audit_retention_days: u32::try_from(self.audit_retention_days)
-                .map_err(|_| WireValidationError::new("settingsAuditRetentionOverflow"))?,
-            account_auto_freeze_enabled: self.account_auto_freeze_enabled,
-            account_auto_freeze_threshold: u32::try_from(self.account_auto_freeze_threshold)
-                .map_err(|_| WireValidationError::new("settingsFreezeThresholdOverflow"))?,
-            account_auto_freeze_window_seconds: self.account_auto_freeze_window_seconds,
-            account_auto_freeze_duration_seconds: self.account_auto_freeze_duration_seconds,
-            account_auto_freeze_probe_enabled: self.account_auto_freeze_probe_enabled,
-            account_auto_freeze_probe_model: self.account_auto_freeze_probe_model,
-            account_auto_freeze_adaptive_concurrency: self.account_auto_freeze_adaptive_concurrency,
-            account_warmup_enabled: self.account_warmup_enabled,
-            account_warmup_schedule_time: self.account_warmup_schedule_time,
-            account_warmup_model: self.account_warmup_model,
+            values: self.values.into_values()?,
         })
     }
 }
@@ -293,42 +147,12 @@ impl From<(RuntimeSettings, crate::time::TimePresenter)> for RuntimeSettingsView
             openai_client_profile: provider_request_profiles.get("openai").cloned(),
             xai_client_profile: provider_request_profiles.get("xai").cloned(),
             provider_request_profiles,
-            request_location_enabled: settings.request_location_enabled,
-            request_location: settings.request_location,
             model_mappings: wire_model_mappings(settings.model_mappings),
-            refresh_margin_seconds: settings.refresh_margin_seconds,
-            refresh_concurrency: u64::from(settings.refresh_concurrency),
-            max_concurrent_per_account: u64::from(settings.max_concurrent_per_account),
-            request_interval_ms: settings.request_interval_ms,
-            max_waiting_per_key: settings.max_waiting_per_key,
-            max_waiting_per_account: settings.max_waiting_per_account,
-            concurrency_wait_timeout_seconds: settings.concurrency_wait_timeout_seconds,
-            openai_guardian_reserved_concurrency: settings.openai_guardian_reserved_concurrency,
-            openai_account_affinity: settings.openai_account_affinity,
-            max_account_rotations: settings.max_account_rotations,
-            openai_session_affinity_ttl_hours: settings.openai_session_affinity_ttl_hours,
-            responses_max_decompressed_body_bytes: settings.responses_max_decompressed_body_bytes,
-            smart_scheduling: settings.smart_scheduling,
             smart_scheduling_defaults: gateway_core::account::SmartSchedulingConfig::default(),
             rotation_strategy: settings.rotation_strategy.as_str().to_owned(),
-            min_codex_desktop_version: settings.min_codex_desktop_version,
-            min_codex_cli_version: settings.min_codex_cli_version,
-            usage_retention_days: u64::from(settings.usage_retention_days),
-            ops_event_retention_days: u64::from(settings.ops_event_retention_days),
-            audit_retention_days: u64::from(settings.audit_retention_days),
-            account_auto_freeze_enabled: settings.account_auto_freeze_enabled,
-            account_auto_freeze_threshold: u64::from(settings.account_auto_freeze_threshold),
-            account_auto_freeze_window_seconds: settings.account_auto_freeze_window_seconds,
-            account_auto_freeze_duration_seconds: settings.account_auto_freeze_duration_seconds,
-            account_auto_freeze_probe_enabled: settings.account_auto_freeze_probe_enabled,
-            account_auto_freeze_probe_model: settings.account_auto_freeze_probe_model,
-            account_auto_freeze_adaptive_concurrency: settings
-                .account_auto_freeze_adaptive_concurrency,
-            account_warmup_enabled: settings.account_warmup_enabled,
-            account_warmup_schedule_time: settings.account_warmup_schedule_time,
-            account_warmup_model: settings.account_warmup_model,
             updated_at_display: time.datetime(&settings.updated_at),
             updated_at: settings.updated_at,
+            values: settings.values.into(),
         }
     }
 }
@@ -719,23 +543,13 @@ where
     ))
 }
 
-fn require_positive_i64(value: u64, field: &'static str) -> Result<(), WireValidationError> {
-    if value == 0 || i64::try_from(value).is_err() {
-        return Err(WireValidationError::new(field));
-    }
-    Ok(())
-}
-
 fn validate_model_mappings(mappings: &ModelMappings) -> Result<(), WireValidationError> {
-    if mappings.len() > 512 {
-        return Err(WireValidationError::new("modelMappings"));
-    }
-    for (requested, upstream) in mappings {
-        if !valid_model_name(requested, 256) || !valid_model_name(upstream, 256) {
-            return Err(WireValidationError::new("modelMappings"));
-        }
-    }
-    Ok(())
+    gateway_admin::model::settings::validate_model_mappings(
+        mappings
+            .iter()
+            .map(|(requested, upstream)| (requested.as_str(), upstream.as_str())),
+    )
+    .map_err(|_| WireValidationError::new("modelMappings"))
 }
 
 fn domain_model_mappings(
@@ -759,38 +573,6 @@ fn wire_model_mappings(mappings: DomainModelMappings) -> ModelMappings {
         .into_iter()
         .map(|(requested, upstream)| (requested.to_string(), upstream.to_string()))
         .collect()
-}
-
-fn valid_model_name(value: &str, max_len: usize) -> bool {
-    !value.is_empty()
-        && value.len() <= max_len
-        && !value.bytes().any(|byte| byte.is_ascii_control())
-}
-
-fn validate_optional_client_version(
-    value: Option<&str>,
-    field: &'static str,
-) -> Result<(), WireValidationError> {
-    if value.is_some_and(|value| CodexClientVersion::parse(value).is_err()) {
-        return Err(WireValidationError::new(field));
-    }
-    Ok(())
-}
-
-/// 探测模型为可选自由文本：非空、去首尾空白后不变、无控制字符且不超过 128 字节
-fn validate_optional_probe_model(
-    value: Option<&str>,
-    field: &'static str,
-) -> Result<(), WireValidationError> {
-    if value.is_some_and(|value| {
-        value.is_empty()
-            || value.len() > 128
-            || value != value.trim()
-            || value.bytes().any(|byte| byte.is_ascii_control())
-    }) {
-        return Err(WireValidationError::new(field));
-    }
-    Ok(())
 }
 
 fn map_wire_error(error: WireValidationError) -> AdminError {
@@ -930,4 +712,128 @@ fn client_profile_preview_view(
         profile.insert(display.to_owned(), serde_json::json!(value));
     }
     profile
+}
+
+impl RuntimeSettingsFields {
+    fn into_values(
+        self,
+    ) -> Result<gateway_admin::model::settings::RuntimeSettingsValues, WireValidationError> {
+        let values = gateway_admin::model::settings::RuntimeSettingsValues {
+            request_location_enabled: self.request_location_enabled,
+            request_location: self
+                .request_location
+                .normalized()
+                .map_err(|_| WireValidationError::new("requestLocation"))?,
+            refresh_margin_seconds: self.refresh_margin_seconds,
+            refresh_concurrency: u32::try_from(self.refresh_concurrency)
+                .map_err(|_| WireValidationError::new("settingsRefreshConcurrencyOverflow"))?,
+            max_concurrent_per_account: u32::try_from(self.max_concurrent_per_account)
+                .map_err(|_| WireValidationError::new("settingsMaxConcurrencyOverflow"))?,
+            request_interval_ms: self.request_interval_ms,
+            max_waiting_per_key: self.max_waiting_per_key,
+            max_waiting_per_account: self.max_waiting_per_account,
+            concurrency_wait_timeout_seconds: self.concurrency_wait_timeout_seconds,
+            openai_guardian_reserved_concurrency: self.openai_guardian_reserved_concurrency,
+            openai_account_affinity: self.openai_account_affinity,
+            max_account_rotations: self.max_account_rotations,
+            openai_session_affinity_ttl_hours: self.openai_session_affinity_ttl_hours,
+            responses_max_decompressed_body_bytes: self.responses_max_decompressed_body_bytes,
+            smart_scheduling: self.smart_scheduling,
+            min_codex_desktop_version: self.min_codex_desktop_version,
+            min_codex_cli_version: self.min_codex_cli_version,
+            usage_retention_days: u32::try_from(self.usage_retention_days)
+                .map_err(|_| WireValidationError::new("settingsUsageRetentionOverflow"))?,
+            ops_event_retention_days: u32::try_from(self.ops_event_retention_days)
+                .map_err(|_| WireValidationError::new("settingsOpsRetentionOverflow"))?,
+            audit_retention_days: u32::try_from(self.audit_retention_days)
+                .map_err(|_| WireValidationError::new("settingsAuditRetentionOverflow"))?,
+            account_auto_freeze_enabled: self.account_auto_freeze_enabled,
+            account_auto_freeze_threshold: u32::try_from(self.account_auto_freeze_threshold)
+                .map_err(|_| WireValidationError::new("settingsFreezeThresholdOverflow"))?,
+            account_auto_freeze_window_seconds: self.account_auto_freeze_window_seconds,
+            account_auto_freeze_duration_seconds: self.account_auto_freeze_duration_seconds,
+            account_auto_freeze_probe_enabled: self.account_auto_freeze_probe_enabled,
+            account_auto_freeze_probe_model: self.account_auto_freeze_probe_model,
+            account_auto_freeze_adaptive_concurrency: self.account_auto_freeze_adaptive_concurrency,
+            account_warmup_enabled: self.account_warmup_enabled,
+            account_warmup_schedule_time: self.account_warmup_schedule_time,
+            account_warmup_model: self.account_warmup_model,
+        };
+        values.validate().map_err(settings_validation_error)?;
+        Ok(values)
+    }
+}
+
+impl From<gateway_admin::model::settings::RuntimeSettingsValues> for RuntimeSettingsFields {
+    fn from(settings: gateway_admin::model::settings::RuntimeSettingsValues) -> Self {
+        crate::admin::settings::RuntimeSettingsFields {
+            request_location_enabled: settings.request_location_enabled,
+            request_location: settings.request_location,
+            refresh_margin_seconds: settings.refresh_margin_seconds,
+            refresh_concurrency: u64::from(settings.refresh_concurrency),
+            max_concurrent_per_account: u64::from(settings.max_concurrent_per_account),
+            request_interval_ms: settings.request_interval_ms,
+            max_waiting_per_key: settings.max_waiting_per_key,
+            max_waiting_per_account: settings.max_waiting_per_account,
+            concurrency_wait_timeout_seconds: settings.concurrency_wait_timeout_seconds,
+            openai_guardian_reserved_concurrency: settings.openai_guardian_reserved_concurrency,
+            openai_account_affinity: settings.openai_account_affinity,
+            max_account_rotations: settings.max_account_rotations,
+            openai_session_affinity_ttl_hours: settings.openai_session_affinity_ttl_hours,
+            responses_max_decompressed_body_bytes: settings.responses_max_decompressed_body_bytes,
+            smart_scheduling: settings.smart_scheduling,
+            min_codex_desktop_version: settings.min_codex_desktop_version,
+            min_codex_cli_version: settings.min_codex_cli_version,
+            usage_retention_days: u64::from(settings.usage_retention_days),
+            ops_event_retention_days: u64::from(settings.ops_event_retention_days),
+            audit_retention_days: u64::from(settings.audit_retention_days),
+            account_auto_freeze_enabled: settings.account_auto_freeze_enabled,
+            account_auto_freeze_threshold: u64::from(settings.account_auto_freeze_threshold),
+            account_auto_freeze_window_seconds: settings.account_auto_freeze_window_seconds,
+            account_auto_freeze_duration_seconds: settings.account_auto_freeze_duration_seconds,
+            account_auto_freeze_probe_enabled: settings.account_auto_freeze_probe_enabled,
+            account_auto_freeze_probe_model: settings.account_auto_freeze_probe_model,
+            account_auto_freeze_adaptive_concurrency: settings
+                .account_auto_freeze_adaptive_concurrency,
+            account_warmup_enabled: settings.account_warmup_enabled,
+            account_warmup_schedule_time: settings.account_warmup_schedule_time,
+            account_warmup_model: settings.account_warmup_model,
+        }
+    }
+}
+
+fn settings_validation_error(field: &'static str) -> WireValidationError {
+    WireValidationError::new(match field {
+        "account_auto_freeze_adaptive_concurrency" => "accountAutoFreezeAdaptiveConcurrency",
+        "account_auto_freeze_duration_seconds" => "accountAutoFreezeDurationSeconds",
+        "account_auto_freeze_enabled" => "accountAutoFreezeEnabled",
+        "account_auto_freeze_probe_enabled" => "accountAutoFreezeProbeEnabled",
+        "account_auto_freeze_probe_model" => "accountAutoFreezeProbeModel",
+        "account_auto_freeze_threshold" => "accountAutoFreezeThreshold",
+        "account_auto_freeze_window_seconds" => "accountAutoFreezeWindowSeconds",
+        "account_warmup_enabled" => "accountWarmupEnabled",
+        "account_warmup_model" => "accountWarmupModel",
+        "account_warmup_schedule_time" => "accountWarmupScheduleTime",
+        "audit_retention_days" => "auditRetentionDays",
+        "concurrency_wait_timeout_seconds" => "concurrencyWaitTimeoutSeconds",
+        "max_account_rotations" => "maxAccountRotations",
+        "max_concurrent_per_account" => "maxConcurrentPerAccount",
+        "max_waiting_per_account" => "maxWaitingPerAccount",
+        "max_waiting_per_key" => "maxWaitingPerKey",
+        "min_codex_cli_version" => "minCodexCliVersion",
+        "min_codex_desktop_version" => "minCodexDesktopVersion",
+        "openai_account_affinity" => "openaiAccountAffinity",
+        "openai_guardian_reserved_concurrency" => "openaiGuardianReservedConcurrency",
+        "openai_session_affinity_ttl_hours" => "openaiSessionAffinityTtlHours",
+        "ops_event_retention_days" => "opsEventRetentionDays",
+        "refresh_concurrency" => "refreshConcurrency",
+        "refresh_margin_seconds" => "refreshMarginSeconds",
+        "request_interval_ms" => "requestIntervalMs",
+        "request_location" => "requestLocation",
+        "request_location_enabled" => "requestLocationEnabled",
+        "responses_max_decompressed_body_bytes" => "responsesMaxDecompressedBodyBytes",
+        "smart_scheduling" => "smartScheduling",
+        "usage_retention_days" => "usageRetentionDays",
+        _ => "settings",
+    })
 }

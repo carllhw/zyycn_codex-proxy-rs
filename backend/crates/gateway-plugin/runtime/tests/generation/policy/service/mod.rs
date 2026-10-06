@@ -51,7 +51,10 @@ async fn explicit_service_dispatch_composes_once_and_preserves_native_transactio
         .await
         .unwrap();
     let visible = services.settings().load().await.unwrap();
-    assert_eq!(visible.request_interval_ms, original.request_interval_ms);
+    assert_eq!(
+        visible.values.request_interval_ms,
+        original.values.request_interval_ms
+    );
     assert_eq!(visible.config_revision, original.config_revision);
     let through_registry = services
         .public_services()
@@ -70,12 +73,13 @@ async fn explicit_service_dispatch_composes_once_and_preserves_native_transactio
             .load_runtime_settings()
             .await
             .unwrap()
+            .values
             .request_interval_ms,
-        original.request_interval_ms
+        original.values.request_interval_ms
     );
 
     let mut command = ReplaceRuntimeSettings::from(original);
-    command.request_interval_ms = 999;
+    command.values.request_interval_ms = 999;
     let saved = services
         .public_services()
         .call(
@@ -86,7 +90,7 @@ async fn explicit_service_dispatch_composes_once_and_preserves_native_transactio
         .unwrap();
     let saved: gateway_admin::model::settings::RuntimeSettings =
         serde_json::from_value(saved).unwrap();
-    assert_eq!(saved.request_interval_ms, 1234);
+    assert_eq!(saved.values.request_interval_ms, 1234);
     assert!(saved.config_revision > command.expected_revision);
     let current = environment
         .store
@@ -95,7 +99,7 @@ async fn explicit_service_dispatch_composes_once_and_preserves_native_transactio
         .load_runtime_settings()
         .await
         .unwrap();
-    assert_eq!(current.request_interval_ms, 1234);
+    assert_eq!(current.values.request_interval_ms, 1234);
     assert_eq!(
         core.snapshots()
             .snapshot_for_diagnostics()
@@ -328,6 +332,7 @@ async fn cli_service_callback_uses_the_same_public_settings_and_plugin_chain() {
             .load_runtime_settings()
             .await
             .unwrap()
+            .values
             .request_interval_ms,
         4321
     );

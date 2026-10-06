@@ -167,3 +167,60 @@ impl SettingsValues {
         self
     }
 }
+
+/// 请求排队与账号选择的数值约束；返回不合法的设置字段
+pub fn validate_request_limits(
+    max_waiting_per_key: u32,
+    max_waiting_per_account: u32,
+    timeout_seconds: u32,
+    max_account_rotations: u32,
+    affinity_ttl_hours: u32,
+) -> Result<(), &'static str> {
+    for (valid, field) in [
+        (max_waiting_per_key <= 1_000, "max_waiting_per_key"),
+        (max_waiting_per_account <= 1_000, "max_waiting_per_account"),
+        (
+            (1..=120).contains(&timeout_seconds),
+            "concurrency_wait_timeout_seconds",
+        ),
+        (
+            max_account_rotations <= crate::account::MAX_ACCOUNT_ROTATIONS,
+            "max_account_rotations",
+        ),
+        (
+            (1..=crate::account::MAX_SESSION_AFFINITY_TTL_HOURS).contains(&affinity_ttl_hours),
+            "openai_session_affinity_ttl_hours",
+        ),
+    ] {
+        if !valid {
+            return Err(field);
+        }
+    }
+    Ok(())
+}
+
+/// 解压上限必须能作为非零缓冲区长度使用
+pub fn response_body_limit(bytes: u64) -> Result<std::num::NonZeroUsize, &'static str> {
+    isize::try_from(bytes)
+        .ok()
+        .and_then(|bytes| usize::try_from(bytes).ok())
+        .and_then(std::num::NonZeroUsize::new)
+        .ok_or("responses_max_decompressed_body_bytes")
+}
+
+/// 管理写入与请求覆盖共用客户端最低版本解析
+pub fn client_min_versions(
+    desktop: Option<&str>,
+    cli: Option<&str>,
+) -> Result<crate::policy::CodexClientMinVersions, &'static str> {
+    use crate::policy::{CodexClientMinVersions, CodexClientVersion};
+    Ok(CodexClientMinVersions::new(
+        desktop
+            .map(CodexClientVersion::parse)
+            .transpose()
+            .map_err(|_| "min_codex_desktop_version")?,
+        cli.map(CodexClientVersion::parse)
+            .transpose()
+            .map_err(|_| "min_codex_cli_version")?,
+    ))
+}

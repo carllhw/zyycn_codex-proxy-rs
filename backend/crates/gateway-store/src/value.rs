@@ -178,59 +178,7 @@ impl Revision {
     }
 }
 
-/// `numeric(20,10)` 可无损表达的非负金额
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct DecimalAmount(String);
-
-impl DecimalAmount {
-    #[must_use]
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-}
-
-impl fmt::Display for DecimalAmount {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str(&self.0)
-    }
-}
-
-impl FromStr for DecimalAmount {
-    type Err = StoreError;
-
-    fn from_str(input: &str) -> Result<Self, Self::Err> {
-        let input = input.trim();
-        let mut parts = input.split('.');
-        let whole = parts.next().unwrap_or_default();
-        let fraction = parts.next();
-        let valid = !whole.is_empty()
-            && whole.len() <= 10
-            && whole.bytes().all(|byte| byte.is_ascii_digit())
-            && parts.next().is_none()
-            && fraction.is_none_or(|value| {
-                !value.is_empty()
-                    && value.len() <= 10
-                    && value.bytes().all(|byte| byte.is_ascii_digit())
-            });
-        if !valid {
-            return Err(StoreError::InvalidData {
-                source: None,
-                entity: "decimal amount",
-                message: "expected a non-negative numeric(20,10) value".to_owned(),
-            });
-        }
-
-        let whole = whole.trim_start_matches('0');
-        let whole = if whole.is_empty() { "0" } else { whole };
-        let fraction = fraction.unwrap_or_default().trim_end_matches('0');
-        let canonical = if fraction.is_empty() {
-            whole.to_owned()
-        } else {
-            format!("{whole}.{fraction}")
-        };
-        Ok(Self(canonical))
-    }
-}
+pub use gateway_admin::model::observability::DecimalAmount;
 
 /// Provider-owned JSON object
 /// Store 只验证 object 与大小，不解释内部 key

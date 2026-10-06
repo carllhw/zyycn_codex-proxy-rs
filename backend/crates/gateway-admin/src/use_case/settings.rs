@@ -3,7 +3,6 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use gateway_core::policy::CodexClientVersion;
 use gateway_core::runtime::SnapshotControl;
 use rand_core::{OsRng, RngCore as _};
 
@@ -103,53 +102,17 @@ impl DefaultSettingsService {
 }
 
 fn validate_settings(command: &ReplaceRuntimeSettings) -> Result<(), AdminError> {
-    let valid = command.request_location.validate().is_ok()
-        && command.responses_max_decompressed_body_bytes > 0
-        && isize::try_from(command.responses_max_decompressed_body_bytes).is_ok()
-        && command.refresh_margin_seconds > 0
-        && command.refresh_concurrency > 0
-        && command.max_account_rotations <= gateway_core::account::MAX_ACCOUNT_ROTATIONS
-        && (1..=gateway_core::account::MAX_SESSION_AFFINITY_TTL_HOURS)
-            .contains(&command.openai_session_affinity_ttl_hours)
-        && command.max_waiting_per_key <= 1_000
-        && command.max_waiting_per_account <= 1_000
-        && (1..=120).contains(&command.concurrency_wait_timeout_seconds)
-        && crate::model::retention::RetentionPolicy::try_new(
-            command.usage_retention_days,
-            command.ops_event_retention_days,
-            command.audit_retention_days,
-        )
-        .is_ok()
-        && valid_client_version(command.min_codex_desktop_version.as_deref())
-        && valid_client_version(command.min_codex_cli_version.as_deref())
-        && valid_probe_model(command.account_auto_freeze_probe_model.as_deref())
-        && gateway_core::provider_ports::valid_warmup_schedule_time(
-            &command.account_warmup_schedule_time,
-        )
-        && valid_probe_model(command.account_warmup_model.as_deref())
-        && (!command.account_warmup_enabled || command.account_warmup_model.is_some())
-        && i64::try_from(command.request_interval_ms).is_ok()
-        && (2..=1_000).contains(&command.account_auto_freeze_threshold)
-        && (60..=3_600).contains(&command.account_auto_freeze_window_seconds)
-        && (300..=604_800).contains(&command.account_auto_freeze_duration_seconds);
-    if valid {
-        Ok(())
-    } else {
-        Err(AdminError::invalid("运行时设置不满足约束"))
-    }
-}
-
-fn valid_client_version(value: Option<&str>) -> bool {
-    value.is_none_or(|value| CodexClientVersion::parse(value).is_ok())
-}
-
-fn valid_probe_model(value: Option<&str>) -> bool {
-    value.is_none_or(|value| {
-        !value.is_empty()
-            && value.len() <= 128
-            && value == value.trim()
-            && !value.bytes().any(|byte| byte.is_ascii_control())
-    })
+    crate::model::settings::validate_model_mappings(
+        command
+            .model_mappings
+            .iter()
+            .map(|(requested, upstream)| (requested.as_str(), upstream.as_str())),
+    )
+    .map_err(|_| AdminError::invalid("运行时设置不满足约束"))?;
+    command
+        .values
+        .validate()
+        .map_err(|_| AdminError::invalid("运行时设置不满足约束"))
 }
 
 #[async_trait]

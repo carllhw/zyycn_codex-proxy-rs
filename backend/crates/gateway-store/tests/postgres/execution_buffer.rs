@@ -668,7 +668,7 @@ async fn zero_attempt_create_and_finalize_drain_in_order_with_trace() {
         .usage_record_detail(request.id.as_str())
         .await
         .expect("queued failure detail");
-    assert_eq!(detail.request.outcome, "failed");
+    assert_eq!(detail.request.outcome.as_str(), "failed");
     assert_eq!(detail.request.attempt_count, 0);
     assert_eq!(detail.request.upstream_send_state, "not_sent");
     assert_eq!(detail.trace, Some(expected_trace));
@@ -768,7 +768,7 @@ async fn zero_attempt_dropped_finalize_is_fail_open_and_recoverable_at_deadline(
         .usage_record_detail(request.id.as_str())
         .await
         .expect("pending record");
-    assert_eq!(pending.request.outcome, "running");
+    assert_eq!(pending.request.outcome.as_str(), "running");
     assert_eq!(pending.trace, None);
     assert!(pending.attempts.is_empty());
     assert_eq!(
@@ -783,7 +783,7 @@ async fn zero_attempt_dropped_finalize_is_fail_open_and_recoverable_at_deadline(
         .usage_record_detail(request.id.as_str())
         .await
         .expect("recovered record");
-    assert_eq!(recovered.request.outcome, "incomplete");
+    assert_eq!(recovered.request.outcome.as_str(), "incomplete");
     assert_eq!(
         recovered.request.error_kind.as_deref(),
         Some("process_interrupted")

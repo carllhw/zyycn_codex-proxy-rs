@@ -135,6 +135,11 @@ impl AccountGroupService for DefaultAccountGroupService {
         context: &MutationContext,
         command: CreateAccountGroup,
     ) -> Result<AccountGroupMutation, AdminError> {
+        crate::model::account_groups::validate_group_fields(
+            &command.name,
+            command.description.as_deref(),
+        )
+        .map_err(|_| AdminError::invalid("账号组请求不合法"))?;
         let id = AccountGroupId::new(format!("grp_{}", Uuid::now_v7().simple()))
             .map_err(|_| AdminError::internal("创建账号组 ID 失败"))?;
         self.publish(
@@ -159,6 +164,11 @@ impl AccountGroupService for DefaultAccountGroupService {
         context: &MutationContext,
         command: UpdateAccountGroup,
     ) -> Result<AccountGroupMutation, AdminError> {
+        crate::model::account_groups::validate_group_fields(
+            &command.name,
+            command.description.as_deref(),
+        )
+        .map_err(|_| AdminError::invalid("账号组请求不合法"))?;
         self.publish(self.store.update_account_group(command, context).await)
             .await
     }

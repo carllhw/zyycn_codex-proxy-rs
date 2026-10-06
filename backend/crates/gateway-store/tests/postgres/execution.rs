@@ -5,8 +5,7 @@ use std::time::{Duration as StdDuration, SystemTime};
 use chrono::{DateTime, Duration, Utc};
 use futures::TryStreamExt as _;
 use gateway_admin::{
-    model::{PageSize, observability as admin_observability},
-    ports::store::ObservabilityStore as _,
+    model::observability as admin_observability, ports::store::ObservabilityStore as _,
 };
 use gateway_core::diagnostics::TraceContext;
 use gateway_core::engine::{
@@ -1597,7 +1596,7 @@ async fn zero_attempt_failure_is_queryable_without_fabricating_upstream_facts() 
         .usage_record_detail(request.id.as_str())
         .await
         .expect("load failed request detail");
-    assert_eq!(detail.request.outcome, "failed");
+    assert_eq!(detail.request.outcome.as_str(), "failed");
     assert_eq!(detail.request.attempt_count, 0);
     assert_eq!(detail.request.upstream_send_state, "not_sent");
     assert_eq!(detail.request.client_api_key_ref, "key_zero_attempt");
@@ -1727,7 +1726,7 @@ async fn zero_attempt_failure_is_queryable_without_fabricating_upstream_facts() 
                 ..Default::default()
             },
             current_page: 1,
-            page_size: PageSize::new(10).expect("page size"),
+            page_size: ObservabilityPageSize::new(10).expect("page size"),
         })
         .await
         .expect("admin ops errors without provider facts");
@@ -1919,7 +1918,7 @@ async fn zero_attempt_recovery_respects_deadline_and_does_not_invent_a_trace() {
         .usage_record_detail(request.id.as_str())
         .await
         .expect("recovered detail");
-    assert_eq!(detail.request.outcome, "incomplete");
+    assert_eq!(detail.request.outcome.as_str(), "incomplete");
     assert_eq!(
         detail.request.error_kind.as_deref(),
         Some("process_interrupted")
@@ -1950,7 +1949,8 @@ async fn zero_attempt_recovery_respects_deadline_and_does_not_invent_a_trace() {
             .await
             .expect("active detail")
             .request
-            .outcome,
+            .outcome
+            .as_str(),
         "running"
     );
     database.close().await;
@@ -2091,5 +2091,76 @@ async fn entry_rejection_is_visible_without_a_fictitious_model_execution() {
         .await
         .unwrap();
     assert_eq!(count, 0);
+    database.close().await;
+}
+
+#[tokio::test]
+async fn shared_core_usage_and_timings_preserve_fields_and_reject_invalid_phases() {
+    let Some(database) = TestDatabase::create("shared_execution_facts").await else {
+        return;
+    };
+    let id = "req_shared_facts";
+    seed_running_request(&database.pool, id).await.unwrap();
+    let store = PgExecutionStore::new(database.pool.clone());
+    let mut finalization = successful_core_finalization(id);
+    finalization.usage = Usage {
+        input_tokens: Some(101),
+        output_tokens: Some(22),
+        cached_tokens: Some(33),
+        cache_write_tokens: Some(44),
+        reasoning_tokens: Some(5),
+        image_input_tokens: Some(6),
+        image_output_tokens: Some(7),
+        total_tokens: Some(123),
+    };
+    finalization.timings = CoreModelRequestTimings {
+        transport_decision_wait_ms: Some(1),
+        connect_ms: Some(2),
+        headers_ms: Some(3),
+        first_event_ms: Some(4),
+        first_reasoning_ms: Some(5),
+        first_text_ms: Some(6),
+        first_token_ms: Some(7),
+        provider_processing_ms: Some(8),
+        latency_ms: Some(9),
+    };
+    ExecutionStore::finalize_model_request(&store, finalization)
+        .await
+        .unwrap();
+    let persisted = stored_row(&database.pool, id).await;
+    for (field, expected) in [
+        ("input_tokens", 101),
+        ("output_tokens", 22),
+        ("cached_tokens", 33),
+        ("cache_write_tokens", 44),
+        ("reasoning_tokens", 5),
+        ("image_input_tokens", 6),
+        ("image_output_tokens", 7),
+        ("total_tokens", 123),
+        ("transport_decision_wait_ms", 1),
+        ("connect_ms", 2),
+        ("headers_ms", 3),
+        ("first_event_ms", 4),
+        ("first_reasoning_ms", 5),
+        ("first_text_ms", 6),
+        ("first_token_ms", 7),
+        ("provider_processing_ms", 8),
+        ("latency_ms", 9),
+    ] {
+        assert_eq!(persisted[field], json!(expected), "{field}");
+    }
+    let invalid_id = "req_invalid_phase";
+    seed_running_request(&database.pool, invalid_id)
+        .await
+        .unwrap();
+    let before = stored_row(&database.pool, invalid_id).await;
+    let mut invalid = successful_core_finalization(invalid_id);
+    invalid.timings.latency_ms = Some(10);
+    invalid.timings.first_token_ms = Some(11);
+    let error = ExecutionStore::finalize_model_request(&store, invalid)
+        .await
+        .unwrap_err();
+    assert_eq!(error.kind(), StoreErrorKind::InvalidData);
+    assert_eq!(stored_row(&database.pool, invalid_id).await, before);
     database.close().await;
 }

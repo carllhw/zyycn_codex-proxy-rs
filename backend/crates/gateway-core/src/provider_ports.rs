@@ -1111,6 +1111,38 @@ pub struct ProviderFreezePolicy {
 }
 
 impl ProviderFreezePolicy {
+    /// 管理写入与运行策略构造共用的冻结约束
+    pub fn validate_values(
+        threshold: u32,
+        window_seconds: u64,
+        duration_seconds: u64,
+        probe_model: Option<&str>,
+    ) -> Result<(), &'static str> {
+        for (valid, field) in [
+            (
+                (2..=1_000).contains(&threshold),
+                "account_auto_freeze_threshold",
+            ),
+            (
+                (60..=3_600).contains(&window_seconds),
+                "account_auto_freeze_window_seconds",
+            ),
+            (
+                (300..=604_800).contains(&duration_seconds),
+                "account_auto_freeze_duration_seconds",
+            ),
+            (
+                valid_optional_probe_model(probe_model),
+                "account_auto_freeze_probe_model",
+            ),
+        ] {
+            if !valid {
+                return Err(field);
+            }
+        }
+        Ok(())
+    }
+
     /// 边界与迁移 `0010_account_auto_freeze.sql` 的 check 约束一致；
     /// store 层写入前已校验，这里兜底防御越界配置
     pub fn try_new(
@@ -1122,15 +1154,13 @@ impl ProviderFreezePolicy {
         probe_model: Option<String>,
         adaptive_concurrency: bool,
     ) -> Result<Self, ProviderStoreError> {
-        if !(2..=1_000).contains(&threshold)
-            || !(60..=3_600).contains(&window_seconds)
-            || !(300..=604_800).contains(&freeze_duration_seconds)
-            || probe_model.as_deref().is_some_and(|model| {
-                model.is_empty()
-                    || model.len() > 128
-                    || model != model.trim()
-                    || model.bytes().any(|byte| byte.is_ascii_control())
-            })
+        if Self::validate_values(
+            threshold,
+            window_seconds,
+            freeze_duration_seconds,
+            probe_model.as_deref(),
+        )
+        .is_err()
         {
             return Err(ProviderStoreError::new(
                 ProviderStoreErrorKind::InvalidData,
@@ -1239,20 +1269,27 @@ pub struct ProviderWarmupPolicy {
 }
 
 impl ProviderWarmupPolicy {
+    /// 保存设置与创建预热策略使用相同的时间表和模型约束
+    pub fn validate_values(
+        enabled: bool,
+        schedule_time: &str,
+        model: Option<&str>,
+    ) -> Result<(), &'static str> {
+        if !valid_warmup_schedule_time(schedule_time) {
+            return Err("account_warmup_schedule_time");
+        }
+        if (enabled && model.is_none()) || !valid_optional_probe_model(model) {
+            return Err("account_warmup_model");
+        }
+        Ok(())
+    }
+
     pub fn try_new(
         enabled: bool,
         schedule_time: String,
         model: Option<String>,
     ) -> Result<Self, ProviderStoreError> {
-        if !valid_warmup_schedule_time(&schedule_time)
-            || (enabled && model.is_none())
-            || model.as_deref().is_some_and(|m| {
-                m.is_empty()
-                    || m.len() > 128
-                    || m != m.trim()
-                    || m.bytes().any(|byte| byte.is_ascii_control())
-            })
-        {
+        if Self::validate_values(enabled, &schedule_time, model.as_deref()).is_err() {
             return Err(ProviderStoreError::new(
                 ProviderStoreErrorKind::InvalidData,
                 "validate warmup policy",
@@ -1596,4 +1633,13 @@ impl fmt::Debug for ProviderStorePorts {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str("ProviderStorePorts([CAPABILITIES])")
     }
+}
+
+fn valid_optional_probe_model(model: Option<&str>) -> bool {
+    model.is_none_or(|model| {
+        !model.is_empty()
+            && model.len() <= 128
+            && model == model.trim()
+            && !model.bytes().any(|byte| byte.is_ascii_control())
+    })
 }

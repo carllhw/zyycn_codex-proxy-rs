@@ -2,11 +2,22 @@
 
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(try_from = "SmartSchedulingValues", into = "SmartSchedulingValues")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(into = "SmartSchedulingValues")]
 pub struct SmartSchedulingConfig {
     weights: [u8; 6],
     prefer_higher_weight: bool,
+}
+
+impl<'de> Deserialize<'de> for SmartSchedulingConfig {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        // flatten 会缓冲字段，arbitrary_precision 的小数需先恢复为 JSON Number
+        // 随后仍由同一类型检查完整字段、数值范围和十分位精度
+        let value = serde_json::Value::deserialize(deserializer)?;
+        let values = serde_json::from_value::<SmartSchedulingValues>(value)
+            .map_err(serde::de::Error::custom)?;
+        Self::try_from(values).map_err(serde::de::Error::custom)
+    }
 }
 
 impl Default for SmartSchedulingConfig {

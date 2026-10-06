@@ -204,7 +204,7 @@ impl DefaultObservabilityService {
         let wire_profiles = self
             .providers
             .dashboard_wire_profiles(&settings.request_profiles);
-        let max_concurrent_per_account = u64::from(settings.max_concurrent_per_account);
+        let max_concurrent_per_account = u64::from(settings.values.max_concurrent_per_account);
         let (inherited_accounts, overridden_slots) = runtime_slots
             .as_ref()
             .map_or((observation.provider_accounts.normal, 0), |slots| {

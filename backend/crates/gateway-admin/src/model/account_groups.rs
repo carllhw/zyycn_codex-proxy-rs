@@ -10,6 +10,23 @@ use gateway_core::{
 
 use super::{PageSize, Revision, observability::DecimalAmount};
 
+/// 名称与描述的共同约束，HTTP、用例和存储边界只映射错误
+pub fn validate_group_fields(
+    name: &str,
+    description: Option<&str>,
+) -> Result<(), super::AdminModelError> {
+    if name.trim() != name
+        || name.is_empty()
+        || name.chars().count() > 100
+        || name.chars().any(char::is_control)
+        || description
+            .is_some_and(|value| value.len() > 4096 || value.chars().any(char::is_control))
+    {
+        return Err(super::AdminModelError::InvalidAccountGroupFields);
+    }
+    Ok(())
+}
+
 /// 账号分组持久化使用的标准 `#RRGGBBAA` 颜色
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AccountGroupColor(String);

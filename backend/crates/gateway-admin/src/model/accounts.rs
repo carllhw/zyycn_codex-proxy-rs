@@ -133,40 +133,10 @@ pub struct AccountRecord {
     pub updated_at: DateTime<Utc>,
 }
 
-/// 单一货币的账号成本聚合
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct AccountCost {
-    pub currency: String,
-    pub amount: super::observability::DecimalAmount,
-}
-
-/// 账号在一个模型上的历史用量
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct AccountModelUsage {
-    pub model: String,
-    pub request_count: u64,
-    pub success_count: u64,
-    pub input_tokens: Option<u64>,
-    pub output_tokens: Option<u64>,
-    pub cached_tokens: Option<u64>,
-    pub cache_write_tokens: Option<u64>,
-    pub reasoning_tokens: Option<u64>,
-    pub image_input_tokens: Option<u64>,
-    pub image_output_tokens: Option<u64>,
-    pub image_request_count: u64,
-    pub image_request_failed_count: u64,
-    pub total_tokens: Option<u64>,
-    pub cost_coverage: super::observability::CostCoverage,
-    pub costs: Vec<AccountCost>,
-    pub last_used_at: DateTime<Utc>,
-}
-
-/// 账号在一个小时窗口内的请求数
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct AccountRequestBucket {
-    pub bucket_start: DateTime<Utc>,
-    pub request_count: u64,
-}
+pub use super::observability::{
+    AccountModelUsage, AccountPoolMetrics as AccountSummary, AccountRequestBucket,
+    CurrencyCost as AccountCost,
+};
 
 /// 账号历史用量聚合
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -233,19 +203,6 @@ pub struct AccountCapacity {
     pub used_slots: Option<u64>,
     /// 应用账号覆盖或全局默认值后的上限；`None` 表示不限
     pub total_slots: Option<u64>,
-}
-
-/// 统一账号目录的全局状态计数，不受当前筛选和分页影响
-///
-/// 计数与 [`AccountStatus`] 一一对应，由 store 按派生状态聚合
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct AccountSummary {
-    pub total: u64,
-    pub normal: u64,
-    pub quota_exhausted: u64,
-    pub rate_limited: u64,
-    pub disabled: u64,
-    pub error: u64,
 }
 
 /// 账号可编辑事实的一次性替换命令

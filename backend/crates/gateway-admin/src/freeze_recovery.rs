@@ -66,13 +66,13 @@ impl FreezeRecoveryTask {
     async fn freeze_policy(&self) -> Option<gateway_core::provider_ports::ProviderFreezePolicy> {
         let settings = self.deps.settings.load_runtime_settings().await.ok()?;
         gateway_core::provider_ports::ProviderFreezePolicy::try_new(
-            settings.account_auto_freeze_enabled,
-            settings.account_auto_freeze_threshold,
-            settings.account_auto_freeze_window_seconds,
-            settings.account_auto_freeze_duration_seconds,
-            settings.account_auto_freeze_probe_enabled,
-            settings.account_auto_freeze_probe_model,
-            settings.account_auto_freeze_adaptive_concurrency,
+            settings.values.account_auto_freeze_enabled,
+            settings.values.account_auto_freeze_threshold,
+            settings.values.account_auto_freeze_window_seconds,
+            settings.values.account_auto_freeze_duration_seconds,
+            settings.values.account_auto_freeze_probe_enabled,
+            settings.values.account_auto_freeze_probe_model,
+            settings.values.account_auto_freeze_adaptive_concurrency,
         )
         .ok()
     }

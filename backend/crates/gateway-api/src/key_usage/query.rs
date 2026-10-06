@@ -3,8 +3,8 @@
 use axum::http::StatusCode;
 use chrono::Duration;
 use gateway_admin::model::{
-    PageSize,
     key_usage::{KeyUsageQuery, KeyUsageRecordKind, KeyUsageRecordsQuery},
+    observability::ObservabilityPageSize,
 };
 use serde::Deserialize;
 
@@ -89,13 +89,14 @@ impl RecordsQuery {
         timezone: gateway_core::time::DeploymentTimeZone,
     ) -> Result<KeyUsageRecordsQuery, AdminError> {
         let current_page = self.current_page.unwrap_or(1);
-        let page_size = self.page_size.unwrap_or(20);
-        if current_page == 0 || !(1..=100).contains(&page_size) {
-            return Err(AdminError::invalid_request(
-                StatusCode::BAD_REQUEST,
-                "页码必须大于 0，每页数量为 1–100",
-            ));
+        let invalid_page = || {
+            AdminError::invalid_request(StatusCode::BAD_REQUEST, "页码必须大于 0，每页数量为 1–100")
+        };
+        if current_page == 0 {
+            return Err(invalid_page());
         }
+        let page_size =
+            ObservabilityPageSize::new(self.page_size.unwrap_or(20)).map_err(|_| invalid_page())?;
         Ok(KeyUsageRecordsQuery {
             usage: OverviewQuery {
                 period: self.period,
@@ -110,9 +111,7 @@ impl RecordsQuery {
                 RecordKind::Error => KeyUsageRecordKind::Error,
             },
             current_page,
-            page_size: PageSize::new(page_size).map_err(|_| {
-                AdminError::invalid_request(StatusCode::BAD_REQUEST, "每页数量不合法")
-            })?,
+            page_size,
         })
     }
 }

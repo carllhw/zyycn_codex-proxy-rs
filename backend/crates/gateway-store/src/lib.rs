@@ -6,7 +6,7 @@
 
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
-use std::{fmt, num::NonZeroU64, str::FromStr};
+use std::{fmt, num::NonZeroU64};
 
 use gateway_admin::model::auth::{AdminAuditEvent as AdminAuditModel, AuthSession, SessionSubject};
 use gateway_admin::model::settings::{

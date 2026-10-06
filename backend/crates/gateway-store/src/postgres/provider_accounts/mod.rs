@@ -11,7 +11,7 @@ use gateway_admin::{
         accounts::{
             AccountCost, AccountGroupFilter, AccountImportSettings,
             AccountListQuery as AdminAccountListQuery, AccountModelUsage, AccountPage,
-            AccountPageItem, AccountRecord, AccountRequestBucket, AccountSort as AdminAccountSort,
+            AccountPageItem, AccountRecord, AccountSort as AdminAccountSort,
             AccountSortField as AdminAccountSortField, AccountSummary, AccountUpdateResult,
             AccountUsage, AccountUsageWindowQuery, AccountUsageWindowResult, AccountsUpdateResult,
             BatchUpdateAccounts, DeleteAccounts, SortDirection as AdminSortDirection,
@@ -51,9 +51,8 @@ use crate::{
 };
 
 use super::{
-    AdminAuditEvent, ControlPlaneRepository, CurrencyCostTotal, ObservabilityRange,
-    ObservabilityRepository, PgControlPlaneRepository, PgObservabilityRepository,
-    ProviderAccountModelUsageObservation, ProviderAccountUsageObservation,
+    AdminAuditEvent, ControlPlaneRepository, ObservabilityRange, ObservabilityRepository,
+    PgControlPlaneRepository, PgObservabilityRepository, ProviderAccountUsageObservation,
     ProviderAccountUsageQuery, append_admin_audit_event_in_transaction,
     bump_config_revision_in_transaction, completed_usage_fact_predicate,
 };

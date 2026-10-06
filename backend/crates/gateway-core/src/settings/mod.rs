@@ -15,7 +15,9 @@ use crate::routing::RuntimeSnapshot;
 
 pub(crate) mod compiled;
 mod values;
-pub use values::SettingsValues;
+pub use values::{
+    SettingsValues, client_min_versions, response_body_limit, validate_request_limits,
+};
 
 /// 一次模型调用的有效设置；改写只影响当前请求，不发布配置或修改持久化 revision
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

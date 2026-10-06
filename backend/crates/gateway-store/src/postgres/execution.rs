@@ -16,7 +16,7 @@ use gateway_core::engine::{
 use gateway_core::error::{
     ProviderErrorKind, StoreError as CoreStoreError, StoreErrorKind as CoreStoreErrorKind,
 };
-use gateway_core::metering::{CostSource as CoreCostSource, Usage as CoreUsage};
+use gateway_core::metering::CostSource as CoreCostSource;
 use gateway_core::routing::{AccountRoutingScopeKind, AccountRoutingSnapshot};
 use gateway_core::upstream::UpstreamSendState as CoreUpstreamSendState;
 
@@ -222,50 +222,25 @@ impl ModelRequestAttemptStart {
     }
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct ModelRequestUsage {
-    pub input_tokens: Option<u64>,
-    pub output_tokens: Option<u64>,
-    pub cached_tokens: Option<u64>,
-    pub cache_write_tokens: Option<u64>,
-    pub reasoning_tokens: Option<u64>,
-    pub image_input_tokens: Option<u64>,
-    pub image_output_tokens: Option<u64>,
-    pub total_tokens: Option<u64>,
-}
+pub use gateway_core::{engine::ModelRequestTimings, metering::Usage as ModelRequestUsage};
 
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct ModelRequestTimings {
-    pub transport_decision_wait_ms: Option<u64>,
-    pub connect_ms: Option<u64>,
-    pub headers_ms: Option<u64>,
-    pub first_event_ms: Option<u64>,
-    pub first_reasoning_ms: Option<u64>,
-    pub first_text_ms: Option<u64>,
-    pub first_token_ms: Option<u64>,
-    pub provider_processing_ms: Option<u64>,
-    pub latency_ms: Option<u64>,
-}
-
-impl ModelRequestTimings {
-    fn validate(&self) -> StoreResult<()> {
-        if let Some(total) = self.latency_ms {
-            let phases = [
-                self.transport_decision_wait_ms,
-                self.connect_ms,
-                self.headers_ms,
-                self.first_event_ms,
-                self.first_reasoning_ms,
-                self.first_text_ms,
-                self.first_token_ms,
-                self.provider_processing_ms,
-            ];
-            if phases.into_iter().flatten().any(|phase| phase > total) {
-                return Err(invalid("timing phase exceeds total latency"));
-            }
+fn validate_timings(timings: &ModelRequestTimings) -> StoreResult<()> {
+    if let Some(total) = timings.latency_ms {
+        let phases = [
+            timings.transport_decision_wait_ms,
+            timings.connect_ms,
+            timings.headers_ms,
+            timings.first_event_ms,
+            timings.first_reasoning_ms,
+            timings.first_text_ms,
+            timings.first_token_ms,
+            timings.provider_processing_ms,
+        ];
+        if phases.into_iter().flatten().any(|phase| phase > total) {
+            return Err(invalid("timing phase exceeds total latency"));
         }
-        Ok(())
     }
+    Ok(())
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -378,7 +353,7 @@ impl ModelRequestFinalization {
             "continuation unavailable reason",
         )?;
         validate_connection_observation(self)?;
-        self.timings.validate()
+        validate_timings(&self.timings)
     }
 }
 
@@ -1280,8 +1255,10 @@ impl ExecutionStore for PgExecutionStore {
                     total
                         .amount()
                         .to_string()
-                        .parse()
-                        .map_err(core_store_error)?,
+                        .parse::<DecimalAmount>()
+                        .map_err(|source| {
+                            CoreStoreError::caused_by(CoreStoreErrorKind::InvalidData, source)
+                        })?,
                 ),
                 Some(total.currency().as_str().to_owned()),
             ),
@@ -1348,22 +1325,12 @@ impl ExecutionStore for PgExecutionStore {
                 upstream_connection_age_ms,
                 upstream_connection_idle_ms,
                 retry_after_ms: finalization.retry_after_ms,
-                usage: usage_from_core(finalization.usage),
+                usage: finalization.usage,
                 image_generation_succeeded: finalization.image_generation_succeeded,
                 cost_source,
                 cost_amount,
                 cost_currency,
-                timings: ModelRequestTimings {
-                    transport_decision_wait_ms: finalization.timings.transport_decision_wait_ms,
-                    connect_ms: finalization.timings.connect_ms,
-                    headers_ms: finalization.timings.headers_ms,
-                    first_event_ms: finalization.timings.first_event_ms,
-                    first_reasoning_ms: finalization.timings.first_reasoning_ms,
-                    first_text_ms: finalization.timings.first_text_ms,
-                    first_token_ms: finalization.timings.first_token_ms,
-                    provider_processing_ms: finalization.timings.provider_processing_ms,
-                    latency_ms: finalization.timings.latency_ms,
-                },
+                timings: finalization.timings,
                 completed_at: DateTime::<Utc>::from(finalization.completed_at),
             },
         )
@@ -1383,19 +1350,6 @@ impl ExecutionStore for PgExecutionStore {
         Ok(CoreRecoveryReport {
             requests: report.requests,
         })
-    }
-}
-
-fn usage_from_core(usage: CoreUsage) -> ModelRequestUsage {
-    ModelRequestUsage {
-        input_tokens: usage.input_tokens,
-        output_tokens: usage.output_tokens,
-        cached_tokens: usage.cached_tokens,
-        cache_write_tokens: usage.cache_write_tokens,
-        reasoning_tokens: usage.reasoning_tokens,
-        image_input_tokens: usage.image_input_tokens,
-        image_output_tokens: usage.image_output_tokens,
-        total_tokens: usage.total_tokens,
     }
 }
 

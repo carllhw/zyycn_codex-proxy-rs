@@ -163,7 +163,37 @@ fn sdk_settings_contract_matches_host_declarations() {
                     _ => false,
                 })
                 .unwrap_or_else(|| panic!("缺少合同类型 {name}"));
-            if let Item::Struct(item) = item
+            let mut item = item.clone();
+            // SDK 保持独立的平铺合同，不暴露宿主内部的值对象组合
+            if matches!(*name, "RuntimeSettings" | "ReplaceRuntimeSettings") {
+                let values = items
+                    .iter()
+                    .find_map(|item| match item {
+                        Item::Struct(item) if item.ident == "RuntimeSettingsValues" => {
+                            Some(&item.fields)
+                        }
+                        _ => None,
+                    })
+                    .expect("settings values");
+                let Item::Struct(record) = &mut item else {
+                    unreachable!()
+                };
+                let syn::Fields::Named(fields) = &mut record.fields else {
+                    unreachable!()
+                };
+                fields.named = fields
+                    .named
+                    .iter()
+                    .flat_map(|field| {
+                        if field.ident.as_ref().is_some_and(|ident| ident == "values") {
+                            values.iter().cloned().collect::<Vec<_>>()
+                        } else {
+                            vec![field.clone()]
+                        }
+                    })
+                    .collect();
+            }
+            if let Item::Struct(item) = &item
                 && item.ident == "ReplaceRuntimeSettings"
             {
                 replacement_fields = item
@@ -173,7 +203,7 @@ fn sdk_settings_contract_matches_host_declarations() {
                     .collect();
             }
             types.push(contract_type(
-                item.clone(),
+                item,
                 if *name == "SmartSchedulingValues" {
                     "SmartSchedulingConfig"
                 } else {

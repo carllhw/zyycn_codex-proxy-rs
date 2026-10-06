@@ -322,7 +322,7 @@ pub(crate) fn intermediate_attempt_from_row(
         upstream_model_id: get(row, "upstream_model_id")?,
         upstream_transport: None,
         upstream_send_state: None,
-        outcome: "failed".to_owned(),
+        outcome: admin_observability::RequestOutcome::Failed,
         downstream_committed: false,
         status_code: optional_status(row, "status_code")?,
         provider_error_code: get(row, "provider_error_code")?,

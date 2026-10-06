@@ -76,7 +76,7 @@ pub(crate) async fn list_ops_errors(
     pool: &PgPool,
     query: OpsErrorQuery,
 ) -> StoreResult<OpsErrorPage> {
-    query.filter.validate()?;
+    validate_ops_error_filter(&query.filter)?;
     let total = count_ops_errors(pool, query.range, &query.filter).await?;
     let offset = observability_page_offset(query.current_page, query.page_size)?;
     let mut statement = QueryBuilder::<Postgres>::new("select * from (");

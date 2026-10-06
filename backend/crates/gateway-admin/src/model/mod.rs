@@ -215,6 +215,12 @@ pub enum AdminModelError {
     ZeroRevision,
     #[error("page size {0} is outside 1..=200")]
     InvalidPageSize(u16),
+    #[error("observability page size {0} is outside 1..=100")]
+    InvalidObservabilityPageSize(u16),
+    #[error("account group name or description is invalid")]
+    InvalidAccountGroupFields,
+    #[error("client key group IDs are duplicated or exceed 1000 entries")]
+    InvalidClientKeyGroups,
     #[error("client key page size must be inside 1..=65535")]
     InvalidClientKeyPageSize,
     #[error("request outcome must be 1..=256 bytes without control characters")]

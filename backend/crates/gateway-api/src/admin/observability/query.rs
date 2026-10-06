@@ -5,7 +5,7 @@ use super::*;
 /// 观测列表默认页大小
 pub const DEFAULT_PAGE_SIZE: u16 = 50;
 /// 观测列表允许的最大页大小
-pub const MAX_PAGE_SIZE: u16 = 100;
+pub const MAX_PAGE_SIZE: u16 = DomainPageSize::MAX;
 
 /// Dashboard 查询参数
 #[derive(Clone, Default, Deserialize)]
@@ -59,7 +59,7 @@ impl UsageQuery {
             return Err(WireValidationError::new("currentPage"));
         }
         let page_size = self.page_size.unwrap_or(DEFAULT_PAGE_SIZE);
-        if page_size == 0 || page_size > MAX_PAGE_SIZE {
+        if DomainPageSize::new(page_size).is_err() {
             return Err(WireValidationError::new("pageSize"));
         }
         Ok((current_page, page_size))
@@ -136,7 +136,7 @@ impl OpsQuery {
             return Err(WireValidationError::new("currentPage"));
         }
         let page_size = self.page_size.unwrap_or(DEFAULT_PAGE_SIZE);
-        if page_size == 0 || page_size > MAX_PAGE_SIZE {
+        if DomainPageSize::new(page_size).is_err() {
             return Err(WireValidationError::new("pageSize"));
         }
         Ok((current_page, page_size))

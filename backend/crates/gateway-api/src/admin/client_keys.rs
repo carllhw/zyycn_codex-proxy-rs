@@ -29,6 +29,7 @@ use axum::{
     routing::{get, post},
 };
 
+use super::account_groups::AccountGroupRefView;
 use super::{
     AdminAuth, AdminEnvelope, AdminError, AdminJson, AdminQuery, AdminResponse,
     WireValidationError, wire::map_admin_service_error,
@@ -342,7 +343,7 @@ pub struct ClientKeyView {
     name: String,
     label: Option<String>,
     routing_scope: &'static str,
-    groups: Vec<ClientKeyGroupView>,
+    groups: Vec<AccountGroupRefView>,
     provider_kinds: Vec<String>,
     prefix: String,
     enabled: bool,
@@ -363,15 +364,6 @@ pub struct ClientKeyView {
     last_used_at: Option<DateTime<Utc>>,
     last_used_at_display: String,
     last_used_at_full_display: Option<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ClientKeyGroupView {
-    id: String,
-    name: String,
-    color: String,
-    enabled: bool,
 }
 
 impl From<(ClientKeyRecord, crate::time::TimePresenter)> for ClientKeyView {
@@ -399,12 +391,7 @@ impl From<(ClientKeyRecord, crate::time::TimePresenter)> for ClientKeyView {
             groups: record
                 .groups
                 .into_iter()
-                .map(|group| ClientKeyGroupView {
-                    id: group.id.to_string(),
-                    name: group.name,
-                    color: group.color.as_str().to_owned(),
-                    enabled: group.enabled,
-                })
+                .map(AccountGroupRefView::from)
                 .collect(),
             provider_kinds: record
                 .provider_kinds
@@ -847,19 +834,13 @@ fn validate_required_text(value: &str, field: &'static str) -> Result<(), WireVa
 }
 
 fn validate_group_ids(values: Vec<String>) -> Result<Vec<AccountGroupId>, WireValidationError> {
-    if values.len() > 1000
-        || values
-            .iter()
-            .collect::<std::collections::BTreeSet<_>>()
-            .len()
-            != values.len()
-    {
-        return Err(WireValidationError::new("groupIds"));
-    }
-    values
+    let groups = values
         .into_iter()
         .map(|value| AccountGroupId::new(value).map_err(|_| WireValidationError::new("groupIds")))
-        .collect()
+        .collect::<Result<Vec<_>, _>>()?;
+    gateway_admin::model::client_keys::validate_group_ids(&groups)
+        .map_err(|_| WireValidationError::new("groupIds"))?;
+    Ok(groups)
 }
 
 fn validate_optional_text(

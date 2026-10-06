@@ -20,6 +20,20 @@ pub type ProviderRequestProfileOverrides =
 pub type ProviderRequestProfileOverrideUpdates =
     BTreeMap<ProviderKind, Option<gateway_core::account::OpaqueProviderData>>;
 
+/// Client Key 关联分组的数量与唯一性约束
+pub fn validate_group_ids(group_ids: &[AccountGroupId]) -> Result<(), AdminModelError> {
+    if group_ids.len() > 1000
+        || group_ids
+            .iter()
+            .collect::<std::collections::BTreeSet<_>>()
+            .len()
+            != group_ids.len()
+    {
+        return Err(AdminModelError::InvalidClientKeyGroups);
+    }
+    Ok(())
+}
+
 /// Client Key 列表保持旧 HTTP 合同允许的完整非零 `u16` 页大小
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ClientKeyPageSize(NonZeroU16);

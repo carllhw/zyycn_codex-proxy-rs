@@ -1,5 +1,9 @@
 //! Admin 账号列表、用量与成本的领域映射
 
+use crate::postgres::observability::{
+    admin_account_model_usage, admin_cost_coverage as admin_account_cost_coverage,
+};
+
 use super::*;
 
 pub(crate) fn admin_account_record(
@@ -75,10 +79,8 @@ pub(crate) fn provider_document_json(document: ProviderDocument) -> StoreResult<
     )
 }
 
-pub(crate) fn admin_account_usage(
-    usage: ProviderAccountUsageObservation,
-) -> AdminStoreResult<AccountUsage> {
-    Ok(AccountUsage {
+pub(crate) fn admin_account_usage(usage: ProviderAccountUsageObservation) -> AccountUsage {
+    AccountUsage {
         account_id: usage.account_id,
         request_count: usage.request_count,
         success_count: usage.success_count,
@@ -93,22 +95,15 @@ pub(crate) fn admin_account_usage(
         image_request_failed_count: usage.image_request_failed_count,
         total_tokens: usage.total_tokens,
         cost_coverage: admin_account_cost_coverage(usage.cost_coverage),
-        costs: admin_account_costs(usage.costs)?,
+        costs: usage.costs,
         last_used_at: usage.last_used_at,
-        request_buckets: usage
-            .request_buckets
-            .into_iter()
-            .map(|bucket| AccountRequestBucket {
-                bucket_start: bucket.bucket_start,
-                request_count: bucket.request_count,
-            })
-            .collect(),
+        request_buckets: usage.request_buckets,
         models: usage
             .models
             .into_iter()
             .map(admin_account_model_usage)
-            .collect::<AdminStoreResult<Vec<_>>>()?,
-    })
+            .collect(),
+    }
 }
 
 pub(crate) fn admin_account_usage_window(
@@ -270,60 +265,4 @@ pub(crate) fn invalid_window_usage(column: &'static str) -> AdminStoreError {
         ENTITY,
         format!("invalid quota window usage column: {column}"),
     )
-}
-
-pub(crate) fn admin_account_model_usage(
-    usage: ProviderAccountModelUsageObservation,
-) -> AdminStoreResult<AccountModelUsage> {
-    Ok(AccountModelUsage {
-        model: usage.model,
-        request_count: usage.request_count,
-        success_count: usage.success_count,
-        input_tokens: usage.input_tokens,
-        output_tokens: usage.output_tokens,
-        cached_tokens: usage.cached_tokens,
-        cache_write_tokens: usage.cache_write_tokens,
-        reasoning_tokens: usage.reasoning_tokens,
-        image_input_tokens: usage.image_input_tokens,
-        image_output_tokens: usage.image_output_tokens,
-        image_request_count: usage.image_request_count,
-        image_request_failed_count: usage.image_request_failed_count,
-        total_tokens: usage.total_tokens,
-        cost_coverage: admin_account_cost_coverage(usage.cost_coverage),
-        costs: admin_account_costs(usage.costs)?,
-        last_used_at: usage.last_used_at,
-    })
-}
-
-pub(crate) const fn admin_account_cost_coverage(
-    coverage: crate::postgres::CostCoverage,
-) -> AdminCostCoverage {
-    AdminCostCoverage {
-        provider_reported_count: coverage.provider_reported_count,
-        calculated_count: coverage.calculated_count,
-        partial_count: 0,
-        unavailable_count: coverage.unavailable_count,
-        not_billable_count: 0,
-    }
-}
-
-pub(crate) fn admin_account_costs(
-    costs: Vec<CurrencyCostTotal>,
-) -> AdminStoreResult<Vec<AccountCost>> {
-    costs
-        .into_iter()
-        .map(|cost| {
-            let amount = AdminDecimalAmount::from_str(cost.amount.as_str()).map_err(|_| {
-                AdminStoreError::new(
-                    AdminStoreErrorKind::Invalid,
-                    ENTITY,
-                    "persisted account cost is invalid",
-                )
-            })?;
-            Ok(AccountCost {
-                currency: cost.currency,
-                amount,
-            })
-        })
-        .collect()
 }

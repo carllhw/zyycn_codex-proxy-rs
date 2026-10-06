@@ -96,12 +96,7 @@ pub(super) fn account_view(
         groups: account
             .groups
             .into_iter()
-            .map(|group| AccountGroupRefView {
-                id: group.id.to_string(),
-                name: group.name,
-                color: group.color.as_str().to_owned(),
-                enabled: group.enabled,
-            })
+            .map(AccountGroupRefView::from)
             .collect(),
         resource_ref: account.id,
         email: account.email,

@@ -732,6 +732,10 @@ HTTP validation
 不构成所有写入的统一前置条件。运行设置整体替换必须携带读取版本，Store 在同一事务比较后才提交，
 防止覆盖并发修改；插件、代理等资源使用各自的 `revision` / `expectedRevision`，不能与全局版本混用
 
+运行设置的共同管理值由 Admin 定义，读取结果与替换命令显式组合这些值，各自持有版本和 Provider 画像的读写语义。
+Core 只持有请求所需设置与策略约束；Store 负责 SQL 解码、密钥隔离和事务，API 负责 wire 类型与展示。
+HTTP 与插件的平铺合同独立于宿主内部组合，SDK 从宿主声明生成，不手工维护第二份字段来源
+
 额度、cooldown、目录 generation、请求统计和自动 credential refresh 属于运行时观测，不推进全局
 revision；credential 轮换只推进账号自己的 `credential_revision`。Redis 通知用于缩短收敛延迟，
 PostgreSQL 周期对账才是正确性基础
