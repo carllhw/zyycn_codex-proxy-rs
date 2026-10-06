@@ -87,10 +87,10 @@ export function usagePerformanceDetails(record: UsagePerformanceRecord) {
   const firstTokenMs = usageFirstTokenMs(record)
   const totalMs = durationValue(record.latencyMs)
   const outputTokens = record.tokenDetails?.outputTokens
-  // 与性能统计使用同一吞吐口径，首个生命周期事件不能代替首字
+  // 输出包含推理 Token，使用完整请求耗时，避免扣除推理等待后高估速率
   const throughput = typeof outputTokens === 'number' && Number.isFinite(outputTokens) && outputTokens > 0
-    && firstTokenMs !== null && totalMs !== null && totalMs > firstTokenMs
-    ? outputTokens * 1000 / (totalMs - firstTokenMs)
+    && totalMs !== null && totalMs > 0
+    ? outputTokens * 1000 / totalMs
     : null
 
   return {

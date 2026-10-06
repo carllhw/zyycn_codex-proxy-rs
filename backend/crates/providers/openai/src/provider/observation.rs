@@ -153,8 +153,8 @@ impl OpenAiResponseObservationState {
         started_at: Instant,
     ) -> bool {
         let mut changed = false;
-        // 复用协议层的语义输出判定，空结构帧不能代替首字
-        if signals.semantic_output {
+        // 首字观测包含非前导结构事件，真实推理与正文仍分别计时
+        if signals.output_start {
             changed |= insert_first_timing(&mut self.timings.first_token_ms, started_at);
         }
         if signals.reasoning_output {

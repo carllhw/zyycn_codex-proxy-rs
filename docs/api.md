@@ -1762,13 +1762,15 @@ OpenAI 优先采用服务端 `openai-model` / `x-openai-model` 报告（流内�
 不能仅凭客户端的同名 metadata 或输出 Token 为零排除普通推理；其他 Provider 不套用该规则
 
 `latencyMs` 从模型执行会话开始计到终结，包含账号选择、重试及流交付等待，不包含此前的入口解析、路由和准入。
-`firstTokenLatencyMs` 与它使用同一计时起点，表示首个语义输出到达网关的时间；文本、推理和工具输出均可触发，
-空增量、空结构帧和无输出的终态帧不算首字。`latencyDetails` 的首事件、首推理和首正文时间也使用请求级起点，
+`firstTokenLatencyMs` 与它使用同一计时起点，首字边界由 Provider 协议定义。
+OpenAI Responses 采用首个非前导输出事件，包含 `response.output_item.added` 等结构事件，
+跳过 `response.created`、`response.in_progress`、心跳、额度控制和失败事件；xAI 采用首个语义输出。
+`latencyDetails` 的首事件、首推理和首正文时间也使用请求级起点，首推理与首正文仍要求实际内容，
 连接、响应头等传输阶段耗时独立计量，不能直接相加作为总耗时
 
-列表与性能统计的输出速率为 `outputTokens × 1000 / (latencyMs − firstTokenLatencyMs)`，
-只在输出 Token 为正、首字已采集且总耗时大于首字时间时计算。该值是网关观测到的平均输出速率，
-生成区间仍包含流传输与交付等待，不表示模型内部的纯解码速度
+列表与性能统计的输出速率为 `outputTokens × 1000 / latencyMs`，只在输出 Token 和总耗时为正时计算，
+不依赖首字是否采集。输出 Token 保留上游用量口径，OpenAI 的输出已包含推理 Token，不重复相加或扣除。
+该值表示完整请求期间的平均输出速率，包含选号、重试、推理与流交付等待，不表示模型内部的纯解码速度
 
 ### 诊断与恢复关联
 

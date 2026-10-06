@@ -89,14 +89,41 @@ fn semantic_output_should_ignore_structural_empty_and_terminal_frames() {
 }
 
 #[test]
-fn response_signals_should_not_count_structural_output_item_added() {
+fn response_signals_should_count_structural_start_without_semantic_output() {
     let signals = response_event_signals(
         Some("response.output_item.added"),
         &json!({"item": {"type": "message", "content": []}}),
     );
 
     assert!(signals.protocol_progress);
+    assert!(signals.output_start);
     assert!(!signals.semantic_output);
+}
+
+#[test]
+fn first_token_should_follow_non_preamble_events_without_reclassifying_content() {
+    for event in [
+        "response.created",
+        "response.in_progress",
+        "keepalive",
+        "codex.rate_limits",
+        "response.failed",
+        "error",
+    ] {
+        let signals = response_event_signals(Some(event), &json!({"type": event}));
+        assert!(!signals.output_start, "not a first token: {event}");
+    }
+    for event in [
+        "response.output_item.added",
+        "response.content_part.added",
+        "response.reasoning_summary_part.added",
+        "response.output_text.delta",
+        "response.completed",
+    ] {
+        let signals = response_event_signals(Some(event), &json!({"type": event}));
+        assert!(signals.output_start, "first non-preamble event: {event}");
+        assert!(!signals.semantic_output, "no content: {event}");
+    }
 }
 
 #[test]

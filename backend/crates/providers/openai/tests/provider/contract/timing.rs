@@ -94,9 +94,9 @@ async fn first_sse_chunk_records_content_on_the_request_clock_for_every_attempt(
 }
 
 #[tokio::test]
-async fn structural_frames_wait_for_semantic_output_on_http_and_websocket() {
+async fn structural_frames_start_ttft_before_content_on_http_and_websocket() {
     for websocket in [false, true] {
-        for (output, has_output) in [
+        for (output, has_content) in [
             (
                 json!({"type":"response.output_text.delta","output_index":0,"content_index":0,"delta":"hello"}),
                 true,
@@ -120,6 +120,8 @@ async fn structural_frames_wait_for_semantic_output_on_http_and_websocket() {
         ] {
             let store = Arc::new(MemoryAccountStore::default());
             create_account(&store, "acct_provider_contract").await;
+            let is_text = output["type"] == "response.output_text.delta";
+            let is_reasoning = output["type"] == "response.reasoning_summary_text.delta";
             let created = json!({"type":"response.created","response":{"id":"resp_timing","model":"gpt-5.4"}});
             let added = json!({"type":"response.output_item.added","output_index":0,"item":{"type":"message","content":[]}});
             let completed = json!({"type":"response.completed","response":{"id":"resp_timing","status":"completed","output":[],"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}});
@@ -160,15 +162,36 @@ async fn structural_frames_wait_for_semantic_output_on_http_and_websocket() {
             let mut stream = provider_with_base_url(&store, base_url)
                 .execute(
                     planned_request("openai", operation),
-                    timed_context(Instant::now(), 1),
+                    timed_context(Instant::now() - Duration::from_secs(3), 2),
                 )
                 .await
                 .unwrap();
-            let first = first_upstream_timings(&mut stream).await;
-            assert_eq!(first.first_token_ms, None);
+            let first = timeout(Duration::from_secs(5), async {
+                while let Some(event) = stream.next().await {
+                    if let Some(observation) = event.unwrap().response_observation()
+                        && observation.timings().first_token_ms.is_some()
+                    {
+                        return observation.timings();
+                    }
+                }
+                panic!("missing structural first-token observation");
+            })
+            .await
+            .expect("structural first token before releasing content");
+            assert!(first.first_token_ms.is_some_and(|value| value >= 3_000));
+            assert_eq!(first.first_text_ms, None);
+            assert_eq!(first.first_reasoning_ms, None);
             release.send(()).unwrap();
             let final_timings = finish_timings(&mut stream, first).await;
-            assert_eq!(final_timings.first_token_ms.is_some(), has_output);
+            assert_eq!(final_timings.first_token_ms, first.first_token_ms);
+            assert_eq!(
+                final_timings.first_text_ms.is_some(),
+                has_content && is_text
+            );
+            assert_eq!(
+                final_timings.first_reasoning_ms.is_some(),
+                has_content && is_reasoning
+            );
             server.await.unwrap();
         }
     }

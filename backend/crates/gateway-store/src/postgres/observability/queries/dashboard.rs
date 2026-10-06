@@ -67,19 +67,19 @@ pub(crate) async fn request_metrics(
                   as account_selection_wait_p99_ms,
                 round((percentile_cont(0.10) within group (
                   order by output_tokens::double precision * 1000.0
-                    / greatest(latency_ms - first_token_ms, 1)
+                    / nullif(latency_ms, 0)
                 ) filter (where {fact} and output_tokens > 0
-                          and latency_ms > first_token_ms)))::bigint as output_throughput_p10,
+                          and latency_ms > 0)))::bigint as output_throughput_p10,
                 round((percentile_cont(0.50) within group (
                   order by output_tokens::double precision * 1000.0
-                    / greatest(latency_ms - first_token_ms, 1)
+                    / nullif(latency_ms, 0)
                 ) filter (where {fact} and output_tokens > 0
-                          and latency_ms > first_token_ms)))::bigint as output_throughput_p50,
+                          and latency_ms > 0)))::bigint as output_throughput_p50,
                 round((percentile_cont(0.90) within group (
                   order by output_tokens::double precision * 1000.0
-                    / greatest(latency_ms - first_token_ms, 1)
+                    / nullif(latency_ms, 0)
                 ) filter (where {fact} and output_tokens > 0
-                          and latency_ms > first_token_ms)))::bigint as output_throughput_p90,
+                          and latency_ms > 0)))::bigint as output_throughput_p90,
                 count(capacity_total_slots)::bigint as capacity_sample_count,
                 round(avg(capacity_used_slots::double precision
                           / nullif(capacity_total_slots, 0)) * 10000)::bigint
@@ -220,19 +220,19 @@ async fn request_metric_series_inner(
                   as account_selection_wait_p99_ms,
                 round((percentile_cont(0.10) within group (
                   order by output_tokens::double precision * 1000.0
-                    / greatest(latency_ms - first_token_ms, 1)
+                    / nullif(latency_ms, 0)
                 ) filter (where {fact} and output_tokens > 0
-                          and latency_ms > first_token_ms)))::bigint as output_throughput_p10,
+                          and latency_ms > 0)))::bigint as output_throughput_p10,
                 round((percentile_cont(0.50) within group (
                   order by output_tokens::double precision * 1000.0
-                    / greatest(latency_ms - first_token_ms, 1)
+                    / nullif(latency_ms, 0)
                 ) filter (where {fact} and output_tokens > 0
-                          and latency_ms > first_token_ms)))::bigint as output_throughput_p50,
+                          and latency_ms > 0)))::bigint as output_throughput_p50,
                 round((percentile_cont(0.90) within group (
                   order by output_tokens::double precision * 1000.0
-                    / greatest(latency_ms - first_token_ms, 1)
+                    / nullif(latency_ms, 0)
                 ) filter (where {fact} and output_tokens > 0
-                          and latency_ms > first_token_ms)))::bigint as output_throughput_p90,
+                          and latency_ms > 0)))::bigint as output_throughput_p90,
                 count(capacity_total_slots)::bigint as capacity_sample_count,
                 round(avg(capacity_used_slots::double precision
                           / nullif(capacity_total_slots, 0)) * 10000)::bigint
