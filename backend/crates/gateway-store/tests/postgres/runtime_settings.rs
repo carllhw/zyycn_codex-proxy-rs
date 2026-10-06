@@ -1185,7 +1185,7 @@ async fn warmup_cursor_resolves_dst_and_deduplicates_across_timezones() {
 async fn account_affinity_upgrade_defaults_and_updates_reach_the_snapshot() {
     use gateway_core::account::AccountAffinity;
     use gateway_store::postgres::{PgRuntimeSnapshotRepository, RuntimeSnapshotRepository};
-    let Some(database) = TestDatabase::create_through("account_affinity_upgrade", 23).await else {
+    let Some(database) = TestDatabase::create_through("account_affinity_upgrade", 22).await else {
         return;
     };
     sqlx::query("update runtime_settings set rotation_strategy = 'sticky' where id = 1")
