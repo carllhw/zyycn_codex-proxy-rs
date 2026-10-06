@@ -13,7 +13,7 @@ export interface RequestLocation {
   timezone: string
 }
 
-export type AccountAffinity = 'relaxed' | 'strict'
+export type AccountAffinity = 'relaxed' | 'preferred' | 'strict'
 
 export type RotationStrategy = 'smart' | 'quota_reset_priority' | 'round_robin' | 'sticky'
 

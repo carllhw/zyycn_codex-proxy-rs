@@ -7,7 +7,7 @@ const props = defineProps<{ disabled: boolean }>()
 const accountAffinity = defineModel<AccountAffinity | ''>({ required: true })
 const affinityTtlHours = defineModel<string>('ttlHours', { required: true })
 const maxAccountRotations = defineModel<string>('maxAccountRotations', { required: true })
-const affinityOptions = [{ label: '宽松', value: 'relaxed' }, { label: '严格', value: 'strict' }]
+const affinityOptions = [{ label: '宽松', value: 'relaxed' }, { label: '优先', value: 'preferred' }, { label: '严格', value: 'strict' }]
 </script>
 
 <template>
@@ -22,7 +22,8 @@ const affinityOptions = [{ label: '宽松', value: 'relaxed' }, { label: '严格
               </button>
             </template>
             <div class="max-w-72 space-y-2 px-3 py-2 text-cp-sm leading-relaxed text-cp-text-secondary">
-              <p>宽松：各线程独立绑定账号，子线程优先沿用主账号，可按模型、可用性和并发容量分流</p>
+              <p>宽松：会话内请求直接按调度策略选号，不优先主账号</p>
+              <p>优先：会话内请求优先沿用主账号，繁忙或不可用时临时分流，不改变会话绑定</p>
               <p>严格：同一会话共用账号，子线程等待当前账号，并跟随主线程换号</p>
               <p>重新选号仍遵循当前调度策略</p>
             </div>

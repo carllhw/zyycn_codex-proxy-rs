@@ -213,11 +213,8 @@ impl CodexProvider {
                 clear_request_turn_state(&mut upstream);
             }
         }
-        let session_affinity = derive_codex_session_affinity(
-            &upstream,
-            context.client_api_key_ref(),
-            context.account_selection_policy().openai_account_affinity(),
-        );
+        let session_affinity =
+            derive_codex_session_affinity(&upstream, context.client_api_key_ref());
         let cyber_policy_session_key =
             derive_codex_cyber_policy_session_key(&upstream, context.client_api_key_ref());
         PreparedGenerateRequest {
@@ -385,13 +382,11 @@ impl Provider for CodexProvider {
                     request.payload(),
                     client_api_key_id,
                     "id",
-                    gateway_core::account::AccountAffinity::Strict,
                 ),
                 Operation::GenerateImage(request) => derive_codex_endpoint_session_affinity(
                     request.payload(),
                     client_api_key_id,
                     "session_id",
-                    gateway_core::account::AccountAffinity::Strict,
                 ),
                 _ => None,
             };
@@ -419,12 +414,8 @@ impl Provider for CodexProvider {
         let reasoning_effort = semantics.reasoning_effort.clone();
         let previous_response_id = encoded.previous_response_id();
         let continuation = ContinuationRequestObservation {
-            affinity_hash: derive_codex_session_affinity(
-                &encoded,
-                client_api_key_id,
-                gateway_core::account::AccountAffinity::Strict,
-            )
-            .map(|affinity| affinity.persistence_hash().to_owned()),
+            affinity_hash: derive_codex_session_affinity(&encoded, client_api_key_id)
+                .map(|affinity| affinity.persistence_hash().to_owned()),
             previous_response_id_hash: previous_response_id.map(|response_id| {
                 derive_previous_response_id_hash(response_id, client_api_key_id)
             }),
@@ -723,11 +714,6 @@ impl CodexProvider {
             generate.protocol_payload().context(),
             &middleware_headers,
         );
-        upstream.client_account_thread_id = crate::credential::account_thread_with_headers(
-            generate.protocol_payload().body(),
-            generate.protocol_payload().context(),
-            &middleware_headers,
-        );
         let processed = self.prepare_generate_request(&generate, upstream, &context);
         let mut upstream_request = processed.upstream;
         let session_transport_key =
@@ -742,9 +728,7 @@ impl CodexProvider {
                     &mut lease,
                     session_affinity.as_ref(),
                     cyber_policy_session_key.as_ref(),
-                    context
-                        .account_selection_policy()
-                        .openai_session_affinity_ttl(),
+                    context.account_selection_policy(),
                 )
                 .await
                 .map_err(map_selection_error)?;

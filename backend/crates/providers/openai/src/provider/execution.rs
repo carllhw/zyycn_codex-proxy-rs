@@ -63,7 +63,6 @@ impl CodexProvider {
             context.client_api_key_ref(),
             "session_id",
             headers,
-            context.account_selection_policy().openai_account_affinity(),
         );
         let turn = headers
             .iter()
@@ -79,10 +78,7 @@ impl CodexProvider {
             turn.and_then(|turn| derive_turn_alias(turn, context.client_api_key_ref()))
         {
             self.selector
-                .session_for_turn(
-                    &alias,
-                    context.account_selection_policy().openai_account_affinity(),
-                )
+                .session_for_turn(&alias)
                 .await
                 .map_err(map_selection_error)?
         } else {
@@ -91,9 +87,7 @@ impl CodexProvider {
         if explicit
             .as_ref()
             .zip(inferred.as_ref())
-            .is_some_and(|(explicit, inferred)| {
-                explicit.key() != inferred.key() && Some(explicit.key()) != inferred.root_key()
-            })
+            .is_some_and(|(explicit, inferred)| explicit.key() != inferred.key())
         {
             return Err(provider_error(
                 ProviderErrorKind::InvalidRequest,
@@ -134,7 +128,6 @@ impl CodexProvider {
             search.payload(),
             context.client_api_key_ref(),
             "id",
-            context.account_selection_policy().openai_account_affinity(),
         );
         let response_origin = self.search_url.clone();
         self.execute_raw_json_endpoint(
@@ -221,7 +214,6 @@ impl CodexProvider {
                 context.client_api_key_ref(),
                 "id",
                 &middleware_headers,
-                context.account_selection_policy().openai_account_affinity(),
             ),
             _ => None,
         };
@@ -231,9 +223,7 @@ impl CodexProvider {
                     &mut lease,
                     affinity.as_ref(),
                     None,
-                    context
-                        .account_selection_policy()
-                        .openai_session_affinity_ttl(),
+                    context.account_selection_policy(),
                 )
                 .await
                 .map_err(map_selection_error)?;

@@ -243,12 +243,8 @@ impl CodexProvider {
                 UpstreamSendState::NotSent,
             )
         })?;
-        let session_affinity = derive_live_session_affinity(
-            &request,
-            &[],
-            context.client_api_key_ref(),
-            context.account_selection_policy().openai_account_affinity(),
-        );
+        let session_affinity =
+            derive_live_session_affinity(&request, &[], context.client_api_key_ref());
         let selection_started_at = Instant::now();
         let lease = self
             .selector
@@ -321,7 +317,6 @@ impl CodexProvider {
             &request,
             &middleware_headers,
             context.client_api_key_ref(),
-            context.account_selection_policy().openai_account_affinity(),
         );
         if !context.is_diagnostic_required_account() {
             self.selector
@@ -329,9 +324,7 @@ impl CodexProvider {
                     &mut lease,
                     session_affinity.as_ref(),
                     None,
-                    context
-                        .account_selection_policy()
-                        .openai_session_affinity_ttl(),
+                    context.account_selection_policy(),
                 )
                 .await
                 .map_err(map_selection_error)?;

@@ -1,4 +1,4 @@
-//! 验证最终请求身份、官方图片轮次关联与共享账号迁移
+//! 验证会话主账号偏好、严格绑定、最终请求身份与轮次关联
 
 use super::*;
 
@@ -585,28 +585,37 @@ async fn old_native_continuation_cannot_restore_the_pre_migration_account() {
     assert!(server.received_requests().await.unwrap().is_empty());
 }
 
-fn relaxed_context(request_id: &str, scope: Arc<FrozenAccountScope>) -> AttemptContext {
-    relaxed_context_with_ttl(request_id, scope, Duration::from_secs(24 * 3600))
+fn preferred_context(request_id: &str, scope: Arc<FrozenAccountScope>) -> AttemptContext {
+    preferred_context_with_ttl(request_id, scope, Duration::from_secs(24 * 3600))
 }
 
-fn relaxed_context_with_ttl(
+fn preferred_context_with_ttl(
     request_id: &str,
     scope: Arc<FrozenAccountScope>,
     ttl: Duration,
+) -> AttemptContext {
+    preferred_context_with_policy(
+        request_id,
+        scope,
+        account_policy()
+            .with_openai_account_affinity(gateway_core::account::AccountAffinity::Preferred)
+            .with_openai_session_affinity_ttl(ttl),
+    )
+}
+
+fn preferred_context_with_policy(
+    request_id: &str,
+    scope: Arc<FrozenAccountScope>,
+    policy: gateway_core::account::AccountSelectionPolicy,
 ) -> AttemptContext {
     AttemptContext::new(
         RequestAttemptContext::new(
             ModelRequestId::new(request_id).unwrap(),
             ClientApiKeyId::new("key_openai_contract").unwrap(),
         ),
-        NonZeroU32::new(1).unwrap(),
+        NonZeroU32::MIN,
         SystemTime::now() + Duration::from_secs(5),
-        gateway_core::account::AccountSelectionPolicy::new(
-            gateway_core::account::RotationStrategy::Smart,
-            NonZeroU32::new(2).unwrap(),
-            Duration::ZERO,
-        )
-        .with_openai_session_affinity_ttl(ttl),
+        policy,
         AccountAttemptContext::new(BTreeSet::new(), None, None).with_account_scope(scope),
         None,
         CancellationToken::new(),
@@ -614,114 +623,141 @@ fn relaxed_context_with_ttl(
 }
 
 #[tokio::test]
-async fn relaxed_children_keep_independent_bindings_across_busy_accounts_and_root_migration() {
-    let store = Arc::new(MemoryAccountStore::default());
-    create_account(&store, "acct_subagent_a").await;
-    let affinity = Arc::new(MemorySessionAffinity::default());
-    let leases = Arc::new(TestLeaseCoordinator::default());
-    let server = MockServer::start().await;
-    let provider = provider_with_affinity_and_base_url_and_leases(
-        &store,
-        affinity.clone(),
-        server.uri(),
-        leases.clone(),
-    );
-    let select = |thread: &'static str| {
-        let provider = provider.clone();
-        async move {
-            provider
-                .execute(
-                    planned_request(
-                        "openai",
-                        Operation::Generate(generate_with_session_context(
-                            "root",
-                            Some(thread),
-                            None,
-                        )),
-                    ),
-                    relaxed_context("req_relaxed", contract_account_scope()),
-                )
-                .await
-                .unwrap()
-        }
+async fn relaxed_and_preferred_session_requests_apply_distinct_scheduling_policies() {
+    use gateway_core::account::{AccountAffinity, SmartSchedulingConfig};
+    use gateway_core::concurrency::ConcurrencyQueuePolicy;
+    use gateway_core::operation::{
+        ProviderHttpHeader, ProviderHttpMethod, ProviderHttpRequest, RawHttpPayload,
     };
-    let root = select("root").await;
-    create_account(&store, "acct_subagent_b").await;
-    store.set_scheduling("acct_subagent_b", None, AccountWeight::new(100).unwrap());
-    let sibling = select("sibling").await;
-    assert_eq!(
-        sibling.metadata().provider_account_id().as_str(),
-        "acct_subagent_a",
-        "new child inherits root preference over weight"
-    );
-    drop(sibling);
-    leases
-        .busy_accounts
-        .lock()
-        .unwrap()
-        .insert(ProviderAccountId::new("acct_subagent_a").unwrap());
-    let child = select("child").await;
-    assert_eq!(
-        child.metadata().provider_account_id().as_str(),
-        "acct_subagent_b"
-    );
-    drop(child);
-    leases.busy_accounts.lock().unwrap().clear();
-    for (thread, expected) in [
-        ("root", "acct_subagent_a"),
-        ("sibling", "acct_subagent_a"),
-        ("child", "acct_subagent_b"),
+
+    for (mode, max_waiting) in [
+        (AccountAffinity::Relaxed, 0),
+        (AccountAffinity::Relaxed, 10),
+        (AccountAffinity::Preferred, 0),
+        (AccountAffinity::Preferred, 10),
     ] {
-        assert_eq!(
-            select(thread)
-                .await
-                .metadata()
-                .provider_account_id()
-                .as_str(),
-            expected
+        let store = Arc::new(MemoryAccountStore::default());
+        create_account(&store, "acct_subagent_a").await;
+        let affinity = Arc::new(MemorySessionAffinity::default());
+        let leases = Arc::new(TestLeaseCoordinator::default());
+        let server = MockServer::start().await;
+        let provider = provider_with_affinity_and_base_url_and_leases(
+            &store,
+            affinity.clone(),
+            server.uri(),
+            leases.clone(),
         );
+        let policy = account_policy()
+            .with_openai_account_affinity(mode)
+            .with_smart_scheduling(SmartSchedulingConfig::new([1.0; 6], true).unwrap())
+            .with_queue(ConcurrencyQueuePolicy {
+                max_waiting,
+                timeout: Duration::from_secs(1),
+            });
+        let select = |operation| {
+            let request = if matches!(operation, Operation::Generate(_)) {
+                planned_request("openai", operation)
+            } else if matches!(operation, Operation::ProviderHttp(_)) {
+                let provider_kind = ProviderKind::new("openai").unwrap();
+                let snapshot = RuntimeSnapshot::new(
+                    ConfigRevision::new(1).unwrap(),
+                    SettingsValues::new(2, 10, "smart", BTreeMap::new(), None, None),
+                    vec![provider_kind.clone()],
+                    Vec::new(),
+                    Vec::new(),
+                )
+                .unwrap();
+                let plan = snapshot
+                    .plan_provider_endpoint(
+                        &provider_kind,
+                        Some(&UpstreamModelId::new("gpt-live-1-codex").unwrap()),
+                        &operation,
+                        contract_account_scope(),
+                        &RoutingContext::default(),
+                    )
+                    .unwrap();
+                ProviderRequest::new(operation, plan.candidates()[0].clone())
+            } else {
+                planned_provider_endpoint_request("openai", operation)
+            };
+            provider.clone().execute(
+                request,
+                preferred_context_with_policy(
+                    "req_preferred_session",
+                    contract_account_scope(),
+                    policy,
+                ),
+            )
+        };
+        drop(select(turn_request("root", "shared-turn")).await.unwrap());
+        create_account(&store, "acct_subagent_b").await;
+        store.set_scheduling("acct_subagent_b", None, AccountWeight::new(100).unwrap());
+        // 后备池中另有低权重账号，验证分流继续遵循配置的调度策略
+        create_account(&store, "acct_provider_contract").await;
+        for operation in [
+            turn_request("root", "next-turn"),
+            Operation::Generate(generate_with_session_context("root", Some("child"), None)),
+            Operation::Generate(generate_with_session_context("root", Some("sibling"), None)),
+            image_for_turn(ImageRequestKind::Generation, "shared-turn"),
+            image_for_turn(ImageRequestKind::Edit, "shared-turn"),
+            Operation::ProviderHttp(
+                ProviderHttpRequest::new(
+                    "realtime-calls",
+                    ProviderHttpMethod::Post,
+                    None,
+                    vec![
+                        ProviderHttpHeader::new("session-id", Bytes::from_static(b"root")),
+                        ProviderHttpHeader::new("thread-id", Bytes::from_static(b"live-child")),
+                    ],
+                    RawHttpPayload::new(
+                        "openai",
+                        Bytes::from_static(
+                            br#"{"sdp":"v=0","session":{"model":"gpt-live-1-codex"}}"#,
+                        ),
+                    )
+                    .unwrap(),
+                )
+                .unwrap(),
+            ),
+            Operation::Search(StandaloneSearchRequest::from_raw_json(
+                RawJsonPayload::new(
+                    "openai",
+                    Bytes::from_static(br#"{"id":"root","commands":{"search_query":[]}}"#),
+                )
+                .unwrap(),
+            )),
+        ] {
+            for busy in [false, true, false] {
+                if busy {
+                    leases
+                        .busy_accounts
+                        .lock()
+                        .unwrap()
+                        .insert(ProviderAccountId::new("acct_subagent_a").unwrap());
+                } else {
+                    leases.busy_accounts.lock().unwrap().clear();
+                }
+                let stream =
+                    tokio::time::timeout(Duration::from_millis(500), select(operation.clone()))
+                        .await
+                        .expect("an idle fallback must be admitted without waiting for the primary")
+                        .unwrap();
+                assert_eq!(
+                    stream.metadata().provider_account_id().as_str(),
+                    if busy || mode == AccountAffinity::Relaxed {
+                        "acct_subagent_b"
+                    } else {
+                        "acct_subagent_a"
+                    }
+                );
+            }
+        }
+        assert_eq!(affinity.binding_count(), 1);
     }
-    leases
-        .busy_accounts
-        .lock()
-        .unwrap()
-        .insert(ProviderAccountId::new("acct_subagent_a").unwrap());
-    assert_eq!(
-        select("root")
-            .await
-            .metadata()
-            .provider_account_id()
-            .as_str(),
-        "acct_subagent_b"
-    );
-    leases.busy_accounts.lock().unwrap().clear();
-    assert_eq!(
-        select("sibling")
-            .await
-            .metadata()
-            .provider_account_id()
-            .as_str(),
-        "acct_subagent_a",
-        "root migration cannot move an existing child"
-    );
-    assert_eq!(
-        select("new-sibling")
-            .await
-            .metadata()
-            .provider_account_id()
-            .as_str(),
-        "acct_subagent_b"
-    );
-    assert_eq!(
-        root.metadata().provider_account_id().as_str(),
-        "acct_subagent_a",
-        "the admitted root lease stays on its original account"
-    );
-    assert_eq!(affinity.binding_count(), 4);
 }
 
 #[tokio::test]
-async fn relaxed_child_can_claim_without_a_root_and_model_access_can_split_accounts() {
+async fn preferred_child_can_claim_without_a_root_and_model_access_can_split_accounts() {
     use gateway_core::account::{AccountModelAccess, AccountModelAccessMode};
     let store = Arc::new(MemoryAccountStore::default());
     create_account(&store, "acct_subagent_a").await;
@@ -734,7 +770,7 @@ async fn relaxed_child_can_claim_without_a_root_and_model_access_can_split_accou
                 Operation::Generate(generate_with_session_context("root", Some(thread), None)),
                 model,
             ),
-            relaxed_context("req_relaxed_model", scope),
+            preferred_context("req_preferred_model", scope),
         )
     };
     drop(
@@ -745,7 +781,7 @@ async fn relaxed_child_can_claim_without_a_root_and_model_access_can_split_accou
     assert_eq!(
         affinity.binding_count(),
         1,
-        "early child must not claim the root binding"
+        "the first session request claims the shared primary"
     );
     drop(
         select("root", "gpt-5.4", contract_account_scope())
@@ -795,11 +831,11 @@ async fn relaxed_child_can_claim_without_a_root_and_model_access_can_split_accou
             .as_str(),
         "acct_subagent_a"
     );
-    assert_eq!(affinity.binding_count(), 3);
+    assert_eq!(affinity.binding_count(), 1);
 }
 
 #[tokio::test]
-async fn relaxed_image_turn_follows_child_binding_and_accepts_matching_root_identity() {
+async fn preferred_image_turn_prefers_the_session_primary_and_accepts_matching_root_identity() {
     let store = Arc::new(MemoryAccountStore::default());
     create_account(&store, "acct_subagent_a").await;
     let affinity = Arc::new(MemorySessionAffinity::default());
@@ -816,7 +852,7 @@ async fn relaxed_image_turn_follows_child_binding_and_accepts_matching_root_iden
             .clone()
             .execute(
                 planned_request("openai", turn_request("root", "root-turn")),
-                relaxed_context("req_relaxed_root", contract_account_scope()),
+                preferred_context("req_preferred_root", contract_account_scope()),
             )
             .await
             .unwrap(),
@@ -835,7 +871,7 @@ async fn relaxed_image_turn_follows_child_binding_and_accepts_matching_root_iden
             .clone()
             .execute(
                 planned_request("openai", child),
-                relaxed_context("req_relaxed_child", contract_account_scope()),
+                preferred_context("req_preferred_child", contract_account_scope()),
             )
             .await
             .unwrap(),
@@ -859,21 +895,21 @@ async fn relaxed_image_turn_follows_child_binding_and_accepts_matching_root_iden
             .clone()
             .execute(
                 planned_provider_endpoint_request("openai", image),
-                relaxed_context("req_relaxed_image", contract_account_scope()),
+                preferred_context("req_preferred_image", contract_account_scope()),
             )
             .await
             .unwrap();
         assert_eq!(
             stream.metadata().provider_account_id().as_str(),
-            "acct_subagent_b"
+            "acct_subagent_a"
         );
     }
-    // 新请求切到严格模式后，旧子线程轮次必须跟随根绑定；再切回宽松仍保留子绑定
+    // 轮次只关联会话身份，模式切换不能恢复一次临时分流的账号
     for strict in [true, false] {
         let attempt = if strict {
             context("req_strict_old_turn", CancellationToken::new())
         } else {
-            relaxed_context("req_relaxed_old_turn", contract_account_scope())
+            preferred_context("req_preferred_old_turn", contract_account_scope())
         };
         let stream = provider
             .clone()
@@ -888,11 +924,7 @@ async fn relaxed_image_turn_follows_child_binding_and_accepts_matching_root_iden
             .unwrap();
         assert_eq!(
             stream.metadata().provider_account_id().as_str(),
-            if strict {
-                "acct_subagent_a"
-            } else {
-                "acct_subagent_b"
-            }
+            "acct_subagent_a"
         );
     }
 }
@@ -911,7 +943,7 @@ async fn configured_ttl_renews_binding_and_image_alias_only_at_successful_admiss
             .clone()
             .execute(
                 planned_request("openai", turn_request("root", "ttl-turn")),
-                relaxed_context_with_ttl("req_ttl_root", contract_account_scope(), ttl),
+                preferred_context_with_ttl("req_ttl_root", contract_account_scope(), ttl),
             )
             .await
             .unwrap();
@@ -932,7 +964,7 @@ async fn configured_ttl_renews_binding_and_image_alias_only_at_successful_admiss
                     "openai",
                     image_for_turn(ImageRequestKind::Generation, "ttl-turn"),
                 ),
-                relaxed_context_with_ttl("req_ttl_image", contract_account_scope(), week),
+                preferred_context_with_ttl("req_ttl_image", contract_account_scope(), week),
             )
             .await
             .unwrap(),
@@ -942,7 +974,7 @@ async fn configured_ttl_renews_binding_and_image_alias_only_at_successful_admiss
 }
 
 #[tokio::test]
-async fn relaxed_final_thread_rewrite_cannot_use_another_threads_account() {
+async fn preferred_final_thread_rewrite_within_the_session_preserves_the_primary() {
     let store = Arc::new(MemoryAccountStore::default());
     create_account(&store, "acct_subagent_a").await;
     let affinity = Arc::new(MemorySessionAffinity::default());
@@ -959,7 +991,7 @@ async fn relaxed_final_thread_rewrite_cannot_use_another_threads_account() {
             .clone()
             .execute(
                 request("root"),
-                relaxed_context("req_seed_root", contract_account_scope()),
+                preferred_context("req_seed_root", contract_account_scope()),
             )
             .await
             .unwrap(),
@@ -972,7 +1004,7 @@ async fn relaxed_final_thread_rewrite_cannot_use_another_threads_account() {
             .clone()
             .execute(
                 request("child"),
-                relaxed_context("req_seed_child", contract_account_scope()),
+                preferred_context("req_seed_child", contract_account_scope()),
             )
             .await
             .unwrap(),
@@ -1001,17 +1033,373 @@ async fn relaxed_final_thread_rewrite_cannot_use_another_threads_account() {
         NonZeroU32::MIN,
         SystemTime::now() + Duration::from_secs(5),
         account_policy()
-            .with_openai_account_affinity(gateway_core::account::AccountAffinity::Relaxed),
+            .with_openai_account_affinity(gateway_core::account::AccountAffinity::Preferred),
         AccountAttemptContext::new(BTreeSet::new(), None, None)
             .with_account_scope(contract_account_scope()),
         None,
         CancellationToken::new(),
     );
-    let error = provider
-        .execute(request("root"), attempt)
-        .await
-        .err()
-        .expect("thread owner mismatch");
-    assert!(error.retry_is_prohibited());
+    let stream = provider.execute(request("root"), attempt).await.unwrap();
+    assert_eq!(
+        stream.metadata().provider_account_id().as_str(),
+        "acct_subagent_a"
+    );
     assert!(server.received_requests().await.unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn preferred_spillover_uses_selected_credentials_on_the_wire() {
+    let store = Arc::new(MemoryAccountStore::default());
+    create_account(&store, "acct_subagent_a").await;
+    let affinity = Arc::new(MemorySessionAffinity::default());
+    let leases = Arc::new(TestLeaseCoordinator::default());
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/codex/responses"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("content-type", "text/event-stream")
+                .set_body_string(CAPTURE_COMPLETED_SSE),
+        )
+        .expect(3)
+        .mount(&server)
+        .await;
+    let provider = provider_with_affinity_and_base_url_and_leases(
+        &store,
+        affinity.clone(),
+        server.uri(),
+        leases.clone(),
+    );
+    for (turn, busy) in [("first", false), ("spillover", true), ("recovered", false)] {
+        if busy {
+            create_account(&store, "acct_subagent_b").await;
+            leases
+                .busy_accounts
+                .lock()
+                .unwrap()
+                .insert(ProviderAccountId::new("acct_subagent_a").unwrap());
+        } else {
+            leases.busy_accounts.lock().unwrap().clear();
+        }
+        let mut stream = provider
+            .clone()
+            .execute(
+                planned_request("openai", turn_request("root", turn)),
+                preferred_context("req_preferred_wire", contract_account_scope()),
+            )
+            .await
+            .unwrap();
+        while let Some(event) = stream.next().await {
+            event.unwrap();
+        }
+    }
+    let sent = server.received_requests().await.unwrap();
+    let accounts = sent
+        .iter()
+        .map(|request| request.headers["chatgpt-account-id"].to_str().unwrap())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        accounts,
+        [
+            "chatgpt-acct_subagent_a",
+            "chatgpt-acct_subagent_b",
+            "chatgpt-acct_subagent_a"
+        ]
+    );
+    assert_eq!(affinity.binding_count(), 1);
+    server.verify().await;
+}
+
+#[tokio::test]
+async fn preferred_unavailable_primary_can_recover_without_losing_its_binding() {
+    use gateway_core::account::{
+        AccountAffinity, AccountRuntimeSignals, AccountSelectionPolicy, RotationStrategy,
+    };
+    use gateway_core::concurrency::ConcurrencyQueuePolicy;
+
+    let store = Arc::new(MemoryAccountStore::default());
+    create_account(&store, "acct_subagent_a").await;
+    let leases = Arc::new(TestLeaseCoordinator::default());
+    let server = MockServer::start().await;
+    let provider = provider_with_affinity_and_base_url_and_leases(
+        &store,
+        Arc::new(MemorySessionAffinity::default()),
+        server.uri(),
+        leases.clone(),
+    );
+    let policy = AccountSelectionPolicy::new(
+        RotationStrategy::Smart,
+        NonZeroU32::new(2).unwrap(),
+        Duration::from_secs(30),
+    )
+    .with_openai_account_affinity(AccountAffinity::Preferred)
+    .with_queue(ConcurrencyQueuePolicy {
+        max_waiting: 10,
+        timeout: Duration::from_secs(1),
+    });
+    let select = || {
+        provider.clone().execute(
+            planned_request("openai", turn_request("root", "availability-turn")),
+            preferred_context_with_policy(
+                "req_primary_availability",
+                contract_account_scope(),
+                policy,
+            ),
+        )
+    };
+    drop(select().await.unwrap());
+    create_account(&store, "acct_subagent_b").await;
+    let primary = ProviderAccountId::new("acct_subagent_a").unwrap();
+    for reason in ["concurrency", "interval", "disabled", "quota"] {
+        let mut signals = AccountRuntimeSignals {
+            in_flight: 0,
+            last_started_at: None,
+            quota_reset_at: None,
+            quota_remaining_rank: None,
+            cooldown: None,
+            failure_rate_basis_points: None,
+            first_output_latency_ms: None,
+        };
+        match reason {
+            "concurrency" => signals.in_flight = 2,
+            "interval" => signals.last_started_at = Some(SystemTime::now()),
+            "disabled" => {
+                store.set_enabled(&primary, false).await.unwrap();
+            }
+            "quota" => {
+                store
+                    .apply_quota_access(QuotaAccessChange {
+                        account_id: primary.clone(),
+                        expected_revision: store.account(primary.as_str()).unwrap().revision(),
+                        state: QuotaState::exhausted(
+                            QuotaEvidence::UsageLimitReached,
+                            SystemTime::now(),
+                            None,
+                        ),
+                    })
+                    .await
+                    .unwrap();
+            }
+            _ => unreachable!(),
+        }
+        leases
+            .signals
+            .lock()
+            .unwrap()
+            .insert(primary.clone(), signals);
+        let fallback = tokio::time::timeout(Duration::from_millis(500), select())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            fallback.metadata().provider_account_id().as_str(),
+            "acct_subagent_b",
+            "{reason}"
+        );
+        drop(fallback);
+        leases.signals.lock().unwrap().clear();
+        store.set_enabled(&primary, true).await.unwrap();
+        store
+            .apply_quota_access(QuotaAccessChange {
+                account_id: primary.clone(),
+                expected_revision: store.account(primary.as_str()).unwrap().revision(),
+                state: QuotaState::allowed(SystemTime::now()),
+            })
+            .await
+            .unwrap();
+        assert_eq!(
+            select()
+                .await
+                .unwrap()
+                .metadata()
+                .provider_account_id()
+                .as_str(),
+            "acct_subagent_a",
+            "{reason}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn preferred_native_continuation_keeps_its_actual_owner_without_rebinding_the_primary() {
+    let store = Arc::new(MemoryAccountStore::default());
+    create_account(&store, "acct_subagent_a").await;
+    let provider = provider_with_affinity(&store, Arc::new(MemorySessionAffinity::default()));
+    let request = || planned_request("openai", turn_request("root", "continuation-turn"));
+    drop(
+        provider
+            .clone()
+            .execute(
+                request(),
+                preferred_context("req_primary", contract_account_scope()),
+            )
+            .await
+            .unwrap(),
+    );
+    create_account(&store, "acct_subagent_b").await;
+    for continuation_attempt in [
+        ContinuationAttempt::Native,
+        ContinuationAttempt::ReplayOwner,
+        ContinuationAttempt::ReplayAny,
+    ] {
+        let account = ProviderAccountId::new("acct_subagent_b").unwrap();
+        let provider_kind = ProviderKind::new("openai").unwrap();
+        let client = ClientApiKeyId::new("key_openai_contract").unwrap();
+        let owner = ProviderAccountStateOwner::new(provider_kind.clone(), account.clone());
+        let pin = NativeContinuationPin::new(
+            PreviousResponseId::new("resp_spillover"),
+            PreviousResponseId::new("resp_spillover"),
+            client.clone(),
+            provider_kind,
+            account,
+        )
+        .with_scope(gateway_core::engine::continuation::NativeContinuationScope::Persisted);
+        let attempt = AttemptContext::new(
+            RequestAttemptContext::new(
+                ModelRequestId::new("req_spillover_continuation").unwrap(),
+                client,
+            )
+            .with_request_location(Some(global_request_location())),
+            NonZeroU32::MIN,
+            SystemTime::now() + Duration::from_secs(5),
+            account_policy()
+                .with_openai_account_affinity(gateway_core::account::AccountAffinity::Preferred),
+            AccountAttemptContext::new(BTreeSet::new(), None, Some(owner))
+                .with_account_scope(contract_account_scope()),
+            Some(ContinuationBinding::Pinned(pin)),
+            CancellationToken::new(),
+        )
+        .with_continuation_attempt(continuation_attempt);
+        let result = provider.clone().execute(request(), attempt).await;
+        if continuation_attempt == ContinuationAttempt::ReplayAny {
+            // 仍携带原生句柄的请求不能越过状态归属约束切回主账号
+            assert_eq!(
+                result.err().unwrap().kind(),
+                ProviderErrorKind::ContinuationRecoveryRequired
+            );
+        } else {
+            let stream = result.unwrap();
+            assert_eq!(
+                stream.metadata().provider_account_id().as_str(),
+                "acct_subagent_b"
+            );
+        }
+        assert_eq!(
+            provider
+                .clone()
+                .execute(
+                    request(),
+                    preferred_context("req_after_continuation", contract_account_scope())
+                )
+                .await
+                .unwrap()
+                .metadata()
+                .provider_account_id()
+                .as_str(),
+            "acct_subagent_a"
+        );
+    }
+}
+
+#[tokio::test]
+async fn legacy_thread_turn_alias_resumes_on_the_session_primary_without_rewriting_identity() {
+    use gateway_core::provider_ports::{
+        ProviderSessionAffinityKey, ProviderSessionAffinityPort, ProviderSessionAlias,
+    };
+    use sha2::Digest;
+
+    let store = Arc::new(MemoryAccountStore::default());
+    create_account(&store, "acct_subagent_a").await;
+    let affinity = Arc::new(MemorySessionAffinity::default());
+    let provider = provider_with_affinity(&store, affinity.clone());
+    let client = ClientApiKeyId::new("key_openai_contract").unwrap();
+    let provider_kind = ProviderKind::new("openai").unwrap();
+    let root = turn_request("root", "root-turn");
+    let root_key = ProviderSessionAffinityKey::try_new(
+        provider
+            .request_observation(&root, &client)
+            .continuation
+            .affinity_hash
+            .unwrap(),
+    )
+    .unwrap();
+    drop(
+        provider
+            .clone()
+            .execute(
+                planned_request("openai", root),
+                preferred_context("req_legacy_root", contract_account_scope()),
+            )
+            .await
+            .unwrap(),
+    );
+    create_account(&store, "acct_subagent_b").await;
+    let child_key = ProviderSessionAffinityKey::try_new("legacy-child-binding").unwrap();
+    affinity.seed_binding(
+        &provider_kind,
+        child_key.expose_to_store(),
+        ProviderAccountId::new("acct_subagent_b").unwrap(),
+    );
+    // 持久化轮次键沿用既有哈希合同，模拟升级前的 child → root 关联
+    let turn_key = ProviderSessionAffinityKey::try_new(hex::encode(sha2::Sha256::digest(
+        b"codex-session-affinity-v1\0client-turn\0key_openai_contract\0legacy-turn",
+    )))
+    .unwrap();
+    let legacy = ProviderSessionAlias {
+        session_key: child_key,
+        root_session_key: Some(root_key),
+        follow_only: false,
+    };
+    affinity
+        .bind_alias(
+            &provider_kind,
+            &turn_key,
+            &legacy,
+            Duration::from_secs(3600),
+        )
+        .await
+        .unwrap();
+    let resume = Operation::Generate(GenerateRequest::from_protocol_payload(
+        ProtocolPayload::json_object("openai", json!({"model":"gpt-5.4","input":"resume","client_metadata":{"session_id":"root","thread_id":"child","turn_id":"legacy-turn"}}).as_object().unwrap().clone()).unwrap(),
+    ));
+    let stream = provider
+        .clone()
+        .execute(
+            planned_request("openai", resume),
+            preferred_context("req_legacy_resume", contract_account_scope()),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        stream.metadata().provider_account_id().as_str(),
+        "acct_subagent_a"
+    );
+    drop(stream);
+    for attempt in [
+        preferred_context("req_legacy_image", contract_account_scope()),
+        context("req_legacy_strict_image", CancellationToken::new()),
+    ] {
+        let stream = provider
+            .clone()
+            .execute(
+                planned_provider_endpoint_request(
+                    "openai",
+                    image_for_turn(ImageRequestKind::Generation, "legacy-turn"),
+                ),
+                attempt,
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            stream.metadata().provider_account_id().as_str(),
+            "acct_subagent_a"
+        );
+    }
+    assert_eq!(
+        affinity
+            .load_alias(&provider_kind, &turn_key)
+            .await
+            .unwrap(),
+        Some(legacy)
+    );
 }

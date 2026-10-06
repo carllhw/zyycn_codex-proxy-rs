@@ -52,12 +52,13 @@ pub const MAX_ACCOUNT_ROTATIONS: u32 = 31;
 /// 会话绑定与轮次关联共用的保留时长上限，单位小时
 pub const MAX_SESSION_AFFINITY_TTL_HOURS: u32 = 720;
 
-/// OpenAI 会话账号亲和；具体线程身份由 Provider 解释
+/// OpenAI 会话账号亲和；请求身份和模式行为由 Provider 解释
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AccountAffinity {
-    #[default]
     Relaxed,
+    Preferred,
+    #[default]
     Strict,
 }
 
@@ -66,6 +67,7 @@ impl AccountAffinity {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Relaxed => "relaxed",
+            Self::Preferred => "preferred",
             Self::Strict => "strict",
         }
     }
@@ -74,6 +76,7 @@ impl AccountAffinity {
     pub fn parse(value: &str) -> Option<Self> {
         match value {
             "relaxed" => Some(Self::Relaxed),
+            "preferred" => Some(Self::Preferred),
             "strict" => Some(Self::Strict),
             _ => None,
         }
@@ -107,7 +110,7 @@ impl AccountSelectionPolicy {
             max_concurrent_per_account: max_concurrent_per_account.into(),
             request_interval,
             openai_guardian_reserved_concurrency: 0,
-            openai_account_affinity: AccountAffinity::Relaxed,
+            openai_account_affinity: AccountAffinity::default(),
             max_account_rotations: 3,
             openai_session_affinity_ttl: Duration::from_secs(24 * 3600),
             queue_policy: ConcurrencyQueuePolicy {

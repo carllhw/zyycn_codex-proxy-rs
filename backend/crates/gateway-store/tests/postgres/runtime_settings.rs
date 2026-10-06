@@ -1188,7 +1188,7 @@ async fn account_affinity_upgrade_defaults_and_updates_reach_the_snapshot() {
     let Some(database) = TestDatabase::create_through("account_affinity_upgrade", 22).await else {
         return;
     };
-    sqlx::query("update runtime_settings set rotation_strategy = 'sticky' where id = 1")
+    sqlx::query("update runtime_settings set rotation_strategy = 'sticky', config_revision = config_revision + 1 where id = 1")
         .execute(&database.pool)
         .await
         .unwrap();
@@ -1203,6 +1203,7 @@ async fn account_affinity_upgrade_defaults_and_updates_reach_the_snapshot() {
     assert_eq!(before.values.max_account_rotations, 3);
     assert_eq!(before.values.openai_session_affinity_ttl_hours, 24);
     for (mode, budget, ttl) in [
+        (AccountAffinity::Preferred, 3, 24),
         (AccountAffinity::Strict, 31, 168),
         (AccountAffinity::Relaxed, 0, 720),
     ] {
@@ -1260,4 +1261,44 @@ async fn account_affinity_upgrade_defaults_and_updates_reach_the_snapshot() {
         0
     );
     database.close().await;
+}
+
+#[tokio::test]
+async fn preferred_affinity_migration_defaults_to_strict_and_preserves_saved_modes() {
+    use gateway_core::account::AccountAffinity;
+    let Some(fresh) = TestDatabase::create("affinity_default").await else {
+        return;
+    };
+    let repository = PgRuntimeSettingsRepository::new(fresh.pool.clone());
+    assert_eq!(
+        repository
+            .load_runtime_settings()
+            .await
+            .unwrap()
+            .values
+            .openai_account_affinity,
+        AccountAffinity::Strict
+    );
+    fresh.close().await;
+
+    for mode in [AccountAffinity::Relaxed, AccountAffinity::Strict] {
+        let database = TestDatabase::create_through("affinity_preserve", 23)
+            .await
+            .unwrap();
+        let repository = PgRuntimeSettingsRepository::new(database.pool.clone());
+        let mut update = settings_with_margin(3600);
+        update.values.openai_account_affinity = mode;
+        repository.update_runtime_settings(update).await.unwrap();
+        super::TEST_MIGRATOR.run(&database.pool).await.unwrap();
+        assert_eq!(
+            repository
+                .load_runtime_settings()
+                .await
+                .unwrap()
+                .values
+                .openai_account_affinity,
+            mode
+        );
+        database.close().await;
+    }
 }

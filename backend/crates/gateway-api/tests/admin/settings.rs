@@ -1392,7 +1392,7 @@ async fn guardian_reservation_round_trips_and_rejects_invalid_values() {
 
 #[tokio::test]
 async fn account_affinity_and_rotation_budget_round_trip_and_reject_invalid_values() {
-    for (mode, rotations, ttl) in [("relaxed", 0, 1), ("strict", 31, 720)] {
+    for (mode, rotations, ttl) in [("relaxed", 0, 1), ("preferred", 3, 24), ("strict", 31, 720)] {
         let fixture = AdminTestFixture::new().await;
         fixture.auth.insert_session("valid-session");
         let mut body = update_body();

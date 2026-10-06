@@ -138,7 +138,7 @@ impl SettingsValues {
             max_waiting_per_account: 0,
             concurrency_wait_timeout_seconds: 30,
             openai_guardian_reserved_concurrency: 0,
-            openai_account_affinity: crate::account::AccountAffinity::Relaxed,
+            openai_account_affinity: crate::account::AccountAffinity::default(),
             max_account_rotations: 3,
             openai_session_affinity_ttl_hours: 24,
             responses_max_decompressed_body_bytes: 64 * 1024 * 1024,

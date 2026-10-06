@@ -44,7 +44,6 @@ pub struct CodexResponsesRequest {
     pub client_session_id: Option<String>,
     /// 官方元数据中的逻辑会话身份，独立于缓存路由键
     pub client_account_session_id: Option<String>,
-    pub client_account_thread_id: Option<String>,
     /// 后代线程身份，用于严格模式下只跟随会话账号
     pub client_account_follow_only: bool,
     /// 客户端 thread ID，仅保留在受控本地上下文
@@ -506,7 +505,6 @@ impl CodexResponsesRequest {
             client_conversation_id: None,
             client_session_id: None,
             client_account_session_id: None,
-            client_account_thread_id: None,
             client_account_follow_only: false,
             client_thread_id: None,
             client_request_id: None,

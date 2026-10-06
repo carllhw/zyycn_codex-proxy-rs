@@ -200,21 +200,25 @@ fn affinity_and_rotation_settings_are_validated_without_mutating_the_snapshot() 
     use gateway_core::account::AccountAffinity;
     let original = snapshot(1, "host");
     let facts = serde_json::to_value(original.settings()).unwrap();
-    assert_eq!(facts["openai_account_affinity"], "relaxed");
+    assert_eq!(facts["openai_account_affinity"], "strict");
     assert_eq!(facts["max_account_rotations"], 3);
-    for rotations in [0, 31] {
+    for (mode, rotations) in [
+        (AccountAffinity::Relaxed, 0),
+        (AccountAffinity::Preferred, 3),
+        (AccountAffinity::Strict, 31),
+    ] {
         let changed = original
             .with_settings(
                 &original
                     .settings()
                     .clone()
-                    .with_openai_account_affinity(AccountAffinity::Strict)
+                    .with_openai_account_affinity(mode)
                     .with_max_account_rotations(rotations),
             )
             .unwrap();
         let changed = serde_json::to_value(changed.settings()).unwrap();
         assert_eq!(changed["max_account_rotations"], rotations);
-        assert_eq!(changed["openai_account_affinity"], "strict");
+        assert_eq!(changed["openai_account_affinity"], mode.as_str());
     }
     assert!(
         original
