@@ -4,8 +4,8 @@
     "version": 3,
     "replacement_version": 4,
     "introduced_in": "3.20.0",
-    "last_counted_in": "3.21.0",
-    "remaining_releases": 6,
+    "last_counted_in": "3.21.1",
+    "remaining_releases": 5,
     "migration": "将执行设置和来源中的 disable_fast 改为 fast_mode，使用 default、enabled、disabled 三态，并将 middleware 声明升级到 v4"
   },
   {
@@ -13,8 +13,8 @@
     "version": 1,
     "replacement_version": 2,
     "introduced_in": "3.20.0",
-    "last_counted_in": "3.21.0",
-    "remaining_releases": 6,
+    "last_counted_in": "3.21.1",
+    "remaining_releases": 5,
     "migration": "使用新版 SDK 读取 fast_mode 三态，并将 upstream_adapter 声明升级到 v2"
   }
 ]
