@@ -126,7 +126,6 @@ pub(crate) struct CodexCyberPolicyScope {
 
 pub struct CodexCredentialSelector {
     waiting: ConcurrencyWaitQueue<ProviderAccountId>,
-    binding_waiting: ConcurrencyWaitQueue<ProviderSessionAffinityKey>,
     provider_kind: ProviderKind,
     repository: CodexCredentialRepository,
     leases: Arc<dyn ProviderLeasePort>,
@@ -286,7 +285,6 @@ impl CodexCredentialSelector {
             cookie_policy,
             risk_recovery: Mutex::new(HashMap::new()),
             waiting: ConcurrencyWaitQueue::default(),
-            binding_waiting: ConcurrencyWaitQueue::default(),
             account_feedback,
         }
     }
@@ -349,12 +347,9 @@ impl CodexCredentialSelector {
             && lease.admitted_session.as_ref() != Some(affinity.key())
         {
             let current = self.lookup_session_affinity(affinity.key()).await?;
-            if (policy.openai_account_affinity() == AccountAffinity::Strict
-                && affinity.follow_only()
-                && current.is_none())
-                || current
-                    .as_ref()
-                    .is_some_and(|binding| binding.account_id() != &selected_account)
+            if current
+                .as_ref()
+                .is_some_and(|binding| binding.account_id() != &selected_account)
                 || !self
                     .admit_session(
                         affinity.key(),
@@ -470,7 +465,6 @@ impl CodexCredentialSelector {
                 queue_policy.timeout = Duration::from_secs(30);
             }
         }
-        let mut binding_wait = None;
         // 预留名额只对普通请求生效；Guardian 可用满全部名额，并在账号队列中排在普通请求之前
         let reserve = request
             .attempt
@@ -749,7 +743,8 @@ impl CodexCredentialSelector {
                     }
                 };
                 // 只约束内置调度；插件的显式选号保留原裁决和完整候选
-                let selection = if (follow_only
+                // 首次绑定由任意会话请求原子认领；后代只在已有绑定时限制为跟随当前账号
+                let selection = if ((follow_only && binding.is_some())
                     || (affinity_mode == AccountAffinity::Preferred
                         && affinity.preferred_account().is_some()))
                     && selection.is_none_or(|selection| !selection.is_policy_choice())
@@ -796,25 +791,7 @@ impl CodexCredentialSelector {
                     selection.as_ref(),
                 );
                 let Some(selection) = selection else {
-                    if follow_only
-                        && binding.is_none()
-                        && let Some(key) = binding_key
-                    {
-                        let waiting = binding_wait.get_or_insert_with(|| {
-                            CapacityWait::new(
-                                &self.binding_waiting,
-                                queue_policy,
-                                request.attempt.deadline().at(),
-                                request.attempt.concurrency_wait_budget(),
-                            )
-                            .with_periodic_recheck(true)
-                        });
-                        waiting.wait(std::slice::from_ref(key)).await?;
-                        continue 'capacity;
-                    }
-
                     if follow_only && let Some(binding) = binding.as_ref() {
-                        binding_wait = None;
                         // 冷却、排除、停用或当前账号不在本次范围时也只等待根线程恢复或迁移
                         waiting
                             .wait(std::slice::from_ref(binding.account_id()))

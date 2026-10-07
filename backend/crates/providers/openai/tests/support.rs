@@ -745,6 +745,7 @@ impl ProviderLeasePort for TestLeaseCoordinator {
 
 #[derive(Default)]
 pub(crate) struct MemorySessionAffinity {
+    initial_claim_barrier: Option<Arc<tokio::sync::Barrier>>,
     aliases: Mutex<BTreeMap<(String, String), gateway_core::provider_ports::ProviderSessionAlias>>,
     bindings:
         Mutex<BTreeMap<(String, String), gateway_core::provider_ports::ProviderSessionBinding>>,
@@ -754,6 +755,13 @@ pub(crate) struct MemorySessionAffinity {
 }
 
 impl MemorySessionAffinity {
+    pub(crate) fn with_initial_claim_barrier(participants: usize) -> Self {
+        Self {
+            initial_claim_barrier: Some(Arc::new(tokio::sync::Barrier::new(participants))),
+            ..Self::default()
+        }
+    }
+
     pub(crate) fn alias_ttls(&self) -> Vec<Duration> {
         self.alias_ttls.lock().unwrap().clone()
     }
@@ -845,6 +853,12 @@ impl ProviderSessionAffinityPort for MemorySessionAffinity {
         Result<Option<gateway_core::provider_ports::ProviderSessionBinding>, ProviderStoreError>,
     > {
         Box::pin(async move {
+            // 让并发首请求都读到空绑定，再验证发送前的原子认领冲突
+            if expected.is_none()
+                && let Some(barrier) = &self.initial_claim_barrier
+            {
+                barrier.wait().await;
+            }
             let key = (
                 provider.as_str().to_owned(),
                 key.expose_to_store().to_owned(),
