@@ -784,6 +784,146 @@ async fn child_binding_only_constrains_builtin_scheduling_and_preserves_plugin_c
 }
 
 #[tokio::test]
+async fn connection_local_replay_does_not_claim_or_migrate_a_session() {
+    use gateway_core::engine::continuation::NativeContinuationScope;
+
+    for existing_binding in [true, false] {
+        for scope_from_state in [false, true] {
+            for recovery in [
+                ContinuationAttempt::ReplayOwner,
+                ContinuationAttempt::ReplayAny,
+            ] {
+                let store = Arc::new(MemoryAccountStore::default());
+                create_account(&store, "acct_subagent_a").await;
+                let affinity = Arc::new(MemorySessionAffinity::default());
+                let leases = Arc::new(TestLeaseCoordinator::default());
+                let server = MockServer::start().await;
+                let provider = provider_with_affinity_and_base_url_and_leases(
+                    &store,
+                    affinity.clone(),
+                    server.uri(),
+                    leases.clone(),
+                );
+                if existing_binding {
+                    drop(
+                        provider
+                            .clone()
+                            .execute(
+                                planned_request("openai", turn_request("root", "seed-turn")),
+                                context("req_seed_owner", CancellationToken::new()),
+                            )
+                            .await
+                            .unwrap(),
+                    );
+                }
+                create_account(&store, "acct_subagent_b").await;
+                let renewals = affinity.renewal_ttls();
+                let aliases = affinity.alias_ttls();
+                leases.requests.lock().unwrap().clear();
+
+                let provider_kind = ProviderKind::new("openai").unwrap();
+                let account = ProviderAccountId::new("acct_subagent_a").unwrap();
+                let client = ClientApiKeyId::new("key_openai_contract").unwrap();
+                let owner = ProviderAccountStateOwner::new(provider_kind.clone(), account.clone());
+                let pin = NativeContinuationPin::new(
+                    PreviousResponseId::new("client-previous"),
+                    PreviousResponseId::new("upstream-previous"),
+                    client.clone(),
+                    provider_kind,
+                    account.clone(),
+                )
+                .with_scope(if scope_from_state {
+                    NativeContinuationScope::Persisted
+                } else {
+                    NativeContinuationScope::ConnectionLocal
+                });
+                // 覆盖 Coordinator 排除旧 owner 后改走 ReplayAny 的入口
+                let excluded = if recovery == ContinuationAttempt::ReplayAny {
+                    BTreeSet::from([account])
+                } else {
+                    BTreeSet::new()
+                };
+                let attempt = AttemptContext::new(
+                    RequestAttemptContext::new(
+                        ModelRequestId::new("req_invalid_replay").unwrap(),
+                        client,
+                    ),
+                    NonZeroU32::new(2).unwrap(),
+                    SystemTime::now() + Duration::from_secs(5),
+                    account_policy(),
+                    AccountAttemptContext::new(excluded, None, Some(owner))
+                        .with_account_scope(contract_account_scope()),
+                    Some(ContinuationBinding::Pinned(pin)),
+                    CancellationToken::new(),
+                )
+                .with_continuation_attempt(recovery);
+                let mut generate = generate_with_session_context("root", Some("root"), None);
+                if scope_from_state {
+                    // Provider 保存的状态比通用 pin 更精确，不能只检查 pin 的作用域
+                    generate = generate.with_provider_session_state(ProviderSessionState::new(
+                        "openai", json!({
+                            "account_id":"acct_subagent_a", "conversation_id":"conversation-root",
+                            "continuation_scope":"connection_local"
+                        }).as_object().unwrap().clone(),
+                    ).unwrap());
+                }
+                let error = provider
+                    .clone()
+                    .execute(
+                        planned_request("openai", Operation::Generate(generate)),
+                        attempt,
+                    )
+                    .await
+                    .err()
+                    .expect("connection-local replay requires client recovery");
+                assert_eq!(
+                    error.kind(),
+                    ProviderErrorKind::ContinuationRecoveryRequired
+                );
+                assert_eq!(error.send_state(), UpstreamSendState::NotSent);
+                assert_eq!(
+                    error.continuation_recovery_disposition(),
+                    Some(ContinuationRecoveryDisposition::ClientReplayRequired)
+                );
+                assert_eq!(
+                    affinity.renewal_ttls(),
+                    renewals,
+                    "rejected replay must not write a binding"
+                );
+                assert_eq!(affinity.alias_ttls(), aliases);
+                assert_eq!(affinity.binding_count(), usize::from(existing_binding));
+                assert!(
+                    leases.requests.lock().unwrap().is_empty(),
+                    "rejected replay must not acquire a lease"
+                );
+                if existing_binding {
+                    let child = provider
+                        .clone()
+                        .execute(
+                            planned_request(
+                                "openai",
+                                Operation::Generate(generate_with_session_context(
+                                    "root",
+                                    Some("child"),
+                                    None,
+                                )),
+                            ),
+                            context("req_child_after_rejected_replay", CancellationToken::new()),
+                        )
+                        .await
+                        .unwrap();
+                    assert_eq!(
+                        child.metadata().provider_account_id().as_str(),
+                        "acct_subagent_a"
+                    );
+                }
+                assert!(server.received_requests().await.unwrap().is_empty());
+            }
+        }
+    }
+}
+
+#[tokio::test]
 async fn old_native_continuation_cannot_restore_the_pre_migration_account() {
     let store = Arc::new(MemoryAccountStore::default());
     create_account(&store, "acct_subagent_a").await;

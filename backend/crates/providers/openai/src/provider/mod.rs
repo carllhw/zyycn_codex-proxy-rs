@@ -176,6 +176,54 @@ struct PreparedGenerateRequest {
     cyber_policy_session_key: Option<ProviderSessionAffinityKey>,
 }
 
+impl PreparedGenerateRequest {
+    fn checked_native_continuation_scope(
+        &self,
+        context: &AttemptContext,
+    ) -> Result<PreviousResponseScope, ProviderError> {
+        let pin = context.continuation().and_then(ContinuationBinding::pinned);
+        let scope = match self
+            .previous_session
+            .as_ref()
+            .map(|state| state.continuation_scope)
+        {
+            Some(OpenAiContinuationScope::Persisted) => PreviousResponseScope::Persisted,
+            Some(OpenAiContinuationScope::ConnectionLocal) => {
+                PreviousResponseScope::ConnectionLocal
+            }
+            Some(OpenAiContinuationScope::ReplayRequired) => PreviousResponseScope::ExternalUnknown,
+            None => match pin.map(|pin| pin.scope()) {
+                Some(NativeContinuationScope::Persisted) => PreviousResponseScope::Persisted,
+                Some(NativeContinuationScope::ConnectionLocal) => {
+                    PreviousResponseScope::ConnectionLocal
+                }
+                None => PreviousResponseScope::ExternalUnknown,
+            },
+        };
+        // 已知不能脱离原连接的重放必须在选号前拒绝，避免失败请求先改写共享绑定
+        // Native 仍交给连接池核对原连接；此处不推测连接是否存活或上游状态是否可用
+        if pin.is_some()
+            && matches!(
+                context.continuation_attempt(),
+                ContinuationAttempt::ReplayOwner | ContinuationAttempt::ReplayAny
+            )
+            && scope == PreviousResponseScope::ConnectionLocal
+        {
+            tracing::warn!(
+                request_id = context.request_id().as_str(),
+                attempt_index = context.attempt_index().get(),
+                continuation_scope = "connection_local",
+                continuation_attempt = context.continuation_attempt().as_str(),
+                continuation_recovery_disposition = "client_replay_required",
+                continuation_recovery_action = "stop_proxy_recovery",
+                "OpenAI connection-local continuation replay was rejected before send"
+            );
+            return Err(continuation_replay_required_error("scope_unavailable"));
+        }
+        Ok(scope)
+    }
+}
+
 struct SelectedGenerate {
     lease: CodexCredentialLease,
     account_selection_wait_ms: u64,
@@ -578,6 +626,9 @@ impl Provider for CodexProvider {
         let preselection = upstream
             .filter(|_| adapter.is_none())
             .map(|upstream| self.prepare_generate_request(generate, upstream, &context));
+        if let Some(prepared) = preselection.as_ref() {
+            prepared.checked_native_continuation_scope(&context)?;
+        }
         let (selection_session_affinity, selection_cyber_policy_key, requires_websocket) =
             preselection.map_or((None, None, false), |prepared| {
                 let requires_websocket =
@@ -715,6 +766,7 @@ impl CodexProvider {
             &middleware_headers,
         );
         let processed = self.prepare_generate_request(&generate, upstream, &context);
+        let native_scope = processed.checked_native_continuation_scope(&context)?;
         let mut upstream_request = processed.upstream;
         let session_transport_key =
             derive_codex_transport_key(&upstream_request, context.client_api_key_ref());
@@ -788,42 +840,6 @@ impl CodexProvider {
         {
             match continuation {
                 ContinuationBinding::Pinned(continuation) => {
-                    let native_scope = match previous_session
-                        .as_ref()
-                        .map(|state| state.continuation_scope)
-                    {
-                        Some(OpenAiContinuationScope::Persisted) => {
-                            PreviousResponseScope::Persisted
-                        }
-                        Some(OpenAiContinuationScope::ConnectionLocal) => {
-                            PreviousResponseScope::ConnectionLocal
-                        }
-                        Some(OpenAiContinuationScope::ReplayRequired) => {
-                            PreviousResponseScope::ExternalUnknown
-                        }
-                        None => match continuation.scope() {
-                            NativeContinuationScope::Persisted => PreviousResponseScope::Persisted,
-                            NativeContinuationScope::ConnectionLocal => {
-                                PreviousResponseScope::ConnectionLocal
-                            }
-                        },
-                    };
-                    if matches!(
-                        context.continuation_attempt(),
-                        ContinuationAttempt::ReplayOwner | ContinuationAttempt::ReplayAny
-                    ) && native_scope == PreviousResponseScope::ConnectionLocal
-                    {
-                        tracing::warn!(
-                            request_id = context.request_id().as_str(),
-                            attempt_index = context.attempt_index().get(),
-                            continuation_scope = "connection_local",
-                            continuation_attempt = context.continuation_attempt().as_str(),
-                            continuation_recovery_disposition = "client_replay_required",
-                            continuation_recovery_action = "stop_proxy_recovery",
-                            "OpenAI connection-local continuation replay was rejected before send"
-                        );
-                        return Err(continuation_replay_required_error("scope_unavailable"));
-                    }
                     let previous_response_scope = match context.continuation_attempt() {
                         ContinuationAttempt::Native => native_scope,
                         ContinuationAttempt::ReplayOwner | ContinuationAttempt::ReplayAny => {

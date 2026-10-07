@@ -614,7 +614,9 @@ Continuation 仍受原请求的 Client Key、账号范围、Provider 和发送/�
 - OpenAI 在交付前收到可安全重放的明确额度拒绝时，先隔离账号，再投影 `ClientReplayRequired`；
   丢弃未交付的原错误帧，由客户端提交完整历史开启新链，不把原增量输入交给其他账号。
   真实错误分类、状态码、发送状态和上游诊断保持不变，客户端合同见 [Responses API](api.md#3-openai-数据面与模型目录)
-- OpenAI 按 native → replay owner → replay any 推进，并保留官方 `previous_response_id` 语义
+- OpenAI 按 native → replay owner → replay any 推进，并保留官方 `previous_response_id` 语义；
+  已知为 connection-local 的原生续接进入重放阶段时，在选号前返回 `ClientReplayRequired`，不认领或迁移会话绑定。
+  正常 native 续接仍由连接池核对原连接及 response ID 是否可用
 - xAI 使用客户端提交的完整历史作为重放输入
 - scope 外账号、跨 Key 复用或不明确发送结果均 fail closed
 
