@@ -904,6 +904,7 @@ pub(crate) fn dashboard_view(
         rotation_strategy,
     } = result;
     let domain::DashboardObservation {
+        runtime_slots: _,
         range,
         totals,
         provider_accounts,

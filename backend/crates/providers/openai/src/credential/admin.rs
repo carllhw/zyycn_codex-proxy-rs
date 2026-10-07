@@ -1023,13 +1023,6 @@ impl CodexCredentialAdminService {
     /// OAuth 导入先取得 access token（直接提供或 RT exchange），再按官方
     /// `parse_chatgpt_jwt_claims` 从 ID token/access token 本地投影账号资料
     /// at- PAT 使用 whoami 取得身份，并丢弃不适用的 RT、ID token 和刷新计划
-    pub async fn prepare_import_document(
-        &self,
-        payload: Value,
-    ) -> Result<PreparedCodexAccountImport, CodexCredentialAdminError> {
-        self.prepare_import_document_with_proxy(payload, None).await
-    }
-
     pub async fn prepare_import_document_with_proxy(
         &self,
         payload: Value,

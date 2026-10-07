@@ -3,6 +3,8 @@
 //! 数据库密码只通过 `PGPASSWORD` 环境变量传给子进程，绝不进入命令行参数或日志
 //! 导出以有界内存流式写入暂存文件并计算 SHA-256；取消时终止子进程并清理部分文件
 
+use std::os::unix::fs::OpenOptionsExt as _;
+use std::path::PathBuf;
 use std::process::Stdio;
 use std::sync::Arc;
 
@@ -50,6 +52,18 @@ impl DatabaseDumpPort for PgDumpAdapter {
         let partial = self.staging.partial_path(&request.backup_id);
         let final_path = self.staging.final_path(&request.backup_id);
 
+        if request.cancellation.is_cancelled() {
+            return Err(cancelled());
+        }
+        // 创建和最终改名不跨取消点，避免后台文件操作在清理之后重新留下文件
+        let file = std::fs::OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(true)
+            .mode(0o600)
+            .open(&partial)
+            .map_err(|_| pg_dump_failed("无法创建暂存文件"))?;
+        let _partial_cleanup = PartialArchive(partial.clone());
         let mut child = Command::new("pg_dump")
             .arg("--format=custom")
             .arg("--no-owner")
@@ -60,27 +74,18 @@ impl DatabaseDumpPort for PgDumpAdapter {
             .env("PGCONNECT_TIMEOUT", "10")
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
+            .kill_on_drop(true)
             .spawn()
             .map_err(|_| pg_dump_failed("无法启动 pg_dump 进程"))?;
-        let stdout = child
-            .stdout
-            .take()
-            .ok_or_else(|| pg_dump_failed("无法读取 pg_dump 输出"))?;
-
-        let file = tokio::fs::OpenOptions::new()
-            .create(true)
-            .write(true)
-            .truncate(true)
-            .mode(0o600)
-            .open(&partial)
-            .await
-            .map_err(|_| pg_dump_failed("无法创建暂存文件"))?;
-        let mut writer = tokio::io::BufWriter::new(file);
-        let mut reader = tokio::io::BufReader::new(stdout);
         let mut hasher = Sha256::new();
         let mut size: u64 = 0;
-
-        let copy = async {
+        let export = async {
+            let stdout = child
+                .stdout
+                .take()
+                .ok_or_else(|| pg_dump_failed("无法读取 pg_dump 输出"))?;
+            let mut writer = tokio::io::BufWriter::new(tokio::fs::File::from_std(file));
+            let mut reader = tokio::io::BufReader::new(stdout);
             let mut buffer = vec![0_u8; 64 * 1024];
             loop {
                 let n = reader
@@ -104,36 +109,28 @@ impl DatabaseDumpPort for PgDumpAdapter {
                 .flush()
                 .await
                 .map_err(|_| pg_dump_failed("刷新暂存文件失败"))?;
+            let status = child
+                .wait()
+                .await
+                .map_err(|_| pg_dump_failed("等待 pg_dump 退出失败"))?;
+            if !status.success() {
+                return Err(pg_dump_failed("pg_dump 非零退出"));
+            }
             Ok(())
         };
-
-        let copy_result = tokio::select! {
-            result = copy => result,
-            _ = request.cancellation.cancelled() => {
-                let _ = child.kill().await;
-                Err(cancelled())
-            }
+        let result = tokio::select! {
+            biased;
+            _ = request.cancellation.cancelled() => Err(cancelled()),
+            result = export => result,
         };
-
-        if let Err(error) = copy_result {
-            let _ = child.kill().await;
-            let _ = child.wait().await;
-            self.staging.cleanup(&request.backup_id);
+        if let Err(error) = result {
+            // 正常错误和取消必须等到进程退出；任务被强制丢弃时由 kill_on_drop 接管
+            if let Err(source) = child.kill().await {
+                tracing::warn!(backup_id = %request.backup_id, error = %source, "终止 pg_dump 失败");
+            }
             return Err(error);
         }
-
-        let status = child
-            .wait()
-            .await
-            .map_err(|_| pg_dump_failed("等待 pg_dump 退出失败"))?;
-        if !status.success() {
-            self.staging.cleanup(&request.backup_id);
-            return Err(pg_dump_failed("pg_dump 非零退出"));
-        }
-
-        tokio::fs::rename(&partial, &final_path)
-            .await
-            .map_err(|_| pg_dump_failed("暂存归档改名失败"))?;
+        std::fs::rename(&partial, &final_path).map_err(|_| pg_dump_failed("暂存归档改名失败"))?;
         let sha256 = hex::encode(hasher.finalize());
         Ok(DumpArtifact {
             path: final_path,
@@ -149,7 +146,8 @@ impl DatabaseDumpPort for PgDumpAdapter {
         let path = self.staging.final_path(backup_id);
         let metadata = match tokio::fs::metadata(&path).await {
             Ok(metadata) => metadata,
-            Err(_) => return Ok(None),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(_) => return Err(pg_dump_failed("读取暂存归档信息失败")),
         };
         if !metadata.is_file() {
             return Ok(None);
@@ -164,8 +162,20 @@ impl DatabaseDumpPort for PgDumpAdapter {
     }
 
     async fn cleanup_staging(&self, backup_id: &str) -> Result<(), BackupError> {
-        self.staging.cleanup(backup_id);
-        Ok(())
+        self.staging
+            .cleanup(backup_id)
+            .map_err(|_| pg_dump_failed("清理暂存归档失败"))
+    }
+}
+
+// 只拥有未完成路径；完整归档必须留给恢复流程，不能随导出 future 析构删除
+struct PartialArchive(PathBuf);
+
+impl Drop for PartialArchive {
+    fn drop(&mut self) {
+        if let Err(error) = super::staging::remove_if_exists(&self.0) {
+            tracing::warn!(error = %error, "清理未完成备份归档失败");
+        }
     }
 }
 

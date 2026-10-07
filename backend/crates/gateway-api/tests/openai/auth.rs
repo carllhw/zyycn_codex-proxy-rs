@@ -11,9 +11,7 @@ use axum::http::{
 };
 use futures::future::BoxFuture;
 
-use gateway_api::openai::auth::{
-    ClientApiKeyAuthError, bearer_client_api_key, identify_codex_client,
-};
+use gateway_api::openai::auth::{ClientApiKeyAuthError, identify_codex_client};
 use gateway_core::{
     engine::{
         authentication::ClientAuthenticationRequest,
@@ -118,114 +116,76 @@ async fn plugin_authentication_envelope_contains_only_authorization() {
     assert_eq!(execution.calls.load(Ordering::SeqCst), 1);
 }
 
-#[test]
-fn bearer_client_api_key_should_reject_missing_authorization() {
-    assert_eq!(
-        bearer_client_api_key(&HeaderMap::new()),
-        Err(ClientApiKeyAuthError::MissingAuthorization)
+#[tokio::test]
+async fn native_authentication_checks_the_current_envelope_at_the_http_entry() {
+    let fixture = crate::admin::AdminTestFixture::new().await;
+    let maximum_key = "x".repeat(
+        gateway_core::engine::authentication::MAXIMUM_AUTHORIZATION_BYTES - "Bearer ".len(),
     );
-}
-
-#[test]
-fn actor_authorization_marker_should_not_replace_client_api_key() {
-    let mut headers = HeaderMap::new();
-    headers.insert(
-        "x-openai-actor-authorization",
-        HeaderValue::from_static("proxy-managed"),
-    );
-
-    assert_eq!(
-        bearer_client_api_key(&headers),
-        Err(ClientApiKeyAuthError::MissingAuthorization)
-    );
-}
-
-#[test]
-fn actor_authorization_marker_should_preserve_existing_bearer_authentication() {
-    let mut headers = HeaderMap::new();
-    headers.insert(
-        "x-openai-actor-authorization",
-        HeaderValue::from_static("proxy-managed"),
-    );
-    headers.insert(AUTHORIZATION, HeaderValue::from_static("Bearer sk_client"));
-
-    assert_eq!(bearer_client_api_key(&headers), Ok("sk_client"));
-}
-
-#[test]
-fn bearer_client_api_key_should_reject_non_utf8_authorization() {
-    let mut headers = HeaderMap::new();
-    headers.insert(
-        AUTHORIZATION,
-        HeaderValue::from_bytes(&[0xff]).expect("opaque header value"),
-    );
-
-    assert_eq!(
-        bearer_client_api_key(&headers),
-        Err(ClientApiKeyAuthError::MalformedAuthorization)
-    );
-}
-
-#[test]
-fn bearer_client_api_key_should_require_exact_bearer_scheme() {
-    let mut headers = HeaderMap::new();
-    headers.insert(AUTHORIZATION, HeaderValue::from_static("bearer sk_client"));
-
-    assert_eq!(
-        bearer_client_api_key(&headers),
-        Err(ClientApiKeyAuthError::MalformedAuthorization)
-    );
-}
-
-#[test]
-fn bearer_client_api_key_should_reject_empty_bearer_token() {
-    let mut headers = HeaderMap::new();
-    headers.insert(AUTHORIZATION, HeaderValue::from_static("Bearer    "));
-
-    assert_eq!(
-        bearer_client_api_key(&headers),
-        Err(ClientApiKeyAuthError::MalformedAuthorization)
-    );
-}
-
-#[test]
-fn bearer_client_api_key_should_accept_migrated_formats_without_rewriting() {
-    for key in [
-        "q".to_owned(),
-        "sk-old/key+value=:!@".to_owned(),
-        "x".repeat(8192),
-    ] {
-        let mut headers = HeaderMap::new();
-        headers.insert(
-            AUTHORIZATION,
-            HeaderValue::from_str(&format!("Bearer {key}")).unwrap(),
-        );
-        assert_eq!(bearer_client_api_key(&headers), Ok(key.as_str()));
+    let oversized_key = format!("{maximum_key}x");
+    let mut cases = vec![
+        ("missing", "sk_client", None, StatusCode::UNAUTHORIZED),
+        (
+            "opaque",
+            "sk_client",
+            Some(HeaderValue::from_bytes(&[0xff]).unwrap()),
+            StatusCode::UNAUTHORIZED,
+        ),
+        (
+            "lowercase scheme",
+            "sk_client",
+            Some(HeaderValue::from_static("bearer sk_client")),
+            StatusCode::UNAUTHORIZED,
+        ),
+        (
+            "empty token",
+            "sk_client",
+            Some(HeaderValue::from_static("Bearer    ")),
+            StatusCode::UNAUTHORIZED,
+        ),
+        (
+            "whitespace inside token",
+            "sk_client",
+            Some(HeaderValue::from_static("Bearer key with spaces")),
+            StatusCode::UNAUTHORIZED,
+        ),
+        (
+            "trimmed token",
+            "sk_client",
+            Some(HeaderValue::from_static("Bearer   sk_client   ")),
+            StatusCode::OK,
+        ),
+    ];
+    for key in ["q", "sk-old/key+value=:!@", maximum_key.as_str()] {
+        cases.push((
+            "configured native key",
+            key,
+            Some(HeaderValue::from_str(&format!("Bearer {key}")).unwrap()),
+            StatusCode::OK,
+        ));
     }
-}
+    cases.push((
+        "oversized envelope",
+        oversized_key.as_str(),
+        Some(HeaderValue::from_str(&format!("Bearer {oversized_key}")).unwrap()),
+        StatusCode::UNAUTHORIZED,
+    ));
 
-#[test]
-fn bearer_client_api_key_should_reject_whitespace_inside_tokens() {
-    let mut headers = HeaderMap::new();
-    headers.insert(
-        AUTHORIZATION,
-        HeaderValue::from_static("Bearer key with spaces"),
-    );
-    assert_eq!(
-        bearer_client_api_key(&headers),
-        Err(ClientApiKeyAuthError::InvalidKeyFormat)
-    );
-}
-
-#[test]
-fn bearer_client_api_key_should_return_trimmed_gateway_key() {
-    let mut headers = HeaderMap::new();
-    headers.insert(
-        AUTHORIZATION,
-        HeaderValue::from_static("Bearer   sk_client_secret   "),
-    );
-
-    assert_eq!(bearer_client_api_key(&headers), Ok("sk_client_secret"));
+    for (case, key, authorization, expected) in cases {
+        let app =
+            super::api_router_with_admin_and_client(fixture.services.clone(), key, "key-auth");
+        let mut request = crate::support::empty_request(Method::GET, "/v1/models");
+        // actor 标记既不能代替认证，也不能干扰已有的原生 Key
+        request.headers_mut().insert(
+            "x-openai-actor-authorization",
+            HeaderValue::from_static("proxy-managed"),
+        );
+        if let Some(authorization) = authorization {
+            request.headers_mut().insert(AUTHORIZATION, authorization);
+        }
+        let response = app.oneshot(request).await.unwrap();
+        assert_eq!(response.status(), expected, "{case}");
+    }
 }
 
 #[test]

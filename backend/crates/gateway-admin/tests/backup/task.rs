@@ -55,6 +55,7 @@ async fn backup_task_runs_full_dump_upload_verify_pipeline() {
         .object(&seed.object_key)
         .expect("uploaded object exists");
     assert_eq!(stored.as_slice(), DUMP_CONTENT);
+    assert!(dump.inspect_staging(&seed.id).await.unwrap().is_none());
 }
 
 #[tokio::test]
@@ -258,4 +259,68 @@ async fn timezone_change_rebases_future_cursor_without_running_old_due_backup() 
     assert!(repository.all_records().is_empty());
     task.run_cycle(&CancellationToken::new()).await.unwrap();
     assert!(repository.all_records().is_empty());
+}
+
+#[tokio::test]
+async fn completed_recovery_removes_staging_for_dumping_and_uploading_tasks() {
+    for (status, remote_exists) in [
+        (BackupStatus::Dumping, false),
+        (BackupStatus::Uploading, false),
+        (BackupStatus::Uploading, true),
+    ] {
+        let repository = Arc::new(FakeBackupRepository::new(configured_settings()));
+        let dump = Arc::new(FakeDumpPort::new());
+        let object_store = Arc::new(FakeObjectStore::new());
+        let seed = BackupRecordSeed {
+            id: backup_id("recovery-cleanup"),
+            trigger_kind: BackupTriggerKind::Manual,
+            scheduled_at: None,
+            object_key: "recovery.dump".to_owned(),
+            expires_at: None,
+        };
+        repository.insert_backup_record(seed.clone()).await.unwrap();
+        let artifact = dump
+            .dump(DumpRequest {
+                backup_id: seed.id.clone(),
+                cancellation: CancellationToken::new(),
+            })
+            .await
+            .unwrap();
+        repository.force_status(&seed.id, BackupStatus::Dumping);
+        if status == BackupStatus::Uploading {
+            repository
+                .transition_status(
+                    &seed.id,
+                    gateway_admin::model::backup::BackupStatusTransition::try_new(
+                        BackupStatus::Dumping,
+                        status,
+                    )
+                    .unwrap(),
+                    gateway_admin::ports::backup::StatusTransitionUpdate {
+                        size_bytes: Some(artifact.size_bytes),
+                        sha256: Some(artifact.sha256),
+                        ..Default::default()
+                    },
+                    Utc::now(),
+                )
+                .await
+                .unwrap();
+        }
+        if remote_exists {
+            object_store
+                .objects
+                .lock()
+                .unwrap()
+                .insert(seed.object_key.clone(), DUMP_CONTENT.to_vec());
+        }
+        BackupTask::new(repository.clone(), dump.clone(), object_store)
+            .run_cycle(&CancellationToken::new())
+            .await
+            .unwrap();
+        assert_eq!(repository.all_records()[0].status, BackupStatus::Completed);
+        assert!(
+            dump.inspect_staging(&seed.id).await.unwrap().is_none(),
+            "completed recovery must remove staging: {status:?}"
+        );
+    }
 }

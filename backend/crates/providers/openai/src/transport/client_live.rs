@@ -11,11 +11,10 @@ use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
 
 use super::{
     client::{
-        CodexBackendClient, CodexBackendTransport, CodexClientError, CodexClientResult,
-        CodexClientVisibleUpstreamResponse, CodexRequestContext, CodexTransportMetrics,
-        elapsed_duration_millis, http_version_name, read_error_response_body, retry_after_seconds,
+        CodexBackendClient, CodexClientError, CodexClientResult, CodexRequestContext,
+        CodexTransportMetrics, elapsed_duration_millis, http_version_name, retry_after_seconds,
     },
-    diagnostics::{CodexUpstreamDiagnostics, CodexUpstreamSendPhase},
+    diagnostics::CodexUpstreamDiagnostics,
     endpoints::endpoint_url,
     headers::is_managed_identity_header,
     response_meta,
@@ -130,10 +129,6 @@ impl CodexBackendClient {
                 .iter()
                 .map(|(name, value)| (name.as_str(), value.as_bytes())),
         );
-        let diagnostics = response_meta::diagnostics(Some(status.as_u16()), response.headers());
-        let set_cookie_headers = response_meta::set_cookie_headers(response.headers());
-        let rate_limit_headers = response_meta::rate_limit_headers(response.headers());
-        let retry_after_seconds = retry_after_seconds(response.headers(), None);
         let transport_metrics = CodexTransportMetrics {
             upstream_headers_ms: Some(upstream_headers_ms),
             http_version: Some(http_version),
@@ -141,40 +136,18 @@ impl CodexBackendClient {
         };
 
         if !status.is_success() {
-            let content_type = response
-                .headers()
-                .get(reqwest::header::CONTENT_TYPE)
-                .map(|value| value.as_bytes().to_vec());
-            let client_headers = response_meta::client_headers(response.headers());
-            let raw_body = read_error_response_body(response).await.map_err(|source| {
-                CodexClientError::ErrorBodyRead {
-                    source,
-                    status,
-                    diagnostics: Box::new(diagnostics.clone()),
-                    transport: CodexBackendTransport::HttpJson,
-                    transport_metrics: Box::new(transport_metrics.clone()),
-                }
-            })?;
-            trace.capture("upstream.error.body", &raw_body);
-            let error_body = String::from_utf8_lossy(&raw_body).into_owned();
-            return Err(CodexClientError::Upstream {
-                status,
-                body: error_body,
-                client_response: Some(Box::new(CodexClientVisibleUpstreamResponse::new(
-                    status,
-                    content_type,
-                    client_headers,
-                    raw_body,
-                ))),
-                retry_after_seconds,
-                diagnostics: Box::new(diagnostics),
-                set_cookie_headers,
-                rate_limit_headers,
-                transport: CodexBackendTransport::HttpJson,
-                transport_metrics: Box::new(transport_metrics),
-                send_phase: CodexUpstreamSendPhase::AfterPayload,
-            });
+            return Err(super::client::http_json_upstream_error(
+                response,
+                &trace,
+                transport_metrics,
+            )
+            .await);
         }
+
+        let diagnostics = response_meta::diagnostics(Some(status.as_u16()), response.headers());
+        let set_cookie_headers = response_meta::set_cookie_headers(response.headers());
+        let rate_limit_headers = response_meta::rate_limit_headers(response.headers());
+        let retry_after_seconds = retry_after_seconds(response.headers(), None);
 
         let location = response
             .headers()

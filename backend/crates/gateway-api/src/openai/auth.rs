@@ -84,30 +84,6 @@ impl ClientApiKeyAuthError {
     }
 }
 
-/// 从请求头提取 Bearer Client API key
-///
-/// # Errors
-///
-/// Header 缺失、Bearer 语法错误或 Key 不能作为 HTTP Bearer 值时返回稳定错误
-pub fn bearer_client_api_key(headers: &HeaderMap) -> Result<&str, ClientApiKeyAuthError> {
-    let raw = headers
-        .get(AUTHORIZATION)
-        .ok_or(ClientApiKeyAuthError::MissingAuthorization)?
-        .to_str()
-        .map_err(|_| ClientApiKeyAuthError::MalformedAuthorization)?;
-    let token = raw
-        .strip_prefix("Bearer ")
-        .ok_or(ClientApiKeyAuthError::MalformedAuthorization)?
-        .trim();
-    if token.is_empty() {
-        return Err(ClientApiKeyAuthError::MalformedAuthorization);
-    }
-    if gateway_core::policy::PlaintextClientApiKey::validate(token).is_err() {
-        return Err(ClientApiKeyAuthError::InvalidKeyFormat);
-    }
-    Ok(token)
-}
-
 pub(crate) async fn authenticate_client(
     service: &OpenAiService,
     headers: &HeaderMap,

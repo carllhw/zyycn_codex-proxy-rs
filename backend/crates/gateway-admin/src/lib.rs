@@ -219,7 +219,8 @@ pub struct AdminServices {
     settings: Arc<dyn SettingsService>,
     system: Arc<dyn SystemService>,
     credentials: Arc<CredentialsService>,
-    plugin_accounts: Arc<dyn PluginAccountAccess>,
+    // Runtime 只持有 Weak，这个强引用保障账号端口与 Admin 服务同寿命
+    _plugin_accounts: Arc<dyn PluginAccountAccess>,
     backups: Arc<dyn BackupService>,
     import_tasks: Arc<dyn ImportTasksService>,
 }
@@ -252,12 +253,6 @@ impl AdminServices {
     #[must_use]
     pub fn key_usage(&self) -> &dyn KeyUsageService {
         self.key_usage.as_ref()
-    }
-
-    /// 取得账号服务的共享句柄；后台编排（冻结恢复 worker）需要持有 Arc
-    #[must_use]
-    pub fn accounts_handle(&self) -> Arc<dyn AccountsService> {
-        Arc::clone(&self.accounts)
     }
 
     #[must_use]
@@ -307,12 +302,6 @@ impl AdminServices {
     #[must_use]
     pub fn credentials(&self) -> &CredentialsService {
         self.credentials.as_ref()
-    }
-
-    /// Runtime 只持有该窄端口的 Weak；AdminBundle 保持实际生命周期
-    #[must_use]
-    pub fn plugin_accounts_handle(&self) -> Arc<dyn PluginAccountAccess> {
-        Arc::clone(&self.plugin_accounts)
     }
 
     #[must_use]
@@ -526,7 +515,7 @@ async fn initialize_inner(
         settings,
         system,
         credentials,
-        plugin_accounts,
+        _plugin_accounts: plugin_accounts,
         import_tasks,
         backups,
     };

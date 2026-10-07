@@ -177,6 +177,32 @@ pub struct UsageQuery {
     pub page_size: ObservabilityPageSize,
 }
 
+/// Admin 确定概览的数量、趋势粒度及最近请求筛选，Store 只执行该选择
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DashboardQuery {
+    pub range: TimeRange,
+    pub granularity: Granularity,
+    pub account_limit: u16,
+    pub recent_request_limit: u16,
+    pub recent_request_filter: UsageFilter,
+}
+
+impl DashboardQuery {
+    #[must_use]
+    pub fn new(range: TimeRange) -> Self {
+        Self {
+            range,
+            granularity: Granularity::for_range(range),
+            account_limit: 4,
+            recent_request_limit: 10,
+            recent_request_filter: UsageFilter {
+                outcome: Some(RequestOutcome::Succeeded),
+                ..UsageFilter::default()
+            },
+        }
+    }
+}
+
 /// 运维错误过滤条件
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct OpsErrorFilter {
@@ -477,6 +503,30 @@ pub enum Granularity {
     Day,
 }
 
+impl Granularity {
+    /// 管理趋势按范围选择粒度，费用校验与请求指标必须使用同一策略
+    #[must_use]
+    pub fn for_range(range: TimeRange) -> Self {
+        let seconds = range.end.signed_duration_since(range.start).num_seconds();
+        if seconds <= 2 * 24 * 60 * 60 {
+            Self::FifteenMinutes
+        } else if seconds <= 31 * 24 * 60 * 60 {
+            Self::Hour
+        } else {
+            Self::Day
+        }
+    }
+
+    #[must_use]
+    pub const fn seconds(self) -> i64 {
+        match self {
+            Self::FifteenMinutes => 15 * 60,
+            Self::Hour => 60 * 60,
+            Self::Day => 24 * 60 * 60,
+        }
+    }
+}
+
 /// 一段时间桶内的请求指标
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RequestMetricPoint {
@@ -589,6 +639,7 @@ pub struct DashboardObservation {
     pub range: TimeRange,
     pub totals: DashboardTotals,
     pub provider_accounts: AccountPoolMetrics,
+    pub runtime_slots: Option<DashboardRuntimeSlots>,
     pub trend: Vec<RequestMetricPoint>,
     pub account_usage: Vec<DashboardAccountUsage>,
     pub recent_requests: Vec<UsageListRecord>,

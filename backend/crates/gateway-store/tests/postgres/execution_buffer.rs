@@ -18,9 +18,7 @@ use gateway_core::lifecycle::CancellationToken;
 use gateway_core::routing::{ProviderKind, UpstreamModelId};
 use gateway_core::task::DaemonTask as _;
 use gateway_core::upstream::UpstreamSendState;
-use gateway_store::postgres::{
-    BufferedExecutionStore, ObservabilityRepository as _, PgExecutionStore,
-};
+use gateway_store::postgres::{BufferedExecutionStore, PgExecutionStore};
 use tokio::sync::{Notify, Semaphore};
 
 use super::{

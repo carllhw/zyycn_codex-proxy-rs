@@ -135,18 +135,20 @@ pub(crate) async fn request_metric_series(
     pool: &PgPool,
     range: ObservabilityRange,
     filter: &UsageRecordFilter,
+    granularity: ObservationGranularity,
     timezone: gateway_core::time::DeploymentTimeZone,
 ) -> StoreResult<Vec<RequestMetricPoint>> {
-    request_metric_series_inner(pool, range, filter, true, timezone).await
+    request_metric_series_inner(pool, range, filter, true, granularity, timezone).await
 }
 
 pub(crate) async fn dashboard_request_metric_series(
     pool: &PgPool,
     range: ObservabilityRange,
     filter: &UsageRecordFilter,
+    granularity: ObservationGranularity,
     timezone: gateway_core::time::DeploymentTimeZone,
 ) -> StoreResult<Vec<RequestMetricPoint>> {
-    request_metric_series_inner(pool, range, filter, false, timezone).await
+    request_metric_series_inner(pool, range, filter, false, granularity, timezone).await
 }
 
 async fn request_metric_series_inner(
@@ -154,10 +156,10 @@ async fn request_metric_series_inner(
     range: ObservabilityRange,
     filter: &UsageRecordFilter,
     load_costs: bool,
+    granularity: ObservationGranularity,
     timezone: gateway_core::time::DeploymentTimeZone,
 ) -> StoreResult<Vec<RequestMetricPoint>> {
     filter.validate()?;
-    let granularity = granularity_for(range);
     // 与 request_metrics 同一契约：结果计数覆盖全部请求，用量/延迟/成本
     // 聚合仅统计用量事实
     let fact = completed_usage_fact_predicate("mr");
@@ -291,13 +293,13 @@ pub(crate) fn calculated_usage_billing_facts(
     pool: &PgPool,
     range: ObservabilityRange,
     filter: UsageRecordFilter,
+    granularity: ObservationGranularity,
     timezone: gateway_core::time::DeploymentTimeZone,
 ) -> futures::stream::BoxStream<'_, StoreResult<CalculatedUsageBillingFact>> {
     use futures::TryStreamExt;
 
     Box::pin(async_stream::try_stream! {
         filter.validate()?;
-        let granularity = granularity_for(range);
         let mut query = QueryBuilder::<Postgres>::new("select ");
         push_metric_bucket(&mut query, range, granularity, timezone)?;
         query.push(
@@ -565,9 +567,9 @@ pub(crate) fn request_metrics_from_row(row: &sqlx::postgres::PgRow) -> StoreResu
         cache_write_tokens: unsigned(row, "cache_write_tokens")?,
         reasoning_tokens: unsigned(row, "reasoning_tokens")?,
         total_tokens: unsigned(row, "total_tokens")?,
-        first_token_latency_sum: unsigned(row, "first_token_latency_sum")?,
+        first_token_latency_sum_ms: unsigned(row, "first_token_latency_sum")?,
         first_token_latency_count: unsigned(row, "first_token_latency_count")?,
-        latency_sum: unsigned(row, "latency_sum")?,
+        latency_sum_ms: unsigned(row, "latency_sum")?,
         latency_count: unsigned(row, "latency_count")?,
         max_latency_ms: optional_unsigned(row, "max_latency_ms")?,
         min_latency_ms: optional_unsigned(row, "min_latency_ms")?,
@@ -631,17 +633,6 @@ pub(crate) fn coverage_from_row(row: &sqlx::postgres::PgRow) -> StoreResult<Cost
     })
 }
 
-pub(crate) fn granularity_for(range: ObservabilityRange) -> ObservationGranularity {
-    let seconds = range.end.signed_duration_since(range.start).num_seconds();
-    if seconds <= 2 * 24 * 60 * 60 {
-        ObservationGranularity::FifteenMinutes
-    } else if seconds <= 31 * 24 * 60 * 60 {
-        ObservationGranularity::Hour
-    } else {
-        ObservationGranularity::Day
-    }
-}
-
 pub(crate) fn fill_metric_gaps(
     range: ObservabilityRange,
     granularity: ObservationGranularity,
@@ -701,7 +692,7 @@ fn push_metric_bucket(
     } else {
         query
             .push("date_bin(")
-            .push_bind(granularity.sql_interval())
+            .push_bind(sql_interval(granularity))
             .push("::interval, mr.started_at, timestamptz '1970-01-01 00:00:00+00')");
     }
     Ok(())
@@ -722,4 +713,12 @@ fn calendar_buckets(
             .ok_or_else(|| invalid("invalid next calendar day"))?;
     }
     Ok(result)
+}
+
+fn sql_interval(granularity: ObservationGranularity) -> &'static str {
+    match granularity {
+        ObservationGranularity::FifteenMinutes => "15 minutes",
+        ObservationGranularity::Hour => "1 hour",
+        ObservationGranularity::Day => "1 day",
+    }
 }

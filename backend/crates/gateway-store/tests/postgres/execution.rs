@@ -23,19 +23,13 @@ use gateway_core::routing::{AccountRoutingSnapshot, ConfigRevision, PublicModelI
 use gateway_core::upstream::UpstreamSendState;
 use gateway_store::postgres::{
     AttemptMetrics, ModelRequestAttemptStart, ModelRequestRepository, NewModelRequest,
-    ObservabilityPageSize, ObservabilityRange, ObservabilityRepository, OpsErrorFilter,
-    OpsErrorQuery, PgExecutionStore, UsageRecordFilter, UsageRecordQuery,
+    ObservabilityPageSize, ObservabilityRange, OpsErrorFilter, OpsErrorQuery, PgExecutionStore,
+    UsageRecordFilter, UsageRecordQuery,
 };
 use serde_json::{Value, json};
 use sqlx::PgPool;
 
 use super::{TestDatabase, admin_observability_store, observability_repository};
-
-#[test]
-fn postgres_execution_adapter_implements_core_port() {
-    fn assert_port<T: ExecutionStore>() {}
-    assert_port::<PgExecutionStore>();
-}
 
 #[test]
 fn model_request_rejects_mismatched_client_key_live_id() {
@@ -2009,7 +2003,10 @@ async fn zero_attempt_failure_does_not_enter_successful_usage_or_cost_aggregates
     );
     assert_eq!(after.requests.success_count, before.requests.success_count);
     assert_eq!(after.requests.total_tokens, before.requests.total_tokens);
-    assert_eq!(after.requests.latency_sum, before.requests.latency_sum);
+    assert_eq!(
+        after.requests.latency_sum_ms,
+        before.requests.latency_sum_ms
+    );
     assert_eq!(after.requests.latency_count, before.requests.latency_count);
     assert_eq!(after.attempts, before.attempts);
     let successes = repository
@@ -2048,7 +2045,11 @@ async fn zero_attempt_failure_does_not_enter_successful_usage_or_cost_aggregates
     assert_eq!(page.total, 0);
     assert!(page.items.is_empty());
     let billing: Vec<_> = repository
-        .usage_calculated_billing_facts(zero_attempt_range(&request), filter)
+        .usage_calculated_billing_facts(
+            zero_attempt_range(&request),
+            filter,
+            admin_observability::Granularity::FifteenMinutes,
+        )
         .try_collect()
         .await
         .expect("billing facts");

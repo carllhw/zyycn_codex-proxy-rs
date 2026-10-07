@@ -785,14 +785,12 @@ impl CredentialLeaseRepository for RedisCredentialLeaseRepository {
         for resource_id in resource_ids {
             require_nonempty("credential runtime signal", "resource_id", resource_id)?;
         }
-        let signals = join_all(
-            resource_ids
-                .iter()
-                .cloned()
-                .map(|resource_id| self.load_signal(resource_id)),
-        )
-        .await;
-        signals.into_iter().collect()
+        let mut signals = Vec::with_capacity(resource_ids.len());
+        for ids in resource_ids.chunks(super::ACCOUNT_STATE_READ_CONCURRENCY) {
+            let batch = join_all(ids.iter().cloned().map(|id| self.load_signal(id))).await;
+            signals.extend(batch.into_iter().collect::<StoreResult<Vec<_>>>()?);
+        }
+        Ok(signals)
     }
 
     async fn try_acquire_bounded_lease(

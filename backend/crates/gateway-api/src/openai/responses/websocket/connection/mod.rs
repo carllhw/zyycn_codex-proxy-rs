@@ -260,7 +260,7 @@ impl ResponsesWebSocketConnection {
         middleware: Option<FrozenMiddlewarePlan>,
         headers: Arc<[MiddlewareHeader]>,
     ) -> Self {
-        spawn_with_middleware(
+        spawn_connection(
             socket,
             Arc::<str>::from(connection_id),
             cancellation,
@@ -524,28 +524,8 @@ impl Drop for ResponsesWebSocketConnection {
     }
 }
 
-/// 为自动处理 Ping/Pong 的 WebSocket transport 启动单 owner pump
+/// 为 WebSocket transport 启动包含冻结中间件计划的单 owner pump
 pub fn spawn_connection<S, E>(
-    socket: S,
-    connection_id: Arc<str>,
-    cancellation: CancellationToken,
-    config: ConnectionConfig,
-) -> ResponsesWebSocketConnection
-where
-    S: Stream<Item = Result<Message, E>> + Sink<Message, Error = E> + Unpin + Send + 'static,
-    E: fmt::Display + Send + 'static,
-{
-    spawn_with_middleware(
-        socket,
-        connection_id,
-        cancellation,
-        config,
-        None,
-        Arc::from([]),
-    )
-}
-
-fn spawn_with_middleware<S, E>(
     socket: S,
     connection_id: Arc<str>,
     cancellation: CancellationToken,

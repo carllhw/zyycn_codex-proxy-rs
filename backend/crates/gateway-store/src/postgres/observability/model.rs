@@ -1,14 +1,10 @@
 //! 查询模型、校验与观测端口契约
 
 use super::*;
-use futures::stream::BoxStream;
 
 pub(crate) const MAX_FILTER_BYTES: usize = 256;
 pub(crate) const MAX_SEARCH_BYTES: usize = 512;
 pub(crate) const MAX_ACCOUNT_IDS: usize = 200;
-/// 概览卡只展示最近使用的四个账号；完整账号用量由账号管理页单独查询
-pub(crate) const DASHBOARD_ACCOUNT_LIMIT: u16 = 4;
-pub(crate) const DIAGNOSTIC_LIMIT: i64 = 100;
 pub(crate) const ACCOUNT_USAGE_TIMELINE_HOURS: i64 = 24;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -152,16 +148,7 @@ pub struct OpsErrorQuery {
     pub page_size: ObservabilityPageSize,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum DiagnosticDimension {
-    Provider,
-    Model,
-    Account,
-    ApiKey,
-    Transport,
-    Failure,
-    Status,
-}
+pub use gateway_admin::model::observability::DiagnosticDimension;
 
 pub use gateway_admin::model::observability::CurrencyCost as CurrencyCostTotal;
 
@@ -172,52 +159,7 @@ pub struct CostCoverage {
     pub unavailable_count: u64,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct RequestMetrics {
-    pub request_count: u64,
-    pub success_count: u64,
-    pub failure_count: u64,
-    pub cancelled_count: u64,
-    pub incomplete_count: u64,
-    pub caller_error_count: u64,
-    pub input_tokens: u64,
-    pub output_tokens: u64,
-    pub cached_tokens: u64,
-    pub cache_write_tokens: u64,
-    pub reasoning_tokens: u64,
-    pub total_tokens: u64,
-    pub first_token_latency_sum: u64,
-    pub first_token_latency_count: u64,
-    pub latency_sum: u64,
-    pub latency_count: u64,
-    pub max_latency_ms: Option<u64>,
-    pub min_latency_ms: Option<u64>,
-    /// 分母：`input_tokens is not null`，即上游确实报告过 input token 事实的请求
-    pub cache_eligible_request_count: u64,
-    /// 分子：分母集合中 `cached_tokens > 0` 的请求
-    pub cache_hit_request_count: u64,
-    pub latency_percentiles: LatencyPercentiles,
-    pub first_token_latency_percentiles: LatencyPercentiles,
-    pub admission_decision_count: u64,
-    pub admission_decision_percentiles: LatencyPercentiles,
-    pub account_selection_wait_count: u64,
-    pub account_selection_wait_percentiles: LatencyPercentiles,
-    pub output_throughput_p10: Option<u64>,
-    pub output_throughput_p50: Option<u64>,
-    pub output_throughput_p90: Option<u64>,
-    pub capacity_sample_count: u64,
-    pub capacity_utilization_avg_basis_points: Option<u64>,
-    pub capacity_utilization_p95_basis_points: Option<u64>,
-}
-
-impl RequestMetrics {
-    /// 请求级 cache hit rate；没有 input token 事实时返回 `None`
-    #[must_use]
-    pub fn cache_hit_request_rate(&self) -> Option<f64> {
-        (self.cache_eligible_request_count > 0)
-            .then(|| self.cache_hit_request_count as f64 / self.cache_eligible_request_count as f64)
-    }
-}
+pub use gateway_admin::model::observability::RequestMetrics;
 
 pub use gateway_admin::model::observability::{LatencyPercentiles, PercentileMilliseconds};
 
@@ -235,31 +177,7 @@ pub struct AttemptMetrics {
     pub costs: Vec<CurrencyCostTotal>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ObservationGranularity {
-    FifteenMinutes,
-    Hour,
-    Day,
-}
-
-impl ObservationGranularity {
-    #[must_use]
-    pub const fn seconds(self) -> i64 {
-        match self {
-            Self::FifteenMinutes => 15 * 60,
-            Self::Hour => 60 * 60,
-            Self::Day => 24 * 60 * 60,
-        }
-    }
-
-    pub(crate) const fn sql_interval(self) -> &'static str {
-        match self {
-            Self::FifteenMinutes => "15 minutes",
-            Self::Hour => "1 hour",
-            Self::Day => "1 day",
-        }
-    }
-}
+pub use gateway_admin::model::observability::Granularity as ObservationGranularity;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RequestMetricPoint {
@@ -396,6 +314,7 @@ pub struct DashboardObservation {
     pub range: ObservabilityRange,
     pub totals: DashboardTotals,
     pub provider_accounts: ProviderAccountMetrics,
+    pub runtime_slots: admin_observability::DashboardRuntimeSlots,
     pub trend: Vec<RequestMetricPoint>,
     pub account_usage: Vec<ProviderAccountUsageObservation>,
     pub recent_requests: Vec<UsageListRecord>,
@@ -412,14 +331,7 @@ pub use gateway_admin::model::observability::UsageAttempt as UsageAttemptObserva
 
 pub use gateway_admin::model::observability::UsageDetail as UsageRecordDetail;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ProviderObservation {
-    pub provider_kind: String,
-    pub request_count: u64,
-    pub attempt_count: u64,
-    pub failure_count: u64,
-    pub total_tokens: u64,
-}
+pub use gateway_admin::model::observability::ProviderObservation;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UsageOverview {
@@ -459,44 +371,3 @@ pub struct DiagnosticObservation {
 pub use gateway_admin::model::observability::OpsError as OpsErrorRecord;
 
 pub use gateway_admin::model::observability::OpsErrorPage;
-
-#[async_trait]
-pub trait ObservabilityRepository: Send + Sync {
-    async fn dashboard_summary(
-        &self,
-        range: ObservabilityRange,
-        observed_at: DateTime<Utc>,
-    ) -> StoreResult<DashboardObservation>;
-    async fn dashboard_trend(
-        &self,
-        range: ObservabilityRange,
-    ) -> StoreResult<Vec<RequestMetricPoint>>;
-    async fn usage_trend(
-        &self,
-        range: ObservabilityRange,
-        filter: UsageRecordFilter,
-    ) -> StoreResult<Vec<RequestMetricPoint>>;
-    fn usage_calculated_billing_facts(
-        &self,
-        range: ObservabilityRange,
-        filter: UsageRecordFilter,
-    ) -> BoxStream<'_, StoreResult<CalculatedUsageBillingFact>>;
-    async fn provider_account_usage(
-        &self,
-        query: ProviderAccountUsageQuery,
-    ) -> StoreResult<Vec<ProviderAccountUsageObservation>>;
-    async fn list_usage_records(&self, query: UsageRecordQuery) -> StoreResult<UsageRecordPage>;
-    async fn usage_record_detail(&self, request_id: &str) -> StoreResult<UsageRecordDetail>;
-    async fn usage_summary(
-        &self,
-        range: ObservabilityRange,
-        filter: UsageRecordFilter,
-    ) -> StoreResult<UsageOverview>;
-    async fn usage_diagnostics(
-        &self,
-        range: ObservabilityRange,
-        filter: UsageRecordFilter,
-        dimension: DiagnosticDimension,
-    ) -> StoreResult<DiagnosticsObservation>;
-    async fn list_ops_errors(&self, query: OpsErrorQuery) -> StoreResult<OpsErrorPage>;
-}

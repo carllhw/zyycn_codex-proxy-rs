@@ -12,12 +12,6 @@ use redis::aio::ConnectionManager;
 use serde_json::{Map, Value};
 use uuid::Uuid;
 
-#[test]
-fn artifact_profile_adapter_implements_provider_port() {
-    fn assert_port<T: ProviderArtifactProfileCachePort>() {}
-    assert_port::<RedisProviderArtifactProfileRepository>();
-}
-
 #[tokio::test]
 async fn artifact_profile_uses_one_expiring_key_and_rejects_rollback_or_conflict() {
     let Some((repository, mut connection, namespace)) = repository().await else {

@@ -386,8 +386,12 @@ pub(crate) async fn usage_diagnostics(
     range: ObservabilityRange,
     filter: &UsageRecordFilter,
     dimension: DiagnosticDimension,
+    limit: u16,
 ) -> StoreResult<DiagnosticsObservation> {
     filter.validate()?;
+    let limit = ObservabilityPageSize::new(limit)
+        .map_err(|_| invalid("invalid diagnostic limit"))?
+        .get();
     let dimension_sql = diagnostic_dimension_sql(dimension);
     let completed_usage = completed_usage_fact_predicate("mr");
     let mut statement = QueryBuilder::<Postgres>::new("with matched as (select ");
@@ -453,7 +457,7 @@ pub(crate) async fn usage_diagnostics(
             where currency_grouping = 1
             order by request_count desc, dimension_name limit ",
     );
-    statement.push_bind(DIAGNOSTIC_LIMIT);
+    statement.push_bind(i64::from(limit));
     statement.push(
         ")
          select aggregated.*, selected.total_request_count,
@@ -475,7 +479,7 @@ pub(crate) async fn usage_diagnostics(
         .map(|row| unsigned(row, "total_request_count"))
         .transpose()?
         .unwrap_or_default();
-    let mut observations = Vec::with_capacity(DIAGNOSTIC_LIMIT as usize);
+    let mut observations = Vec::with_capacity(usize::from(limit));
     let mut costs = HashMap::<String, Vec<CurrencyCostTotal>>::new();
     for row in &rows {
         match get::<i32>(row, "currency_grouping")? {

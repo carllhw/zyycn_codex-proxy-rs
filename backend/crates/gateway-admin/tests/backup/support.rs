@@ -519,9 +519,16 @@ impl DatabaseDumpPort for FakeDumpPort {
 
     async fn cleanup_staging(
         &self,
-        _backup_id: &str,
+        backup_id: &str,
     ) -> Result<(), gateway_admin::model::backup::BackupError> {
-        Ok(())
+        match std::fs::remove_file(self.dir.path().join(format!("{backup_id}.dump"))) {
+            Ok(()) => Ok(()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(_) => Err(gateway_admin::model::backup::BackupError::new(
+                gateway_admin::model::backup::code::PG_DUMP_FAILED,
+                "cleanup failed".to_owned(),
+            )),
+        }
     }
 }
 

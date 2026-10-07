@@ -5,7 +5,6 @@ use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use chrono::{DateTime, Duration as TimeDelta, Utc};
-use gateway_admin::freeze_recovery::{FreezeRecoveryDeps, FreezeRecoveryTask};
 use gateway_admin::model::MutationContext;
 use gateway_admin::model::accounts::{AccountFreeze, AccountRuntimeSnapshot};
 use gateway_admin::model::settings::{
@@ -18,7 +17,9 @@ use gateway_core::engine::probe::{
     AccountProbe, AccountProbeError, AccountProbeRequest, AccountProbeResult,
 };
 use gateway_core::lifecycle::CancellationToken;
-use gateway_core::task::{ScheduledTask as _, WorkerCycleContext, WorkerId, WorkerKind};
+use gateway_core::task::{
+    ScheduledTask, WorkerContribution, WorkerCycleContext, WorkerId, WorkerKind, WorkerRunnable,
+};
 
 use super::AdminHarness;
 use super::accounts::{FakeAccountStore, FakeProviderAdmin, account_record, events, revision};
@@ -246,7 +247,7 @@ async fn recovery_task(
     settings: RuntimeSettings,
     runtime: Arc<FreezeRuntimeStore>,
     probe: Arc<dyn AccountProbe>,
-) -> (FreezeRecoveryTask, Arc<FakeAccountStore>) {
+) -> (Box<dyn ScheduledTask>, Arc<FakeAccountStore>) {
     recovery_task_with_store(settings, runtime, probe).await
 }
 
@@ -254,9 +255,9 @@ async fn recovery_task_with_store(
     settings: RuntimeSettings,
     runtime: Arc<FreezeRuntimeStore>,
     probe: Arc<dyn AccountProbe>,
-) -> (FreezeRecoveryTask, Arc<FakeAccountStore>) {
+) -> (Box<dyn ScheduledTask>, Arc<FakeAccountStore>) {
     let store = FakeAccountStore::new("openai", events());
-    let services = AdminHarness::new()
+    let bundle = AdminHarness::new()
         .accounts(Arc::clone(&store) as Arc<dyn AccountStore>)
         .account_runtime(Arc::clone(&runtime) as Arc<dyn AccountRuntimeStore>)
         .settings(Arc::new(FreezeSettingsStore {
@@ -264,20 +265,32 @@ async fn recovery_task_with_store(
         }))
         .provider(FakeProviderAdmin::new("openai", events()))
         .probe(probe)
-        .build()
+        .build_bundle()
         .await;
-    let task = FreezeRecoveryTask::new(FreezeRecoveryDeps {
-        accounts: services.accounts_handle(),
-        store: store.clone(),
-        runtime,
-        settings: Arc::new(FreezeSettingsStore {
-            settings: settings.clone(),
-        }),
-    });
+    let task = freeze_worker(bundle);
     (task, store)
 }
 
-async fn run_cycle(task: &FreezeRecoveryTask) {
+fn freeze_worker(mut bundle: gateway_admin::AdminBundle) -> Box<dyn ScheduledTask> {
+    bundle
+        .take_worker_contributions()
+        .into_iter()
+        .find_map(|contribution| {
+            let WorkerContribution::Registration(registration) = contribution else {
+                return None;
+            };
+            if registration.id.kind() != WorkerKind::AccountFreezeRecovery {
+                return None;
+            }
+            match registration.runnable {
+                WorkerRunnable::Scheduled { task, .. } => Some(task),
+                WorkerRunnable::Daemon { .. } => None,
+            }
+        })
+        .expect("registered freeze recovery worker")
+}
+
+async fn run_cycle(task: &dyn ScheduledTask) {
     let worker = WorkerId::try_new(WorkerKind::AccountFreezeRecovery, "test").expect("worker id");
     let context = WorkerCycleContext::new(worker, None, CancellationToken::new());
     task.run_cycle(context)
@@ -311,7 +324,7 @@ async fn probe_success_clears_freeze() {
     )
     .await;
 
-    run_cycle(&task).await;
+    run_cycle(task.as_ref()).await;
 
     assert_eq!(runtime.cleared(), vec!["acct_test".to_owned()]);
     assert!(runtime.extended().is_empty());
@@ -327,7 +340,7 @@ async fn probe_failure_postpones_freeze() {
     )
     .await;
 
-    run_cycle(&task).await;
+    run_cycle(task.as_ref()).await;
 
     assert!(runtime.cleared().is_empty());
     let extended = runtime.extended();
@@ -351,7 +364,7 @@ async fn disabled_policy_releases_due_freeze_without_probing() {
     )
     .await;
 
-    run_cycle(&task).await;
+    run_cycle(task.as_ref()).await;
 
     assert_eq!(runtime.cleared(), vec!["acct_test".to_owned()]);
     assert!(runtime.extended().is_empty());
@@ -370,7 +383,7 @@ async fn adaptive_concurrency_lowers_limit_to_observed_peak() {
     )
     .await;
 
-    run_cycle(&task).await;
+    run_cycle(task.as_ref()).await;
 
     // 峰值 4 × 0.8 = 3（不低于下限 2），低于全局默认 5，应下调到 3
     assert_eq!(
@@ -395,7 +408,7 @@ async fn adaptive_concurrency_never_raises_limit() {
     )
     .await;
 
-    run_cycle(&task).await;
+    run_cycle(task.as_ref()).await;
 
     // 峰值 40 的目标 32 高于全局默认 5；只降不升，不下发任何更新
     assert!(store.update_commands().is_empty());
@@ -415,7 +428,7 @@ async fn probe_skips_freezes_far_from_expiry() {
     )
     .await;
 
-    run_cycle(&task).await;
+    run_cycle(task.as_ref()).await;
 
     assert!(runtime.cleared().is_empty());
     assert!(runtime.extended().is_empty());
@@ -431,7 +444,7 @@ async fn disabled_accounts_are_skipped() {
     let mut record = account_record("openai");
     record.enabled = false;
     let store = FakeAccountStore::with_account(record, events());
-    let services = AdminHarness::new()
+    let bundle = AdminHarness::new()
         .accounts(Arc::clone(&store) as Arc<dyn AccountStore>)
         .account_runtime(Arc::clone(&runtime) as Arc<dyn AccountRuntimeStore>)
         .settings(Arc::new(FreezeSettingsStore {
@@ -439,18 +452,11 @@ async fn disabled_accounts_are_skipped() {
         }))
         .provider(FakeProviderAdmin::new("openai", events()))
         .probe(Arc::new(SuccessfulProbe))
-        .build()
+        .build_bundle()
         .await;
-    let task = FreezeRecoveryTask::new(FreezeRecoveryDeps {
-        accounts: services.accounts_handle(),
-        store: store.clone(),
-        runtime: Arc::clone(&runtime) as Arc<dyn AccountRuntimeStore>,
-        settings: Arc::new(FreezeSettingsStore {
-            settings: runtime_settings(true, true, true),
-        }),
-    });
+    let task = freeze_worker(bundle);
 
-    run_cycle(&task).await;
+    run_cycle(task.as_ref()).await;
 
     assert!(runtime.cleared().is_empty());
     assert!(runtime.extended().is_empty());

@@ -613,3 +613,39 @@ async fn repository() -> Option<(RedisCredentialLeaseRepository, ConnectionManag
         .expect("valid test namespace");
     Some((repository, connection, namespace))
 }
+
+#[tokio::test]
+async fn runtime_signals_preserve_order_and_counts_across_batches() {
+    let Some((repository, _, _)) = repository().await else {
+        return;
+    };
+    let ids = (0..1000)
+        .map(|index| format!("acct_batch_{index}"))
+        .collect::<Vec<_>>();
+    let mut guards = Vec::new();
+    for index in [0, 127, 128, 500, 999] {
+        let request = scheduling_request(&ids[index], "batch-test", 2, Duration::ZERO);
+        guards.push(acquired(
+            repository
+                .try_acquire_bounded_lease(&request)
+                .await
+                .unwrap(),
+        ));
+    }
+    let started = std::time::Instant::now();
+    let signals = repository.credential_runtime_signals(&ids).await.unwrap();
+    assert_eq!(signals.len(), ids.len());
+    for (index, (signal, id)) in signals.iter().zip(&ids).enumerate() {
+        assert_eq!(&signal.resource_id, id);
+        let acquired = [0, 127, 128, 500, 999].contains(&index);
+        assert_eq!(signal.in_flight, u32::from(acquired));
+        assert_eq!(signal.last_started_at.is_some(), acquired);
+    }
+    eprintln!(
+        "1000 Redis runtime signals: elapsed={:?}",
+        started.elapsed()
+    );
+    for guard in guards {
+        guard.release().await.unwrap();
+    }
+}

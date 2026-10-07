@@ -44,10 +44,10 @@ use gateway_admin::{
             NewClientKey, SetClientKeyEnabled, UpdateClientKey,
         },
         observability::{
-            DashboardDesktopRelease, DashboardObservation, DashboardWireAttribute,
+            DashboardDesktopRelease, DashboardObservation, DashboardQuery, DashboardWireAttribute,
             DashboardWireProfile, DashboardWireTarget, DesktopReleaseStatus, DiagnosticDimension,
-            DiagnosticsObservation, OpsErrorPage, OpsErrorQuery, RequestMetricPoint, TimeRange,
-            UsageDetail, UsageFilter, UsageOverview, UsagePage, UsageQuery,
+            DiagnosticsObservation, Granularity, OpsErrorPage, OpsErrorQuery, RequestMetricPoint,
+            TimeRange, UsageDetail, UsageFilter, UsageOverview, UsagePage, UsageQuery,
         },
         provider_credentials::{
             AuthorizationCommit, AuthorizationStarted, CompleteAuthorization, CredentialDetails,
@@ -738,13 +738,17 @@ impl ClientKeyStore for UnavailableStore {
 impl ObservabilityStore for UnavailableStore {
     async fn dashboard_summary(
         &self,
-        _: TimeRange,
+        _: DashboardQuery,
         _: DateTime<Utc>,
     ) -> AdminStoreResult<DashboardObservation> {
         Err(unavailable("dashboard"))
     }
 
-    async fn dashboard_trend(&self, _: TimeRange) -> AdminStoreResult<Vec<RequestMetricPoint>> {
+    async fn dashboard_trend(
+        &self,
+        _: TimeRange,
+        _: Granularity,
+    ) -> AdminStoreResult<Vec<RequestMetricPoint>> {
         Err(unavailable("dashboard trend"))
     }
 
@@ -752,6 +756,7 @@ impl ObservabilityStore for UnavailableStore {
         &self,
         _: TimeRange,
         _: UsageFilter,
+        _: Granularity,
     ) -> AdminStoreResult<Vec<RequestMetricPoint>> {
         Err(unavailable("usage trend"))
     }
@@ -760,6 +765,7 @@ impl ObservabilityStore for UnavailableStore {
         &self,
         _: TimeRange,
         _: UsageFilter,
+        _: Granularity,
     ) -> gateway_admin::ports::store::UsageCalculatedBillingStream<'_> {
         Box::pin(futures::stream::once(async {
             Err(unavailable("usage billing facts"))
@@ -783,6 +789,7 @@ impl ObservabilityStore for UnavailableStore {
         _: TimeRange,
         _: UsageFilter,
         _: DiagnosticDimension,
+        _: u16,
     ) -> AdminStoreResult<DiagnosticsObservation> {
         Err(unavailable("usage diagnostics"))
     }

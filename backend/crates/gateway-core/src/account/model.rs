@@ -588,18 +588,6 @@ impl AccountStatus {
             _ => None,
         }
     }
-
-    /// 管理页稳定业务排序：正常、限流、耗尽、错误、停用
-    #[must_use]
-    pub const fn sort_rank(self) -> u8 {
-        match self {
-            Self::Normal => 0,
-            Self::RateLimited => 1,
-            Self::QuotaExhausted => 2,
-            Self::Error => 3,
-            Self::Disabled => 4,
-        }
-    }
 }
 
 /// `error` 状态下的稳定原因码

@@ -413,3 +413,15 @@ async fn load_control_plane_in_transaction(
     let settings = load_runtime_settings_in_transaction(transaction).await?;
     Ok(ControlPlaneSnapshot { settings })
 }
+
+fn literal_prefix_pattern(value: &str) -> String {
+    let mut escaped = String::with_capacity(value.len().saturating_add(1));
+    for character in value.to_lowercase().chars() {
+        if matches!(character, '\\' | '%' | '_') {
+            escaped.push('\\');
+        }
+        escaped.push(character);
+    }
+    escaped.push('%');
+    escaped
+}

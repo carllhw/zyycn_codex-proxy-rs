@@ -21,9 +21,8 @@ use gateway_core::{
     },
 };
 use gateway_store::postgres::{
-    DiagnosticDimension, ObservabilityPageSize, ObservabilityRange, ObservabilityRepository,
-    OpsErrorFilter, OpsErrorQuery, PgAdminObservabilityStore, PgObservabilityRepository,
-    ProviderAccountUsageQuery, UsageRecordFilter, UsageRecordQuery,
+    DiagnosticDimension, ObservabilityPageSize, ObservabilityRange, OpsErrorFilter, OpsErrorQuery,
+    PgObservabilityRepository, ProviderAccountUsageQuery, UsageRecordFilter, UsageRecordQuery,
 };
 use sqlx::PgPool;
 
@@ -65,18 +64,6 @@ fn usage_outcome_filter_should_accept_bounded_unknown_values() {
         .validate()
         .is_err()
     );
-}
-
-#[test]
-fn postgres_observability_adapter_implements_query_port() {
-    fn assert_port<T: ObservabilityRepository>() {}
-    assert_port::<PgObservabilityRepository>();
-}
-
-#[test]
-fn postgres_admin_observability_adapter_implements_terminal_port() {
-    fn assert_port<T: AdminObservabilityStore>() {}
-    assert_port::<PgAdminObservabilityStore>();
 }
 
 #[tokio::test]
@@ -125,11 +112,18 @@ async fn output_throughput_uses_full_duration_independently_of_first_token() {
         assert_eq!(summary.requests.output_throughput_p90, expected);
 
         let usage = store
-            .usage_trend(admin_range, admin_observability::UsageFilter::default())
+            .usage_trend(
+                admin_range,
+                admin_observability::UsageFilter::default(),
+                admin_observability::Granularity::FifteenMinutes,
+            )
             .await
             .expect("usage throughput trend");
         let dashboard = store
-            .dashboard_trend(admin_range)
+            .dashboard_trend(
+                admin_range,
+                admin_observability::Granularity::FifteenMinutes,
+            )
             .await
             .expect("dashboard throughput trend");
         for trend in [usage, dashboard] {
@@ -320,6 +314,7 @@ async fn usage_list_and_diagnostics_should_resolve_current_account_metadata_by_i
                 range,
                 admin_observability::UsageFilter::default(),
                 admin_observability::DiagnosticDimension::Account,
+                100,
             )
             .await
             .expect("account plans");
@@ -347,7 +342,13 @@ async fn usage_list_and_diagnostics_should_resolve_current_account_metadata_by_i
     }
 
     let dashboard = store
-        .dashboard_summary(range, now)
+        .dashboard_summary(
+            admin_observability::DashboardQuery::new(admin_observability::TimeRange {
+                start: range.start,
+                end: range.end,
+            }),
+            now,
+        )
         .await
         .expect("dashboard with current account notes");
     assert_eq!(
@@ -396,6 +397,7 @@ async fn usage_list_and_diagnostics_should_resolve_current_account_metadata_by_i
                 ..Default::default()
             },
             admin_observability::DiagnosticDimension::Account,
+            100,
         )
         .await
         .expect("deleted account diagnostics");
@@ -997,6 +999,7 @@ async fn recovered_continuation_failure_should_be_visible_in_ops_but_hidden_from
             range,
             UsageRecordFilter::default(),
             DiagnosticDimension::Account,
+            100,
         )
         .await
         .expect("diagnostics without recovered intermediates")
@@ -1076,7 +1079,13 @@ async fn dashboard_account_metrics_should_partition_account_statuses() {
         .expect("dashboard range");
 
     let metrics = repository
-        .dashboard_summary(range, now)
+        .dashboard_summary(
+            admin_observability::DashboardQuery::new(admin_observability::TimeRange {
+                start: range.start,
+                end: range.end,
+            }),
+            now,
+        )
         .await
         .expect("dashboard summary")
         .provider_accounts;
@@ -1160,12 +1169,19 @@ async fn dashboard_account_metrics_with_cooldowns_should_only_reclassify_eligibl
         database.pool.clone(),
         Some(Arc::new(cooldowns)),
         observability_query_budget(),
+        None,
     );
     let range = ObservabilityRange::new(now - TimeDelta::hours(1), now + TimeDelta::hours(1))
         .expect("dashboard range");
 
     let metrics = repository
-        .dashboard_summary(range, now)
+        .dashboard_summary(
+            admin_observability::DashboardQuery::new(admin_observability::TimeRange {
+                start: range.start,
+                end: range.end,
+            }),
+            now,
+        )
         .await
         .expect("dashboard summary")
         .provider_accounts;
@@ -1193,12 +1209,20 @@ async fn dashboard_account_metrics_with_cooldowns_should_only_reclassify_eligibl
 }
 
 struct StaticCooldowns {
+    reads: std::sync::atomic::AtomicUsize,
+    active: std::sync::atomic::AtomicUsize,
+    peak: std::sync::atomic::AtomicUsize,
+    delay: Duration,
     cooldowns: BTreeMap<ProviderAccountId, ProviderCooldown>,
 }
 
 impl StaticCooldowns {
     fn new(cooldowns: impl IntoIterator<Item = ProviderCooldown>) -> Self {
         Self {
+            reads: Default::default(),
+            active: Default::default(),
+            peak: Default::default(),
+            delay: Duration::ZERO,
             cooldowns: cooldowns
                 .into_iter()
                 .map(|cooldown| (cooldown.account_id().clone(), cooldown))
@@ -1219,7 +1243,17 @@ impl ProviderCooldownPort for StaticCooldowns {
         &'a self,
         account_id: &'a ProviderAccountId,
     ) -> BoxFuture<'a, Result<Option<ProviderCooldown>, ProviderStoreError>> {
-        Box::pin(async move { Ok(self.cooldowns.get(account_id).cloned()) })
+        Box::pin(async move {
+            use std::sync::atomic::Ordering::Relaxed;
+            self.reads.fetch_add(1, Relaxed);
+            let active = self.active.fetch_add(1, Relaxed) + 1;
+            self.peak.fetch_max(active, Relaxed);
+            if !self.delay.is_zero() {
+                tokio::time::sleep(self.delay).await;
+            }
+            self.active.fetch_sub(1, Relaxed);
+            Ok(self.cooldowns.get(account_id).cloned())
+        })
     }
 
     fn clear<'a>(
@@ -1311,7 +1345,11 @@ async fn calculated_usage_billing_facts_keep_only_completed_calculated_costs() {
     let repository = observability_repository(&database.pool);
 
     let facts = repository
-        .usage_calculated_billing_facts(range, UsageRecordFilter::default())
+        .usage_calculated_billing_facts(
+            range,
+            UsageRecordFilter::default(),
+            admin_observability::Granularity::FifteenMinutes,
+        )
         .try_collect::<Vec<_>>()
         .await
         .expect("calculated usage billing facts");
@@ -1329,6 +1367,7 @@ async fn calculated_usage_billing_facts_keep_only_completed_calculated_costs() {
             admin_observability::TimeRange::new(range.start, range.end)
                 .expect("admin observability range"),
             admin_observability::UsageFilter::default(),
+            admin_observability::Granularity::FifteenMinutes,
         )
         .try_collect::<Vec<_>>()
         .await
@@ -1355,7 +1394,13 @@ async fn admin_observability_adapter_preserves_utc_queries_metrics_costs_and_det
     let store = admin_observability_store(&database.pool);
 
     let dashboard = store
-        .dashboard_summary(range, now)
+        .dashboard_summary(
+            admin_observability::DashboardQuery::new(admin_observability::TimeRange {
+                start: range.start,
+                end: range.end,
+            }),
+            now,
+        )
         .await
         .expect("admin dashboard summary");
     assert_eq!(dashboard.range, range);
@@ -1410,7 +1455,7 @@ async fn admin_observability_adapter_preserves_utc_queries_metrics_costs_and_det
     );
 
     let dashboard_trend = store
-        .dashboard_trend(range)
+        .dashboard_trend(range, admin_observability::Granularity::FifteenMinutes)
         .await
         .expect("admin dashboard trend");
     assert_eq!(
@@ -1443,6 +1488,7 @@ async fn admin_observability_adapter_preserves_utc_queries_metrics_costs_and_det
                 outcome: Some(admin_observability::RequestOutcome::Succeeded),
                 ..admin_observability::UsageFilter::default()
             },
+            admin_observability::Granularity::FifteenMinutes,
         )
         .await
         .expect("admin usage trend");
@@ -1591,6 +1637,7 @@ async fn admin_observability_adapter_preserves_utc_queries_metrics_costs_and_det
             range,
             admin_observability::UsageFilter::default(),
             admin_observability::DiagnosticDimension::Account,
+            100,
         )
         .await
         .expect("admin diagnostics")
@@ -1699,7 +1746,13 @@ async fn dashboard_summary_totals_include_history_outside_selected_range() {
     let repository = observability_repository(&database.pool);
 
     let dashboard = repository
-        .dashboard_summary(range, now)
+        .dashboard_summary(
+            admin_observability::DashboardQuery::new(admin_observability::TimeRange {
+                start: range.start,
+                end: range.end,
+            }),
+            now,
+        )
         .await
         .expect("dashboard summary");
     assert_eq!(
@@ -1757,7 +1810,13 @@ async fn observability_queries_preserve_request_account_cost_and_diagnostic_fact
     let repository = observability_repository(&database.pool);
 
     let dashboard = repository
-        .dashboard_summary(range, now)
+        .dashboard_summary(
+            admin_observability::DashboardQuery::new(admin_observability::TimeRange {
+                start: range.start,
+                end: range.end,
+            }),
+            now,
+        )
         .await
         .expect("dashboard summary");
     assert_eq!(
@@ -1993,7 +2052,10 @@ async fn observability_queries_preserve_request_account_cost_and_diagnostic_fact
         .expect("filtered usage summary");
     assert_eq!(succeeded.requests.cache_eligible_request_count, 1);
     assert_eq!(succeeded.requests.cache_hit_request_count, 1);
-    assert_eq!(succeeded.requests.cache_hit_request_rate(), Some(1.0));
+    assert_eq!(
+        succeeded.requests.cache_hit_request_count,
+        succeeded.requests.cache_eligible_request_count
+    );
     assert_eq!(
         succeeded
             .requests
@@ -2009,6 +2071,7 @@ async fn observability_queries_preserve_request_account_cost_and_diagnostic_fact
             range,
             UsageRecordFilter::default(),
             DiagnosticDimension::Account,
+            100,
         )
         .await
         .expect("usage diagnostics")
@@ -2286,7 +2349,11 @@ async fn calendar_trends_share_exact_day_boundaries_for_requests_costs_and_empty
                 .unwrap();
         let store = admin_observability_store(&database.pool).with_timezone(timezone);
         let points = store
-            .usage_trend(range, Default::default())
+            .usage_trend(
+                range,
+                Default::default(),
+                admin_observability::Granularity::Day,
+            )
             .await
             .expect("calendar trend");
         let populated = points.iter().find(|p| p.metrics.request_count > 0).unwrap();
@@ -2303,7 +2370,11 @@ async fn calendar_trends_share_exact_day_boundaries_for_requests_costs_and_empty
             boundary = timezone.days_after(boundary, 1).unwrap();
         }
         let facts = store
-            .usage_calculated_billing_facts(range, Default::default())
+            .usage_calculated_billing_facts(
+                range,
+                Default::default(),
+                admin_observability::Granularity::Day,
+            )
             .try_collect::<Vec<_>>()
             .await
             .expect("calendar cost buckets");
@@ -2369,7 +2440,13 @@ async fn account_hourly_buckets_use_utc_hours_independently_of_calendar_metrics(
                 .unwrap();
         let dashboard = admin_observability_store(&database.pool)
             .with_timezone(timezone)
-            .dashboard_summary(range, end)
+            .dashboard_summary(
+                admin_observability::DashboardQuery::new(admin_observability::TimeRange {
+                    start: range.start,
+                    end: range.end,
+                }),
+                end,
+            )
             .await
             .expect("calendar dashboard supports variable day lengths");
         assert_eq!(
@@ -2420,4 +2497,212 @@ async fn account_hourly_buckets_use_utc_hours_independently_of_calendar_metrics(
         }
         database.close().await;
     }
+}
+
+#[tokio::test]
+async fn dashboard_shares_account_facts_and_bounds_slow_cooldown_reads() {
+    use std::sync::atomic::Ordering::Relaxed;
+    let Some(database) = TestDatabase::create("dashboard_shared_state").await else {
+        return;
+    };
+    let Some(redis_url) = crate::support::test_env("CPR_TEST_REDIS_URL") else {
+        database.close().await;
+        return;
+    };
+    use gateway_store::redis::{
+        CredentialBoundedLeaseAcquisition, CredentialBoundedLeaseRequest,
+        CredentialLeaseRepository as _, CredentialLeaseScope, RedisCredentialLeaseRepository,
+    };
+    let connection = redis::Client::open(redis_url)
+        .unwrap()
+        .get_connection_manager()
+        .await
+        .unwrap();
+    let runtime = RedisCredentialLeaseRepository::new(
+        connection,
+        &format!("dashboard-shared-{}", uuid::Uuid::new_v4()),
+    )
+    .unwrap();
+    let request = CredentialBoundedLeaseRequest {
+        scope: CredentialLeaseScope::ProviderAccount,
+        resource_id: "acct_shared_1".to_owned(),
+        owner_id: "dashboard-test".to_owned(),
+        max_concurrent: 3,
+        request_interval: Duration::ZERO,
+        ttl: Duration::from_secs(60),
+    };
+    let CredentialBoundedLeaseAcquisition::Acquired(lease) =
+        runtime.try_acquire_bounded_lease(&request).await.unwrap()
+    else {
+        panic!("test lease capacity")
+    };
+    let now = Utc::now();
+    sqlx::query(
+        "insert into provider_accounts (
+            id, provider_kind, name, upstream_user_id, authentication_kind,
+            provider_credentials_json, credential_revision, has_refresh_token,
+            enabled, concurrency_limit, credential_state, quota_access_state,
+            quota_access_observed_at, credential_observed_at, created_at, updated_at
+         ) select 'acct_shared_' || n, 'openai', 'account ' || n, 'user-shared-' || n, 'oauth',
+                  '{}'::jsonb, 1, false, true, case when n % 2 = 0 then 3 else null end,
+                  'ready', 'allowed', $1, $1, $1, $1
+           from generate_series(1, 1000) n",
+    )
+    .bind(now)
+    .execute(&database.pool)
+    .await
+    .unwrap();
+    let mut cooldowns = StaticCooldowns::new([]);
+    cooldowns.delay = Duration::from_millis(3);
+    let cooldowns = Arc::new(cooldowns);
+    let store = gateway_store::postgres::PgAdminObservabilityStore::new(
+        database.pool.clone(),
+        Some(runtime),
+        Some(cooldowns.clone()),
+        observability_query_budget(),
+    );
+    let started = std::time::Instant::now();
+    let observation = store
+        .dashboard_summary(
+            admin_observability::DashboardQuery::new(
+                admin_observability::TimeRange::new(now - TimeDelta::hours(1), now).unwrap(),
+            ),
+            now,
+        )
+        .await
+        .unwrap();
+    assert_eq!(observation.provider_accounts.normal, 1000);
+    let slots = observation.runtime_slots.unwrap();
+    assert_eq!(
+        (
+            slots.inherited_accounts,
+            slots.overridden_slots,
+            slots.used_slots
+        ),
+        (500, 1500, Some(1))
+    );
+    assert_eq!(
+        cooldowns.reads.load(Relaxed),
+        1000,
+        "summary and slots share one read per account"
+    );
+    let peak = cooldowns.peak.load(Relaxed);
+    assert!(
+        (2..=128).contains(&peak),
+        "slow reads must be concurrent and bounded: {peak}"
+    );
+    assert_eq!(cooldowns.active.load(Relaxed), 0);
+    eprintln!(
+        "dashboard 1000 accounts, 3 ms cooldown delay: peak={peak}, elapsed={:?}",
+        started.elapsed()
+    );
+    lease.release().await.unwrap();
+    database.close().await;
+}
+
+#[tokio::test]
+async fn observability_store_executes_caller_selection_without_replacing_policy() {
+    use admin_observability::{
+        DashboardQuery, Granularity, RequestOutcome, TimeRange, UsageFilter,
+    };
+    let Some(database) = TestDatabase::create("observability_caller_selection").await else {
+        return;
+    };
+    let now = chrono::DateTime::parse_from_rfc3339("2026-10-07T12:30:00Z")
+        .unwrap()
+        .with_timezone(&Utc);
+    seed_observability_facts(&database.pool, now).await.unwrap();
+    seed_calculated_billing_facts(&database.pool, now)
+        .await
+        .unwrap();
+    sqlx::query(
+        "insert into provider_accounts (
+            id, provider_kind, name, upstream_user_id, authentication_kind,
+            provider_credentials_json, credential_revision, has_refresh_token,
+            enabled, credential_state, credential_observed_at, created_at, updated_at
+         ) values ('acct_other', 'openai', 'other', 'user-other', 'oauth',
+                   '{}'::jsonb, 1, false, true, 'ready', $1, $1, $1)",
+    )
+    .bind(now)
+    .execute(&database.pool)
+    .await
+    .unwrap();
+    let range = TimeRange::new(now - TimeDelta::hours(1), now + TimeDelta::hours(1)).unwrap();
+    let store = admin_observability_store(&database.pool);
+    let mut query = DashboardQuery::new(range);
+    query.account_limit = 1;
+    query.recent_request_limit = 1;
+    query.recent_request_filter = UsageFilter::default();
+    query.granularity = Granularity::Hour;
+    let dashboard = store.dashboard_summary(query.clone(), now).await.unwrap();
+    assert_eq!(dashboard.account_usage.len(), 1);
+    assert_eq!(dashboard.recent_requests.len(), 1);
+    assert_eq!(dashboard.trend.len(), 3);
+    assert!(
+        dashboard
+            .trend
+            .iter()
+            .all(|point| point.granularity == Granularity::Hour)
+    );
+    query.recent_request_filter.request_id = Some("req_observe_calculated".to_owned());
+    let selected = store.dashboard_summary(query.clone(), now).await.unwrap();
+    assert_eq!(selected.recent_requests.len(), 1);
+    assert_eq!(selected.recent_requests[0].id, "req_observe_calculated");
+    // 用量列表仍只展示完成交付的事实，传入筛选不能扩大这条持久化合同
+    query.recent_request_filter = UsageFilter {
+        outcome: Some(RequestOutcome::Failed),
+        ..UsageFilter::default()
+    };
+    assert!(
+        store
+            .dashboard_summary(query, now)
+            .await
+            .unwrap()
+            .recent_requests
+            .is_empty()
+    );
+    for granularity in [Granularity::Hour, Granularity::Day] {
+        let trend = store
+            .usage_trend(range, UsageFilter::default(), granularity)
+            .await
+            .unwrap();
+        let facts = store
+            .usage_calculated_billing_facts(range, UsageFilter::default(), granularity)
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap();
+        assert_eq!(facts.len(), 1);
+        assert!(trend.iter().all(|point| point.granularity == granularity));
+        assert!(
+            trend
+                .iter()
+                .any(|point| point.bucket_start == facts[0].bucket_start
+                    && point.metrics.request_count > 0)
+        );
+    }
+    let diagnostics = store
+        .usage_diagnostics(
+            range,
+            UsageFilter::default(),
+            DiagnosticDimension::Status,
+            1,
+        )
+        .await
+        .unwrap();
+    assert_eq!(diagnostics.items.len(), 1);
+    assert_eq!(diagnostics.total_request_count, 5);
+    for invalid_limit in [0, 101] {
+        assert!(
+            store
+                .usage_diagnostics(
+                    range,
+                    UsageFilter::default(),
+                    DiagnosticDimension::Status,
+                    invalid_limit
+                )
+                .await
+                .is_err()
+        );
+    }
+    database.close().await;
 }

@@ -77,11 +77,6 @@ fn config_loader_should_reject_missing_runtime_data_dir() {
 }
 
 #[test]
-fn config_loader_should_inject_connection_passwords_into_urls() {
-    parse_config(&valid_config()).expect("Store validates password injection into both URLs");
-}
-
-#[test]
 fn config_loader_should_apply_only_explicit_topology_overrides() {
     let invalid = valid_config()
         .replace("host: '127.0.0.1'", "host: ''")

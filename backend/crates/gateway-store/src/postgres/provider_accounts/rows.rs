@@ -515,20 +515,7 @@ pub(crate) fn account_summary_from_row(
     let revision = row
         .try_get::<i64, _>("credential_revision")
         .map_err(|source| invalid("invalid credential revision").with_source(source))?;
-    let credential_state = row
-        .try_get::<String, _>("credential_state")
-        .map_err(|source| invalid("invalid credential_state").with_source(source))?;
-    let quota_access_state = parse_quota_access_state(&get::<String>(&row, "quota_access_state")?)?;
-    let quota_evidence = parse_quota_evidence(get(&row, "quota_evidence")?)?;
-    let quota_access_observed_at = get::<Option<DateTime<Utc>>>(&row, "quota_access_observed_at")?;
-    let quota_reset_at = get::<Option<DateTime<Utc>>>(&row, "quota_reset_at")?;
-    let quota = QuotaState::from_persisted(
-        quota_access_state,
-        quota_evidence,
-        quota_access_observed_at.map(Into::into),
-        quota_reset_at.map(Into::into),
-    )
-    .ok_or_else(|| invalid("invalid persisted quota fact"))?;
+    let status = account_status_facts_from_row(&row)?;
     let concurrency_limit = get::<Option<i64>>(&row, "concurrency_limit")?
         .map(|value| {
             u32::try_from(value)
@@ -560,9 +547,9 @@ pub(crate) fn account_summary_from_row(
         authentication_kind: get(&row, "authentication_kind")?,
         credential_revision: Revision::new(to_u64(revision)?)?,
         has_refresh_token: get(&row, "has_refresh_token")?,
-        access_token_expires_at: get(&row, "access_token_expires_at")?,
+        access_token_expires_at: status.access_token_expires_at.map(Into::into),
         next_refresh_at: get(&row, "next_refresh_at")?,
-        enabled: get(&row, "enabled")?,
+        enabled: status.enabled,
         concurrency_limit,
         weight,
         model_access: get::<sqlx::types::Json<gateway_core::account::AccountModelAccess>>(
@@ -570,11 +557,11 @@ pub(crate) fn account_summary_from_row(
             "model_access_json",
         )?
         .0,
-        credential_state: parse_credential_state(&credential_state)?,
+        credential_state: status.credential_state,
         credential_observed_at: get(&row, "credential_observed_at")?,
-        quota,
-        last_error_reason: parse_error_reason(get(&row, "last_error_reason")?)?,
-        last_error_message: get(&row, "last_error_message")?,
+        quota: status.quota,
+        last_error_reason: status.last_error_reason,
+        last_error_message: status.last_error_message,
         created_at: get(&row, "created_at")?,
         updated_at: get(&row, "updated_at")?,
     })
@@ -621,4 +608,33 @@ pub(crate) fn invalid(message: &str) -> StoreError {
         entity: ENTITY,
         message: message.to_owned(),
     }
+}
+
+pub(crate) fn account_status_facts_from_row(
+    row: &sqlx::postgres::PgRow,
+) -> StoreResult<gateway_core::account::AccountStatusFacts> {
+    let credential_state = row
+        .try_get::<String, _>("credential_state")
+        .map_err(|source| invalid("invalid credential_state").with_source(source))?;
+    let quota_access_state = parse_quota_access_state(&get::<String>(row, "quota_access_state")?)?;
+    let quota_evidence = parse_quota_evidence(get(row, "quota_evidence")?)?;
+    let quota_access_observed_at = get::<Option<DateTime<Utc>>>(row, "quota_access_observed_at")?;
+    let quota_reset_at = get::<Option<DateTime<Utc>>>(row, "quota_reset_at")?;
+    let quota = QuotaState::from_persisted(
+        quota_access_state,
+        quota_evidence,
+        quota_access_observed_at.map(Into::into),
+        quota_reset_at.map(Into::into),
+    )
+    .ok_or_else(|| invalid("invalid persisted quota fact"))?;
+    Ok(gateway_core::account::AccountStatusFacts {
+        enabled: get(row, "enabled")?,
+        credential_state: parse_credential_state(&credential_state)?,
+        access_token_expires_at: get::<Option<DateTime<Utc>>>(row, "access_token_expires_at")?
+            .map(Into::into),
+        quota,
+        cooldown: None,
+        last_error_reason: parse_error_reason(get(row, "last_error_reason")?)?,
+        last_error_message: get(row, "last_error_message")?,
+    })
 }

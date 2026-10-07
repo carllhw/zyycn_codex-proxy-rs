@@ -1538,10 +1538,13 @@ async fn plugin_account_save_rejects_stale_authentication_kind_before_commit() {
     let events = events();
     let provider = FakeProviderAdmin::new("openai", events.clone());
     let store = FakeAccountStore::new("openai", events.clone());
-    let services = accounts_service(provider, store.clone()).await;
+    let access = gateway_admin::initialize_plugin_accounts(
+        ProviderAdminRegistry::new([provider as Arc<dyn ProviderAdmin>]).unwrap(),
+        store.clone(),
+        Arc::new(RecordingPluginAccountPublication(events.clone())),
+    );
 
-    let error = services
-        .plugin_accounts_handle()
+    let error = access
         .save(
             PreparedPluginAccountSave::Replace {
                 facts: plugin_rotation_facts(&account_record("openai")),

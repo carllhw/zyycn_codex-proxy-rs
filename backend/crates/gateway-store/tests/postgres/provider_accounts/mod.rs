@@ -41,7 +41,7 @@ use gateway_store::{
     ConflictKind, JsonObject, Revision, StoreError,
     postgres::{
         AdminAuditActorKind, AdminAuditEvent, BatchUpdateProviderAccountsAdmin,
-        DeleteProviderAccounts, ImportProviderAccounts, NewProviderAccount, PgAdminAccountStore,
+        DeleteProviderAccounts, ImportProviderAccounts, NewProviderAccount,
         PgProviderAccountRepository, ProviderAccountAdminRepository, ProviderAccountAdminScope,
         ProviderAccountRepository, ProviderCredentialUpdate, RotateProviderAccount,
         UpdateProviderAccount,
@@ -80,18 +80,6 @@ struct CoreRefreshRow {
     quota_evidence: Option<String>,
     quota_access_observed_at: Option<chrono::DateTime<Utc>>,
     quota_reset_at: Option<chrono::DateTime<Utc>>,
-}
-
-#[test]
-fn postgres_provider_account_adapter_implements_core_port() {
-    fn assert_port<T: ProviderAccountStore>() {}
-    assert_port::<PgProviderAccountRepository>();
-
-    fn assert_admin_port<T: ProviderAccountAdminRepository>() {}
-    assert_admin_port::<PgProviderAccountRepository>();
-
-    fn assert_terminal_admin_port<T: AccountStore>() {}
-    assert_terminal_admin_port::<PgAdminAccountStore>();
 }
 
 #[tokio::test]

@@ -32,7 +32,7 @@ async fn sub2api_import_resolves_distinct_proxy_bindings_and_encodes_credentials
         runtime_policy(),
         Arc::new(crate::RecordingDiagnostics::default()),
     );
-    let prepared = service.prepare_import_document(serde_json::json!({"data": {
+    let prepared = service.prepare_import_document_with_proxy(serde_json::json!({"data": {
         "accounts": [
             {"name": "a", "platform": "openai", "type": "oauth", "proxy_key": "a", "credentials": {"access_token": test_jwt(serde_json::json!({"https://api.openai.com/auth": {"chatgpt_user_id": "user-a"}}))}},
             {"name": "b", "platform": "openai", "type": "oauth", "proxy_key": "b", "credentials": {"access_token": test_jwt(serde_json::json!({"https://api.openai.com/auth": {"chatgpt_user_id": "user-b"}}))}},
@@ -42,7 +42,7 @@ async fn sub2api_import_resolves_distinct_proxy_bindings_and_encodes_credentials
             {"proxy_key": "a", "protocol": "http", "host": "127.0.0.1", "port": 18080, "username": "user@a", "password": "p:a/ss", "status": "active"},
             {"proxy_key": "b", "protocol": "socks5", "host": "::1", "port": 1080, "status": "active", "fallback_mode": "none"}
         ]
-    }})).await.unwrap();
+    }}), None).await.unwrap();
     assert_eq!(prepared.accounts().len(), 3);
     let first = prepared.accounts()[0].account.outbound_proxy().unwrap();
     assert_eq!(first.endpoint(), "http://127.0.0.1:18080/");
@@ -132,12 +132,12 @@ async fn sub2api_invalid_proxy_bindings_are_rejected_before_any_token_refresh() 
         cases.push(serde_json::json!([invalid]));
     }
     for proxies in cases {
-        let result = service.prepare_import_document(serde_json::json!({
+        let result = service.prepare_import_document_with_proxy(serde_json::json!({
             "accounts": [
                 {"platform": "openai", "type": "oauth", "credentials": {"refresh_token": "must-not-refresh"}},
                 {"platform": "openai", "type": "oauth", "proxy_key": "bound", "credentials": {"access_token": "at"}}
             ], "proxies": proxies
-        })).await;
+        }), None).await;
         assert!(result.is_err());
     }
 }
@@ -158,11 +158,14 @@ async fn direct_import_persists_opaque_tokens_without_profile_or_token_validatio
         Arc::new(crate::RecordingDiagnostics::default()),
     );
     let prepared = service
-        .prepare_import_document(serde_json::json!({
-            "accessToken": " ",
-            "refreshToken": "",
-            "idToken": "not.a.parseable.jwt"
-        }))
+        .prepare_import_document_with_proxy(
+            serde_json::json!({
+                "accessToken": " ",
+                "refreshToken": "",
+                "idToken": "not.a.parseable.jwt"
+            }),
+            None,
+        )
         .await
         .expect("opaque direct import must be accepted");
 
@@ -200,17 +203,20 @@ async fn direct_import_accepts_snake_case_oauth_token_aliases() {
         Arc::new(crate::RecordingDiagnostics::default()),
     );
     let prepared = service
-        .prepare_import_document(serde_json::json!({
-            "accounts": [{
-                "platform": "openai",
-                "type": "oauth",
-                "credentials": {
-                    "access_token": "snake-access-token",
-                    "refresh_token": "snake-refresh-token",
-                    "id_token": "snake-id-token"
-                }
-            }]
-        }))
+        .prepare_import_document_with_proxy(
+            serde_json::json!({
+                "accounts": [{
+                    "platform": "openai",
+                    "type": "oauth",
+                    "credentials": {
+                        "access_token": "snake-access-token",
+                        "refresh_token": "snake-refresh-token",
+                        "id_token": "snake-id-token"
+                    }
+                }]
+            }),
+            None,
+        )
         .await
         .expect("snake_case OAuth token aliases must be accepted");
 
@@ -254,10 +260,13 @@ async fn direct_import_projects_access_token_jwt_expiry_without_persisting_refre
         Arc::new(crate::RecordingDiagnostics::default()),
     );
     let prepared = service
-        .prepare_import_document(serde_json::json!({
-            "accessToken": access_token,
-            "refreshToken": "refresh-token"
-        }))
+        .prepare_import_document_with_proxy(
+            serde_json::json!({
+                "accessToken": access_token,
+                "refreshToken": "refresh-token"
+            }),
+            None,
+        )
         .await
         .expect("direct JWT import must be accepted");
 
@@ -320,19 +329,22 @@ async fn pat_import_verifies_identity_and_becomes_schedulable_without_oauth_refr
         .await;
     let service = pat_service(&server);
     let prepared = service
-        .prepare_import_document(serde_json::json!({
-            "accounts": [{
-                "platform": "openai", "type": "codex", "name": "team PAT",
-                "access_token": "  at-test-token  ",
-                "refresh_token": "unrelated-refresh-token",
-                "id_token": test_jwt(serde_json::json!({
-                    "https://api.openai.com/auth": {"chatgpt_user_id": "untrusted-jwt-user"}
-                })),
-                "account_id": "untrusted-document-account",
-                "email": "untrusted-document@example.com",
-                "planType": "untrusted-plan", "expires_at": "2000-01-01T00:00:00Z"
-            }]
-        }))
+        .prepare_import_document_with_proxy(
+            serde_json::json!({
+                "accounts": [{
+                    "platform": "openai", "type": "codex", "name": "team PAT",
+                    "access_token": "  at-test-token  ",
+                    "refresh_token": "unrelated-refresh-token",
+                    "id_token": test_jwt(serde_json::json!({
+                        "https://api.openai.com/auth": {"chatgpt_user_id": "untrusted-jwt-user"}
+                    })),
+                    "account_id": "untrusted-document-account",
+                    "email": "untrusted-document@example.com",
+                    "planType": "untrusted-plan", "expires_at": "2000-01-01T00:00:00Z"
+                }]
+            }),
+            None,
+        )
         .await
         .expect("PAT import without a document user ID");
     let prepared = &prepared.accounts()[0];
@@ -408,9 +420,12 @@ async fn pat_import_times_out_without_falling_back_to_document_identity() {
     )
     .with_personal_access_token_client(Arc::new(client));
     let error = service
-        .prepare_import_document(serde_json::json!({
-            "accessToken": "at-timeout-token", "userId": "untrusted-user"
-        }))
+        .prepare_import_document_with_proxy(
+            serde_json::json!({
+                "accessToken": "at-timeout-token", "userId": "untrusted-user"
+            }),
+            None,
+        )
         .await
         .expect_err("timeout must abort PAT import");
     assert_eq!(
@@ -430,9 +445,12 @@ async fn pat_import_requires_a_validation_client() {
         Arc::new(crate::RecordingDiagnostics::default()),
     );
     let error = service
-        .prepare_import_document(serde_json::json!({
-            "accessToken": "at-test-token", "userId": "untrusted-user"
-        }))
+        .prepare_import_document_with_proxy(
+            serde_json::json!({
+                "accessToken": "at-test-token", "userId": "untrusted-user"
+            }),
+            None,
+        )
         .await
         .expect_err("PAT cannot be imported without validation");
     assert_eq!(
@@ -459,9 +477,12 @@ async fn pat_auth_json_import_and_cpr_round_trip_preserve_a_token_without_email(
         .await;
     let service = pat_service(&server);
     let imported = service
-        .prepare_import_document(serde_json::json!({
-            "auth_mode": "personalAccessToken", "personal_access_token": "at-test-token"
-        }))
+        .prepare_import_document_with_proxy(
+            serde_json::json!({
+                "auth_mode": "personalAccessToken", "personal_access_token": "at-test-token"
+            }),
+            None,
+        )
         .await
         .expect("official PAT auth.json");
     let policy = gateway_core::account::AccountModelAccess::new(
@@ -482,7 +503,10 @@ async fn pat_auth_json_import_and_cpr_round_trip_preserve_a_token_without_email(
         }])
         .expect("export PAT using the existing credential schema");
     let imported = service
-        .prepare_import_document(serde_json::to_value(exported).expect("export JSON"))
+        .prepare_import_document_with_proxy(
+            serde_json::to_value(exported).expect("export JSON"),
+            None,
+        )
         .await
         .expect("re-import verifies PAT again");
     assert_eq!(
@@ -510,9 +534,12 @@ async fn pat_import_fails_closed_for_rejection_and_unavailable_upstream_without_
             .mount(&server)
             .await;
         let error = pat_service(&server)
-            .prepare_import_document(serde_json::json!({
-                "accessToken": "at-request-secret-marker", "userId": "document-user"
-            }))
+            .prepare_import_document_with_proxy(
+                serde_json::json!({
+                    "accessToken": "at-request-secret-marker", "userId": "document-user"
+                }),
+                None,
+            )
             .await
             .expect_err("no account may be prepared after failed validation");
         assert_eq!(
@@ -551,9 +578,12 @@ async fn pat_import_rejects_missing_or_invalid_whoami_identity_fields() {
                 .mount(&server)
                 .await;
             let error = pat_service(&server)
-                .prepare_import_document(serde_json::json!({
-                    "access_token": "at-test-token", "user_id": "not-a-fallback"
-                }))
+                .prepare_import_document_with_proxy(
+                    serde_json::json!({
+                        "access_token": "at-test-token", "user_id": "not-a-fallback"
+                    }),
+                    None,
+                )
                 .await
                 .expect_err("malformed whoami must not fall back to document identity");
             assert_eq!(
@@ -580,7 +610,10 @@ async fn pat_import_rejects_invalid_json_and_oversized_chunked_success_bodies() 
             .mount(&server)
             .await;
         let error = pat_service(&server)
-            .prepare_import_document(serde_json::json!({"accessToken": "at-test-token"}))
+            .prepare_import_document_with_proxy(
+                serde_json::json!({"accessToken": "at-test-token"}),
+                None,
+            )
             .await
             .expect_err("invalid body");
         assert_eq!(
@@ -603,7 +636,10 @@ async fn pat_import_does_not_follow_redirects_or_forward_bearer_to_another_endpo
         .mount(&server)
         .await;
     let error = pat_service(&server)
-        .prepare_import_document(serde_json::json!({"accessToken": "at-test-token"}))
+        .prepare_import_document_with_proxy(
+            serde_json::json!({"accessToken": "at-test-token"}),
+            None,
+        )
         .await
         .expect_err("redirects are not accepted");
     assert_eq!(
@@ -627,7 +663,7 @@ async fn pat_import_rejects_malformed_tokens_before_sending_a_request() {
     let service = pat_service(&server);
     for token in ["at-", "at-has space", "at-has\nnewline", "at-has\0control"] {
         let error = service
-            .prepare_import_document(serde_json::json!({"accessToken": token}))
+            .prepare_import_document_with_proxy(serde_json::json!({"accessToken": token}), None)
             .await
             .expect_err("invalid PAT");
         assert_eq!(
@@ -653,9 +689,12 @@ async fn ordinary_jwt_import_does_not_call_pat_whoami_even_when_client_is_config
         serde_json::json!({"https://api.openai.com/auth": {"chatgpt_user_id": "jwt-user"}}),
     );
     let imported = pat_service(&server)
-        .prepare_import_document(serde_json::json!({
-            "accessToken": jwt, "refreshToken": "jwt-refresh", "userId": "untrusted"
-        }))
+        .prepare_import_document_with_proxy(
+            serde_json::json!({
+                "accessToken": jwt, "refreshToken": "jwt-refresh", "userId": "untrusted"
+            }),
+            None,
+        )
         .await
         .expect("existing JWT behavior");
     assert_eq!(
@@ -691,9 +730,12 @@ async fn oauth_import_uses_official_chatgpt_access_token_claims() {
         Arc::new(crate::RecordingDiagnostics::default()),
     );
     let prepared = service
-        .prepare_import_document(serde_json::json!({
-            "accessToken": access_token
-        }))
+        .prepare_import_document_with_proxy(
+            serde_json::json!({
+                "accessToken": access_token
+            }),
+            None,
+        )
         .await
         .expect("official access token claims are accepted");
 
@@ -720,9 +762,12 @@ async fn oauth_import_uses_official_plan_alias_projection_and_user_id_fallback()
         Arc::new(crate::RecordingDiagnostics::default()),
     );
     let prepared = service
-        .prepare_import_document(serde_json::json!({
-            "accessToken": access_token
-        }))
+        .prepare_import_document_with_proxy(
+            serde_json::json!({
+                "accessToken": access_token
+            }),
+            None,
+        )
         .await
         .expect("official plan alias and user ID fallback are accepted");
 
@@ -744,7 +789,10 @@ async fn oauth_import_should_preserve_pro_max_and_future_plan_claims() {
             "chatgpt_user_id":"plan-user", "chatgpt_plan_type":plan
         }}));
         let prepared = service
-            .prepare_import_document(serde_json::json!({"accessToken":access_token}))
+            .prepare_import_document_with_proxy(
+                serde_json::json!({"accessToken":access_token}),
+                None,
+            )
             .await
             .unwrap();
         assert_eq!(prepared.accounts()[0].account.plan_type(), Some(plan));
@@ -772,10 +820,13 @@ async fn oauth_import_uses_id_token_then_access_token_for_missing_claims() {
         Arc::new(crate::RecordingDiagnostics::default()),
     );
     let prepared = service
-        .prepare_import_document(serde_json::json!({
-            "accessToken": access_token,
-            "idToken": id_token
-        }))
+        .prepare_import_document_with_proxy(
+            serde_json::json!({
+                "accessToken": access_token,
+                "idToken": id_token
+            }),
+            None,
+        )
         .await
         .expect("ID token and access token claims are accepted");
 
@@ -796,13 +847,16 @@ async fn oauth_import_does_not_use_top_level_identity_fields() {
         Arc::new(crate::RecordingDiagnostics::default()),
     );
     let prepared = service
-        .prepare_import_document(serde_json::json!({
-            "accessToken": access_token,
-            "userId": "untrusted-user",
-            "accountId": "untrusted-account",
-            "email": "untrusted@example.com",
-            "planType": "pro"
-        }))
+        .prepare_import_document_with_proxy(
+            serde_json::json!({
+                "accessToken": access_token,
+                "userId": "untrusted-user",
+                "accountId": "untrusted-account",
+                "email": "untrusted@example.com",
+                "planType": "pro"
+            }),
+            None,
+        )
         .await
         .expect("token without identity claims remains importable");
 
@@ -822,9 +876,12 @@ async fn oauth_import_rejects_legacy_bare_token_field() {
         Arc::new(crate::RecordingDiagnostics::default()),
     );
     let error = service
-        .prepare_import_document(serde_json::json!({
-            "token": "header.payload.signature"
-        }))
+        .prepare_import_document_with_proxy(
+            serde_json::json!({
+                "token": "header.payload.signature"
+            }),
+            None,
+        )
         .await
         .expect_err("ambiguous token field must not be accepted");
 
@@ -886,9 +943,9 @@ async fn api_key_import_export_preserves_target_without_oauth_exchange() {
         runtime_policy(),
         Arc::new(crate::RecordingDiagnostics::default()),
     );
-    let imported = service.prepare_import_document(serde_json::json!({
+    let imported = service.prepare_import_document_with_proxy(serde_json::json!({
         "provider": "openai", "authentication_kind": "api_key", "name": "relay", "base_url": "https://relay.example/custom/v2", "api_key": "sk-test-only"
-    })).await.expect("import API account").into_accounts().pop().expect("one account");
+    }), None).await.expect("import API account").into_accounts().pop().expect("one account");
     assert_eq!(imported.account.authentication_kind(), "api_key");
     assert!(!imported.account.has_refresh_token());
     assert_eq!(imported.account.upstream_account_id(), None);
@@ -913,7 +970,7 @@ async fn api_key_import_export_preserves_target_without_oauth_exchange() {
         .into_json()
         .expect("JSON");
     let restored = service
-        .prepare_import_document(document)
+        .prepare_import_document_with_proxy(document, None)
         .await
         .expect("reimport")
         .into_accounts()
@@ -948,9 +1005,9 @@ async fn api_key_import_rejects_unsafe_urls_and_empty_keys() {
         ("https://example.com", ""),
         ("https://example.com", "sk-test\r\nx-header: value"),
     ] {
-        assert!(service.prepare_import_document(serde_json::json!({"authentication_kind":"api_key","base_url":url,"api_key":key})).await.is_err());
+        assert!(service.prepare_import_document_with_proxy(serde_json::json!({"authentication_kind":"api_key","base_url":url,"api_key":key}), None).await.is_err());
     }
-    let prepared = service.prepare_import_document(serde_json::json!({"platform":"openai","type":"apikey","credentials":{"base_url":"https://example.com","api_key":"sk-test"}})).await.unwrap();
+    let prepared = service.prepare_import_document_with_proxy(serde_json::json!({"platform":"openai","type":"apikey","credentials":{"base_url":"https://example.com","api_key":"sk-test"}}), None).await.unwrap();
     let value = prepared.accounts()[0].credential.expose_to_provider();
     assert_eq!(
         value.get("base_url"),
@@ -978,7 +1035,7 @@ async fn sub2api_api_key_import_preserves_versioned_and_explicit_responses_paths
         ),
         ("https://example.com/v1beta", "https://example.com/v1beta"),
     ] {
-        let prepared = service.prepare_import_document(serde_json::json!({"platform":"openai","type":"apikey","credentials":{"base_url":base,"api_key":"sk-test","model_mapping":{}}})).await.unwrap();
+        let prepared = service.prepare_import_document_with_proxy(serde_json::json!({"platform":"openai","type":"apikey","credentials":{"base_url":base,"api_key":"sk-test","model_mapping":{}}}), None).await.unwrap();
         assert_eq!(
             prepared.accounts()[0]
                 .credential
@@ -987,5 +1044,5 @@ async fn sub2api_api_key_import_preserves_versioned_and_explicit_responses_paths
             Some(&serde_json::json!(expected))
         );
     }
-    assert!(service.prepare_import_document(serde_json::json!({"platform":"openai","type":"apikey","credentials":{"api_key":"sk-test"},"extra":{"openai_api_key_responses_websockets_v2_mode":"http_bridge"}})).await.is_err());
+    assert!(service.prepare_import_document_with_proxy(serde_json::json!({"platform":"openai","type":"apikey","credentials":{"api_key":"sk-test"},"extra":{"openai_api_key_responses_websockets_v2_mode":"http_bridge"}}), None).await.is_err());
 }

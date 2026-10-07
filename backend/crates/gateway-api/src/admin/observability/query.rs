@@ -54,15 +54,7 @@ pub struct UsageQuery {
 impl UsageQuery {
     /// 校验 Element Plus 风格的页码分页字段
     pub fn validate_pagination(&self) -> Result<(u32, u16), WireValidationError> {
-        let current_page = self.current_page.unwrap_or(1);
-        if current_page == 0 {
-            return Err(WireValidationError::new("currentPage"));
-        }
-        let page_size = self.page_size.unwrap_or(DEFAULT_PAGE_SIZE);
-        if DomainPageSize::new(page_size).is_err() {
-            return Err(WireValidationError::new("pageSize"));
-        }
-        Ok((current_page, page_size))
+        validate_pagination(self.current_page, self.page_size)
     }
 }
 
@@ -131,15 +123,7 @@ pub struct OpsQuery {
 impl OpsQuery {
     /// 校验 Element Plus 风格的页码分页字段
     pub fn validate_pagination(&self) -> Result<(u32, u16), WireValidationError> {
-        let current_page = self.current_page.unwrap_or(1);
-        if current_page == 0 {
-            return Err(WireValidationError::new("currentPage"));
-        }
-        let page_size = self.page_size.unwrap_or(DEFAULT_PAGE_SIZE);
-        if DomainPageSize::new(page_size).is_err() {
-            return Err(WireValidationError::new("pageSize"));
-        }
-        Ok((current_page, page_size))
+        validate_pagination(self.current_page, self.page_size)
     }
 }
 
@@ -395,4 +379,19 @@ pub(crate) fn non_empty(value: Option<String>) -> Option<String> {
     value
         .map(|value| value.trim().to_owned())
         .filter(|value| !value.is_empty())
+}
+
+fn validate_pagination(
+    current_page: Option<u32>,
+    page_size: Option<u16>,
+) -> Result<(u32, u16), WireValidationError> {
+    let current_page = current_page.unwrap_or(1);
+    if current_page == 0 {
+        return Err(WireValidationError::new("currentPage"));
+    }
+    let page_size = page_size.unwrap_or(DEFAULT_PAGE_SIZE);
+    if DomainPageSize::new(page_size).is_err() {
+        return Err(WireValidationError::new("pageSize"));
+    }
+    Ok((current_page, page_size))
 }

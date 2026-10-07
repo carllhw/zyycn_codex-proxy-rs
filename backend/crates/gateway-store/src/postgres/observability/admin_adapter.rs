@@ -1,4 +1,4 @@
-//! Pg 观测 adapter：实现 `ObservabilityRepository` 与 `AdminObservabilityStore`
+//! Pg 观测查询与 Admin 观测端口适配
 
 use futures::{StreamExt, TryStreamExt, stream::BoxStream};
 use gateway_admin::ports::store::UsageCalculatedBillingStream;
@@ -7,10 +7,7 @@ use std::sync::Arc;
 
 use super::*;
 
-use crate::postgres::{
-    PgProviderAccountRepository, ProviderAccountRepository, ProviderAccountSummary,
-    account_status_projection, load_cooldown,
-};
+use crate::postgres::{ProviderAccountStatus, load_account_statuses, load_cooldown};
 
 use crate::redis::{CredentialLeaseRepository as _, RedisCredentialLeaseRepository};
 
@@ -19,6 +16,7 @@ pub struct PgObservabilityRepository {
     timezone: gateway_core::time::DeploymentTimeZone,
     pool: PgPool,
     cooldowns: Option<Arc<dyn ProviderCooldownPort>>,
+    runtime_signals: Option<RedisCredentialLeaseRepository>,
     query_budget: ObservabilityQueryBudget,
 }
 
@@ -28,11 +26,13 @@ impl PgObservabilityRepository {
         pool: PgPool,
         cooldowns: Option<Arc<dyn ProviderCooldownPort>>,
         query_budget: ObservabilityQueryBudget,
+        runtime_signals: Option<RedisCredentialLeaseRepository>,
     ) -> Self {
         Self {
             timezone: Default::default(),
             pool,
             cooldowns,
+            runtime_signals,
             query_budget,
         }
     }
@@ -47,13 +47,12 @@ impl PgObservabilityRepository {
     async fn account_status_snapshot(
         &self,
         observed_at: DateTime<Utc>,
-    ) -> StoreResult<(ProviderAccountMetrics, Vec<ProviderAccountSummary>)> {
-        let repository = PgProviderAccountRepository::new(self.pool.clone());
+    ) -> StoreResult<(ProviderAccountMetrics, Vec<ProviderAccountStatus>)> {
         let accounts = self
             .query_budget
             .run(
                 "load dashboard provider accounts",
-                repository.list_provider_accounts(None, true),
+                load_account_statuses(&self.pool),
             )
             .await?;
         let now = observed_at.into();
@@ -63,13 +62,13 @@ impl PgObservabilityRepository {
             ..ProviderAccountMetrics::default()
         };
         let mut normal_accounts = Vec::new();
-        for account in &accounts {
-            let projection =
-                account_status_projection(account, now, cooldown.get(&account.id).copied());
+        for mut account in accounts {
+            account.facts.cooldown = cooldown.get(&account.id).copied();
+            let projection = gateway_core::account::resolve_account_status(&account.facts, now);
             match projection.status {
                 gateway_core::account::AccountStatus::Normal => {
                     metrics.normal = metrics.normal.saturating_add(1);
-                    normal_accounts.push(account.clone());
+                    normal_accounts.push(account);
                 }
                 gateway_core::account::AccountStatus::QuotaExhausted => {
                     metrics.quota_exhausted = metrics.quota_exhausted.saturating_add(1);
@@ -87,6 +86,49 @@ impl PgObservabilityRepository {
         }
         Ok((metrics, normal_accounts))
     }
+    async fn dashboard_runtime_slots(
+        &self,
+        normal_accounts: &[ProviderAccountStatus],
+    ) -> StoreResult<admin_observability::DashboardRuntimeSlots> {
+        let inherited_accounts = u64::try_from(
+            normal_accounts
+                .iter()
+                .filter(|account| account.concurrency_limit.is_none())
+                .count(),
+        )
+        .map_err(|_| invalid("inherited account count overflows u64"))?;
+        let overridden_slots = normal_accounts.iter().fold(0_u64, |total, account| {
+            total.saturating_add(
+                account
+                    .concurrency_limit
+                    .map_or(0, |limit| u64::from(limit.get())),
+            )
+        });
+        let used_slots = if normal_accounts.is_empty() {
+            Some(0)
+        } else if let Some(runtime_signals) = &self.runtime_signals {
+            let ids = normal_accounts
+                .iter()
+                .map(|account| account.id.clone())
+                .collect::<Vec<_>>();
+            runtime_signals
+                .credential_runtime_signals(&ids)
+                .await
+                .ok()
+                .map(|signals| {
+                    signals.into_iter().fold(0_u64, |total, signal| {
+                        total.saturating_add(u64::from(signal.in_flight))
+                    })
+                })
+        } else {
+            None
+        };
+        Ok(admin_observability::DashboardRuntimeSlots {
+            inherited_accounts,
+            overridden_slots,
+            used_slots,
+        })
+    }
 }
 
 /// `gateway-admin` 观测端口的 PostgreSQL adapter
@@ -96,7 +138,6 @@ impl PgObservabilityRepository {
 #[derive(Clone)]
 pub struct PgAdminObservabilityStore {
     repository: PgObservabilityRepository,
-    runtime_signals: Option<RedisCredentialLeaseRepository>,
 }
 
 impl PgAdminObservabilityStore {
@@ -108,8 +149,12 @@ impl PgAdminObservabilityStore {
         query_budget: ObservabilityQueryBudget,
     ) -> Self {
         Self {
-            repository: PgObservabilityRepository::new(pool, cooldowns, query_budget),
-            runtime_signals,
+            repository: PgObservabilityRepository::new(
+                pool,
+                cooldowns,
+                query_budget,
+                runtime_signals,
+            ),
         }
     }
     #[must_use]
@@ -119,39 +164,41 @@ impl PgAdminObservabilityStore {
     }
 }
 
-#[async_trait]
-impl ObservabilityRepository for PgObservabilityRepository {
-    async fn dashboard_summary(
+impl PgObservabilityRepository {
+    pub async fn dashboard_summary(
         &self,
-        range: ObservabilityRange,
+        query: admin_observability::DashboardQuery,
         observed_at: DateTime<Utc>,
     ) -> StoreResult<DashboardObservation> {
+        let range = store_range(query.range)?;
         let filter = UsageRecordFilter::default();
-        let account_usage_query =
-            ProviderAccountUsageQuery::recent(range, DASHBOARD_ACCOUNT_LIMIT)?
-                .with_hourly_request_buckets()?;
+        let account_usage_query = ProviderAccountUsageQuery::recent(range, query.account_limit)?
+            .with_hourly_request_buckets()?;
         let recent_query = UsageRecordQuery {
             range,
-            filter: UsageRecordFilter {
-                outcome: Some("succeeded".to_owned()),
-                ..UsageRecordFilter::default()
-            },
+            filter: store_usage_filter(query.recent_request_filter),
             current_page: 1,
-            page_size: ObservabilityPageSize::new(10)
+            page_size: ObservabilityPageSize::new(query.recent_request_limit)
                 .map_err(|_| invalid("invalid dashboard page size"))?,
         };
         // 每条 SQL 独立取一个全局观测槽位，避免整包预留造成队头阻塞
-        let (totals, (provider_accounts, _)) = futures::try_join!(
+        let (totals, (provider_accounts, normal_accounts)) = futures::try_join!(
             self.query_budget.run(
                 "load dashboard lifetime totals",
                 dashboard_totals(&self.pool)
             ),
             self.account_status_snapshot(observed_at),
         )?;
-        let (trend, account_usage, recent_requests) = futures::try_join!(
+        let (trend, account_usage, recent_requests, runtime_slots) = futures::try_join!(
             self.query_budget.run(
                 "load dashboard request trend",
-                dashboard_request_metric_series(&self.pool, range, &filter, self.timezone),
+                dashboard_request_metric_series(
+                    &self.pool,
+                    range,
+                    &filter,
+                    query.granularity,
+                    self.timezone
+                ),
             ),
             self.query_budget.run(
                 "load dashboard account usage",
@@ -161,20 +208,23 @@ impl ObservabilityRepository for PgObservabilityRepository {
                 .run("load dashboard recent requests", async {
                     list_usage_record_items(&self.pool, &recent_query).await
                 }),
+            self.dashboard_runtime_slots(&normal_accounts),
         )?;
         Ok(DashboardObservation {
             range,
             totals,
             provider_accounts,
+            runtime_slots,
             trend,
             account_usage,
             recent_requests,
         })
     }
 
-    async fn dashboard_trend(
+    pub async fn dashboard_trend(
         &self,
         range: ObservabilityRange,
+        granularity: admin_observability::Granularity,
     ) -> StoreResult<Vec<RequestMetricPoint>> {
         self.query_budget
             .run(
@@ -183,37 +233,40 @@ impl ObservabilityRepository for PgObservabilityRepository {
                     &self.pool,
                     range,
                     &UsageRecordFilter::default(),
+                    granularity,
                     self.timezone,
                 ),
             )
             .await
     }
 
-    async fn usage_trend(
+    pub async fn usage_trend(
         &self,
         range: ObservabilityRange,
         filter: UsageRecordFilter,
+        granularity: admin_observability::Granularity,
     ) -> StoreResult<Vec<RequestMetricPoint>> {
         self.query_budget
             .run(
                 "load usage request trend",
-                request_metric_series(&self.pool, range, &filter, self.timezone),
+                request_metric_series(&self.pool, range, &filter, granularity, self.timezone),
             )
             .await
     }
 
-    fn usage_calculated_billing_facts(
+    pub fn usage_calculated_billing_facts(
         &self,
         range: ObservabilityRange,
         filter: UsageRecordFilter,
+        granularity: admin_observability::Granularity,
     ) -> BoxStream<'_, StoreResult<CalculatedUsageBillingFact>> {
         self.query_budget.run_stream(
             "load calculated usage billing facts",
-            calculated_usage_billing_facts(&self.pool, range, filter, self.timezone),
+            calculated_usage_billing_facts(&self.pool, range, filter, granularity, self.timezone),
         )
     }
 
-    async fn provider_account_usage(
+    pub async fn provider_account_usage(
         &self,
         query: ProviderAccountUsageQuery,
     ) -> StoreResult<Vec<ProviderAccountUsageObservation>> {
@@ -225,13 +278,16 @@ impl ObservabilityRepository for PgObservabilityRepository {
             .await
     }
 
-    async fn list_usage_records(&self, query: UsageRecordQuery) -> StoreResult<UsageRecordPage> {
+    pub async fn list_usage_records(
+        &self,
+        query: UsageRecordQuery,
+    ) -> StoreResult<UsageRecordPage> {
         self.query_budget
             .run("list usage records", list_usage_records(&self.pool, query))
             .await
     }
 
-    async fn usage_record_detail(&self, request_id: &str) -> StoreResult<UsageRecordDetail> {
+    pub async fn usage_record_detail(&self, request_id: &str) -> StoreResult<UsageRecordDetail> {
         self.query_budget
             .run(
                 "load usage record detail",
@@ -240,7 +296,7 @@ impl ObservabilityRepository for PgObservabilityRepository {
             .await
     }
 
-    async fn usage_summary(
+    pub async fn usage_summary(
         &self,
         range: ObservabilityRange,
         filter: UsageRecordFilter,
@@ -275,21 +331,22 @@ impl ObservabilityRepository for PgObservabilityRepository {
         })
     }
 
-    async fn usage_diagnostics(
+    pub async fn usage_diagnostics(
         &self,
         range: ObservabilityRange,
         filter: UsageRecordFilter,
         dimension: DiagnosticDimension,
+        limit: u16,
     ) -> StoreResult<DiagnosticsObservation> {
         self.query_budget
             .run(
                 "load usage diagnostics",
-                usage_diagnostics(&self.pool, range, &filter, dimension),
+                usage_diagnostics(&self.pool, range, &filter, dimension, limit),
             )
             .await
     }
 
-    async fn list_ops_errors(&self, query: OpsErrorQuery) -> StoreResult<OpsErrorPage> {
+    pub async fn list_ops_errors(&self, query: OpsErrorQuery) -> StoreResult<OpsErrorPage> {
         self.query_budget
             .run("list ops errors", list_ops_errors(&self.pool, query))
             .await
@@ -300,88 +357,28 @@ impl ObservabilityRepository for PgObservabilityRepository {
 impl AdminObservabilityStore for PgAdminObservabilityStore {
     async fn dashboard_summary(
         &self,
-        range: admin_observability::TimeRange,
+        query: admin_observability::DashboardQuery,
         observed_at: DateTime<Utc>,
     ) -> AdminStoreResult<admin_observability::DashboardObservation> {
         let observation = self
             .repository
-            .dashboard_summary(store_range(range)?, observed_at)
+            .dashboard_summary(query, observed_at)
             .await
             .map_err(observability_error)?;
         Ok(admin_dashboard_observation(observation))
     }
 
-    async fn dashboard_runtime_slots(
-        &self,
-        observed_at: DateTime<Utc>,
-    ) -> AdminStoreResult<Option<admin_observability::DashboardRuntimeSlots>> {
-        let (_, normal_accounts) = self
-            .repository
-            .account_status_snapshot(observed_at)
-            .await
-            .map_err(observability_error)?;
-        let inherited_accounts = u64::try_from(
-            normal_accounts
-                .iter()
-                .filter(|account| account.concurrency_limit.is_none())
-                .count(),
-        )
-        .map_err(|_| observability_error(invalid("inherited account count overflows u64")))?;
-        let overridden_slots = normal_accounts.iter().fold(0_u64, |total, account| {
-            total.saturating_add(
-                account
-                    .concurrency_limit
-                    .map_or(0, |limit| u64::from(limit.get())),
-            )
-        });
-        if normal_accounts.is_empty() {
-            return Ok(Some(admin_observability::DashboardRuntimeSlots {
-                inherited_accounts,
-                overridden_slots,
-                used_slots: Some(0),
-            }));
-        }
-        let normal_account_ids = normal_accounts
-            .iter()
-            .map(|account| account.id.clone())
-            .collect::<Vec<_>>();
-        let Some(runtime_signals) = &self.runtime_signals else {
-            return Ok(Some(admin_observability::DashboardRuntimeSlots {
-                inherited_accounts,
-                overridden_slots,
-                used_slots: None,
-            }));
-        };
-        let signals = match runtime_signals
-            .credential_runtime_signals(&normal_account_ids)
-            .await
-        {
-            Ok(signals) => signals,
-            Err(_) => {
-                return Ok(Some(admin_observability::DashboardRuntimeSlots {
-                    inherited_accounts,
-                    overridden_slots,
-                    used_slots: None,
-                }));
-            }
-        };
-        let used_slots = signals.into_iter().fold(0_u64, |total, signal| {
-            total.saturating_add(u64::from(signal.in_flight))
-        });
-        Ok(Some(admin_observability::DashboardRuntimeSlots {
-            inherited_accounts,
-            overridden_slots,
-            used_slots: Some(used_slots),
-        }))
-    }
-
     async fn dashboard_trend(
         &self,
         range: admin_observability::TimeRange,
+        granularity: admin_observability::Granularity,
     ) -> AdminStoreResult<Vec<admin_observability::RequestMetricPoint>> {
         Ok(self
             .repository
-            .dashboard_trend(store_range(range)?)
+            .dashboard_trend(
+                store_range(range).map_err(observability_error)?,
+                granularity,
+            )
             .await
             .map_err(observability_error)?
             .into_iter()
@@ -393,10 +390,15 @@ impl AdminObservabilityStore for PgAdminObservabilityStore {
         &self,
         range: admin_observability::TimeRange,
         filter: admin_observability::UsageFilter,
+        granularity: admin_observability::Granularity,
     ) -> AdminStoreResult<Vec<admin_observability::RequestMetricPoint>> {
         Ok(self
             .repository
-            .usage_trend(store_range(range)?, store_usage_filter(filter))
+            .usage_trend(
+                store_range(range).map_err(observability_error)?,
+                store_usage_filter(filter),
+                granularity,
+            )
             .await
             .map_err(observability_error)?
             .into_iter()
@@ -408,13 +410,18 @@ impl AdminObservabilityStore for PgAdminObservabilityStore {
         &self,
         range: admin_observability::TimeRange,
         filter: admin_observability::UsageFilter,
+        granularity: admin_observability::Granularity,
     ) -> UsageCalculatedBillingStream<'_> {
         let range = match store_range(range) {
             Ok(range) => range,
-            Err(error) => return Box::pin(futures::stream::once(async { Err(error) })),
+            Err(error) => {
+                return Box::pin(futures::stream::once(async {
+                    Err(observability_error(error))
+                }));
+            }
         };
         self.repository
-            .usage_calculated_billing_facts(range, store_usage_filter(filter))
+            .usage_calculated_billing_facts(range, store_usage_filter(filter), granularity)
             .map_err(observability_error)
             .map_ok(admin_calculated_usage_billing_fact)
             .boxed()
@@ -451,7 +458,10 @@ impl AdminObservabilityStore for PgAdminObservabilityStore {
     ) -> AdminStoreResult<admin_observability::UsageOverview> {
         let overview = self
             .repository
-            .usage_summary(store_range(range)?, store_usage_filter(filter))
+            .usage_summary(
+                store_range(range).map_err(observability_error)?,
+                store_usage_filter(filter),
+            )
             .await
             .map_err(observability_error)?;
         Ok(admin_usage_overview(overview))
@@ -462,13 +472,15 @@ impl AdminObservabilityStore for PgAdminObservabilityStore {
         range: admin_observability::TimeRange,
         filter: admin_observability::UsageFilter,
         dimension: admin_observability::DiagnosticDimension,
+        limit: u16,
     ) -> AdminStoreResult<admin_observability::DiagnosticsObservation> {
         let observation = self
             .repository
             .usage_diagnostics(
-                store_range(range)?,
+                store_range(range).map_err(observability_error)?,
                 store_usage_filter(filter),
-                store_diagnostic_dimension(dimension),
+                dimension,
+                limit,
             )
             .await
             .map_err(observability_error)?;

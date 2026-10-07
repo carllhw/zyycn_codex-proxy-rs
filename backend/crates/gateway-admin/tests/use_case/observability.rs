@@ -18,7 +18,7 @@ use gateway_admin::{
         MutationContext, Revision,
         observability::{
             AccountPoolMetrics, AttemptMetrics, CostCoverage, CurrencyCost, DashboardAccountUsage,
-            DashboardObservation, DashboardRuntimeSlots, DiagnosticDimension,
+            DashboardObservation, DashboardQuery, DashboardRuntimeSlots, DiagnosticDimension,
             DiagnosticObservation, DiagnosticsObservation, Granularity, HealthStatus,
             LatencyPercentiles, ObservabilityPageSize, OpsErrorPage, OpsErrorQuery,
             PercentileMilliseconds, RequestMetricPoint, RequestMetrics, TimeRange, TrendKind,
@@ -282,7 +282,7 @@ async fn dashboard_capacity_distinguishes_unlimited_inheritance_finite_overrides
 }
 
 #[tokio::test]
-async fn dashboard_summary_should_share_one_current_observation_time_across_runtime_facts() {
+async fn dashboard_summary_should_observe_current_accounts_for_a_historical_range() {
     let historical_end = Utc::now() - Duration::hours(1);
     let store = Arc::new(FixtureObservabilityStore::new(observation_range(
         historical_end,
@@ -295,8 +295,7 @@ async fn dashboard_summary_should_share_one_current_observation_time_across_runt
         .await
         .expect("dashboard summary");
 
-    let (summary_observed_at, slots_observed_at) = store.observed_times();
-    assert_eq!(summary_observed_at, slots_observed_at);
+    let summary_observed_at = *store.summary_observed_at.lock().unwrap();
     assert!(summary_observed_at.is_some_and(|value| value > historical_end));
 }
 
@@ -789,7 +788,8 @@ struct FixtureObservabilityStore {
     diagnostics: Mutex<DiagnosticsObservation>,
     runtime_slots: Mutex<Option<DashboardRuntimeSlots>>,
     summary_observed_at: Mutex<Option<DateTime<Utc>>>,
-    slots_observed_at: Mutex<Option<DateTime<Utc>>>,
+    summary_query: Mutex<Option<DashboardQuery>>,
+    usage_granularities: Mutex<Vec<Granularity>>,
     usage_records: Mutex<Vec<UsageListRecord>>,
     account_usage: Mutex<Vec<DashboardAccountUsage>>,
     dashboard_delay: Mutex<StdDuration>,
@@ -811,7 +811,8 @@ impl FixtureObservabilityStore {
             diagnostics: Mutex::new(DiagnosticsObservation::default()),
             runtime_slots: Mutex::new(None),
             summary_observed_at: Mutex::new(None),
-            slots_observed_at: Mutex::new(None),
+            summary_query: Mutex::new(None),
+            usage_granularities: Mutex::new(Vec::new()),
             usage_records: Mutex::new(Vec::new()),
             account_usage: Mutex::new(Vec::new()),
             dashboard_delay: Mutex::new(StdDuration::ZERO),
@@ -850,16 +851,6 @@ impl FixtureObservabilityStore {
         *self.runtime_slots.lock().expect("runtime slots") = runtime_slots;
     }
 
-    fn observed_times(&self) -> (Option<DateTime<Utc>>, Option<DateTime<Utc>>) {
-        (
-            *self
-                .summary_observed_at
-                .lock()
-                .expect("summary observed at"),
-            *self.slots_observed_at.lock().expect("slots observed at"),
-        )
-    }
-
     fn replace_usage_records(&self, records: Vec<UsageListRecord>) {
         *self.usage_records.lock().expect("usage records") = records;
     }
@@ -869,10 +860,11 @@ impl FixtureObservabilityStore {
 impl ObservabilityStore for FixtureObservabilityStore {
     async fn dashboard_summary(
         &self,
-        range: TimeRange,
+        query: DashboardQuery,
         observed_at: DateTime<Utc>,
     ) -> AdminStoreResult<DashboardObservation> {
         self.dashboard_summary_calls.fetch_add(1, Ordering::Relaxed);
+        *self.summary_query.lock().unwrap() = Some(query.clone());
         *self
             .summary_observed_at
             .lock()
@@ -882,24 +874,21 @@ impl ObservabilityStore for FixtureObservabilityStore {
             tokio::time::sleep(dashboard_delay).await;
         }
         Ok(DashboardObservation {
-            range,
+            range: query.range,
             totals: Default::default(),
             provider_accounts: AccountPoolMetrics::default(),
+            runtime_slots: *self.runtime_slots.lock().expect("runtime slots"),
             trend: self.trend.lock().expect("trend").clone(),
             account_usage: self.account_usage.lock().expect("account usage").clone(),
             recent_requests: Vec::new(),
         })
     }
 
-    async fn dashboard_runtime_slots(
+    async fn dashboard_trend(
         &self,
-        observed_at: DateTime<Utc>,
-    ) -> AdminStoreResult<Option<DashboardRuntimeSlots>> {
-        *self.slots_observed_at.lock().expect("slots observed at") = Some(observed_at);
-        Ok(*self.runtime_slots.lock().expect("runtime slots"))
-    }
-
-    async fn dashboard_trend(&self, _: TimeRange) -> AdminStoreResult<Vec<RequestMetricPoint>> {
+        _: TimeRange,
+        _: Granularity,
+    ) -> AdminStoreResult<Vec<RequestMetricPoint>> {
         Ok(self.trend.lock().expect("trend").clone())
     }
 
@@ -907,7 +896,9 @@ impl ObservabilityStore for FixtureObservabilityStore {
         &self,
         _: TimeRange,
         _: UsageFilter,
+        granularity: Granularity,
     ) -> AdminStoreResult<Vec<RequestMetricPoint>> {
+        self.usage_granularities.lock().unwrap().push(granularity);
         Ok(self.trend.lock().expect("trend").clone())
     }
 
@@ -915,7 +906,9 @@ impl ObservabilityStore for FixtureObservabilityStore {
         &self,
         _: TimeRange,
         _: UsageFilter,
+        granularity: Granularity,
     ) -> gateway_admin::ports::store::UsageCalculatedBillingStream<'_> {
+        self.usage_granularities.lock().unwrap().push(granularity);
         let facts = self
             .calculated_billing_facts
             .lock()
@@ -954,6 +947,7 @@ impl ObservabilityStore for FixtureObservabilityStore {
         _: TimeRange,
         _: UsageFilter,
         _: DiagnosticDimension,
+        _: u16,
     ) -> AdminStoreResult<DiagnosticsObservation> {
         Ok(self.diagnostics.lock().expect("diagnostics").clone())
     }
@@ -1194,4 +1188,42 @@ fn diagnostic(name: &str, request_count: u64) -> DiagnosticObservation {
 fn quarter_hour_start(value: DateTime<Utc>) -> DateTime<Utc> {
     let elapsed = value.timestamp().rem_euclid(15 * 60);
     value - Duration::seconds(elapsed) - Duration::nanoseconds(i64::from(value.nanosecond()))
+}
+
+#[tokio::test]
+async fn admin_selects_dashboard_defaults_and_matching_usage_buckets_at_range_boundaries() {
+    let now = Utc::now();
+    for (duration, expected) in [
+        (Duration::days(2), Granularity::FifteenMinutes),
+        (Duration::days(2) + Duration::seconds(1), Granularity::Hour),
+        (Duration::days(31), Granularity::Hour),
+        (Duration::days(31) + Duration::seconds(1), Granularity::Day),
+    ] {
+        let range = TimeRange::new(now - duration, now).unwrap();
+        let store = Arc::new(FixtureObservabilityStore::new(range));
+        let services = observability_services(store.clone()).await;
+        services
+            .observability()
+            .dashboard_summary(range, TrendKind::Usage)
+            .await
+            .unwrap();
+        let query = store.summary_query.lock().unwrap().clone().unwrap();
+        assert_eq!(query.range, range);
+        assert_eq!(query.granularity, expected);
+        assert_eq!(query.account_limit, 4);
+        assert_eq!(query.recent_request_limit, 10);
+        assert_eq!(
+            query.recent_request_filter.outcome,
+            Some(gateway_admin::model::observability::RequestOutcome::Succeeded)
+        );
+        services
+            .observability()
+            .usage_insights(range, UsageFilter::default())
+            .await
+            .unwrap();
+        assert_eq!(
+            *store.usage_granularities.lock().unwrap(),
+            vec![expected, expected]
+        );
+    }
 }

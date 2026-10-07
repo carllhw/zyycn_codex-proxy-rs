@@ -49,7 +49,7 @@ pub(super) fn observability_query_budget() -> ObservabilityQueryBudget {
 }
 
 pub(super) fn observability_repository(pool: &PgPool) -> PgObservabilityRepository {
-    PgObservabilityRepository::new(pool.clone(), None, observability_query_budget())
+    PgObservabilityRepository::new(pool.clone(), None, observability_query_budget(), None)
 }
 
 pub(super) fn admin_observability_store(pool: &PgPool) -> PgAdminObservabilityStore {

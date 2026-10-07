@@ -20,7 +20,6 @@ chrono-tz = { version = "0.10", features = ["serde"] }
 event-listener = "5.4.2"
 futures = "0.3.32"
 http = "1.5.0"
-http-body = "1.0.1"
 http-body-util = "0.1.5"
 futures-timer = "3.0.3"
 serde = { version = "1.0.228", features = ["derive", "rc"] }

@@ -171,52 +171,6 @@ fn filter_client_headers(
 }
 
 fn client_response_header_is_forwardable(name: &str, connection_options: &[String]) -> bool {
-    let name = name.trim().to_ascii_lowercase();
-    if connection_options
-        .iter()
-        .any(|option| option.eq_ignore_ascii_case(&name))
-        || name.starts_with("sec-websocket-")
-    {
-        return false;
-    }
-    if is_codex_quota_header_name(&name) {
-        return false;
-    }
-
-    !matches!(
-        name.as_str(),
-        // 逐跳和 framing 由下游 adapter 针对实际 JSON/SSE/WebSocket 载体重建
-        "connection"
-            | "keep-alive"
-            | "proxy-connection"
-            | "te"
-            | "trailer"
-            | "transfer-encoding"
-            | "upgrade"
-            | "content-length"
-            | "content-type"
-            | "content-encoding"
-            // 上游账号、凭据和 cookie 不能跨越换号边界
-            | "authorization"
-            | "x-api-key"
-            | "www-authenticate"
-            | "authentication-info"
-            | "proxy-authenticate"
-            | "proxy-authorization"
-            | "proxy-authentication-info"
-            | "cookie"
-            | "cookie2"
-            | "set-cookie"
-            | "set-cookie2"
-            | "chatgpt-account-id"
-            | "chatgpt-organization-id"
-            | "chatgpt-org-id"
-            | "chatgpt-project-id"
-            | "openai-organization"
-            | "openai-project"
-            | "x-openai-organization"
-            | "x-openai-project"
-            | "x-codex-installation-id"
-            | "x-codex-turn-metadata"
-    )
+    gateway_protocol::openai::response_header_is_forwardable(name, connection_options)
+        && !is_codex_quota_header_name(name.trim())
 }

@@ -306,6 +306,8 @@ fn test_connection(stall_writes: bool) -> PumpHarness {
         Arc::from("ws_test"),
         cancellation.clone(),
         ConnectionConfig::PRODUCTION,
+        None,
+        Arc::from([]),
     );
     PumpHarness {
         connection,

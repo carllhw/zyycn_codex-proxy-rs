@@ -1745,7 +1745,6 @@ dependencies = [
  "futures",
  "futures-timer",
  "http",
- "http-body",
  "http-body-util",
  "semver",
  "serde",

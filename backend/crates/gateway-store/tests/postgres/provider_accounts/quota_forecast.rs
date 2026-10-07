@@ -1,10 +1,12 @@
 //! 验证额度预测查询的请求筛选、配对采样与文档读取限制
 
+use gateway_admin::model::observability as admin_observability;
+
 use super::*;
 use gateway_admin::model::quota_forecast_sampling::MAX_FORECAST_HISTORY_POINTS;
 use gateway_store::postgres::{
-    ObservabilityPageSize, ObservabilityRange, ObservabilityRepository, ProviderAccountUsageQuery,
-    UsageRecordFilter, UsageRecordQuery,
+    ObservabilityPageSize, ObservabilityRange, ProviderAccountUsageQuery, UsageRecordFilter,
+    UsageRecordQuery,
 };
 
 #[tokio::test]
@@ -93,7 +95,16 @@ async fn quota_forecast_excludes_openai_prewarm_but_preserves_inference_and_audi
     let detail = repository.usage_record_detail("prewarm").await.unwrap();
     assert_eq!(detail.request.request_kind.as_deref(), Some("prewarm"));
     assert_eq!(detail.request.service_tier.as_deref(), Some("auto"));
-    let dashboard = repository.dashboard_summary(range, end).await.unwrap();
+    let dashboard = repository
+        .dashboard_summary(
+            admin_observability::DashboardQuery::new(admin_observability::TimeRange {
+                start: range.start,
+                end: range.end,
+            }),
+            end,
+        )
+        .await
+        .unwrap();
     assert_eq!(dashboard.totals.request_count, 3);
     assert_eq!(dashboard.totals.total_tokens, 300);
 

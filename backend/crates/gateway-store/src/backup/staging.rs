@@ -83,9 +83,16 @@ impl StagingArea {
     }
 
     /// 清理该备份在暂存区的全部文件；不存在视为成功
-    pub fn cleanup(&self, backup_id: &str) {
-        let _ = std::fs::remove_file(self.partial_path(backup_id));
-        let _ = std::fs::remove_file(self.final_path(backup_id));
+    ///
+    /// # Errors
+    ///
+    /// 文件删除失败时返回错误，仍尝试清理另一条路径
+    pub fn cleanup(&self, backup_id: &str) -> StoreResult<()> {
+        let partial = remove_if_exists(&self.partial_path(backup_id));
+        let complete = remove_if_exists(&self.final_path(backup_id));
+        partial
+            .and(complete)
+            .map_err(|source| unavailable("remove staged archive", source))
     }
 
     /// 校验一个已完成归档的暂存路径归属本暂存区
@@ -107,5 +114,12 @@ fn invalid(message: &str) -> StoreError {
         source: None,
         entity: "backup staging",
         message: message.to_owned(),
+    }
+}
+
+pub(super) fn remove_if_exists(path: &Path) -> std::io::Result<()> {
+    match std::fs::remove_file(path) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        result => result,
     }
 }

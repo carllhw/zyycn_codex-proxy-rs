@@ -465,16 +465,6 @@ pub fn prepare_command_plane(
     }
 }
 
-pub async fn initialize_control_plane(
-    ports: CoreStorePorts,
-    providers: ProviderRegistry,
-    extensions: Option<Arc<dyn runtime::extensions::ExtensionPreparationPort>>,
-) -> Result<CoreControlPlaneBundle, CoreError> {
-    prepare_control_plane(ports, providers, extensions)
-        .activate()
-        .await
-}
-
 /// 仅构造管理命令所需快照能力，不恢复准入、不发现目录且不启动 Worker
 #[must_use]
 pub fn prepare_control_plane(

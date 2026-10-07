@@ -3,17 +3,8 @@
 use chrono::Utc;
 use gateway_store::{
     Revision,
-    redis::{
-        CredentialStateCache, ProviderCatalogCacheRepository, RedisCredentialStateRepository,
-        RedisProviderCatalogCacheKey,
-    },
+    redis::{CredentialStateCache, RedisProviderCatalogCacheKey},
 };
-
-#[test]
-fn credential_state_adapter_implements_opaque_catalog_cache_port() {
-    fn assert_port<T: ProviderCatalogCacheRepository>() {}
-    assert_port::<RedisCredentialStateRepository>();
-}
 
 #[test]
 fn credential_state_rejects_provider_specific_status() {

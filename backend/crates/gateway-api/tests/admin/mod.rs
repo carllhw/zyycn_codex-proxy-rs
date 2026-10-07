@@ -37,9 +37,10 @@ use gateway_admin::{
             NewClientKey, SetClientKeyEnabled, UpdateClientKey,
         },
         observability::{
-            DashboardObservation, DecimalAmount, DiagnosticDimension, DiagnosticsObservation,
-            OpsError, OpsErrorPage, OpsErrorQuery, RequestMetricPoint, TimeRange, UsageDetail,
-            UsageFilter, UsageListRecord, UsageOverview, UsagePage, UsageQuery,
+            DashboardObservation, DashboardQuery, DecimalAmount, DiagnosticDimension,
+            DiagnosticsObservation, Granularity, OpsError, OpsErrorPage, OpsErrorQuery,
+            RequestMetricPoint, TimeRange, UsageDetail, UsageFilter, UsageListRecord,
+            UsageOverview, UsagePage, UsageQuery,
         },
         provider_credentials::{
             AuthorizationCommit, AuthorizationStarted, CompleteAuthorization, CredentialDetails,
@@ -1303,13 +1304,13 @@ impl AccountRuntimeStore for UnusedStore {
 impl ObservabilityStore for UnusedStore {
     async fn dashboard_summary(
         &self,
-        range: TimeRange,
+        query: DashboardQuery,
         _: DateTime<Utc>,
     ) -> AdminStoreResult<DashboardObservation> {
         *self
             .dashboard_summary_range
             .lock()
-            .expect("dashboard summary range") = Some(range);
+            .expect("dashboard summary range") = Some(query.range);
         self.dashboard_observation
             .lock()
             .expect("dashboard observation")
@@ -1317,7 +1318,11 @@ impl ObservabilityStore for UnusedStore {
             .ok_or_else(|| unavailable("dashboard"))
     }
 
-    async fn dashboard_trend(&self, _: TimeRange) -> AdminStoreResult<Vec<RequestMetricPoint>> {
+    async fn dashboard_trend(
+        &self,
+        _: TimeRange,
+        _: Granularity,
+    ) -> AdminStoreResult<Vec<RequestMetricPoint>> {
         Err(unavailable("dashboard trend"))
     }
 
@@ -1325,6 +1330,7 @@ impl ObservabilityStore for UnusedStore {
         &self,
         range: TimeRange,
         filter: UsageFilter,
+        _: Granularity,
     ) -> AdminStoreResult<Vec<RequestMetricPoint>> {
         let mut data = self.observations.lock().expect("observations");
         data.trends.push((range, filter));
@@ -1335,6 +1341,7 @@ impl ObservabilityStore for UnusedStore {
         &self,
         _: TimeRange,
         _: UsageFilter,
+        _: Granularity,
     ) -> gateway_admin::ports::store::UsageCalculatedBillingStream<'_> {
         Box::pin(futures::stream::once(async {
             Err(unavailable("usage billing facts"))
@@ -1382,6 +1389,7 @@ impl ObservabilityStore for UnusedStore {
         _: TimeRange,
         _: UsageFilter,
         _: DiagnosticDimension,
+        _: u16,
     ) -> AdminStoreResult<DiagnosticsObservation> {
         Ok(self.diagnostics.lock().expect("diagnostics").clone())
     }

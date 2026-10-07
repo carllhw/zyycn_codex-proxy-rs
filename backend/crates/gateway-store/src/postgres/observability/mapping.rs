@@ -4,7 +4,7 @@ use super::*;
 
 pub(crate) fn store_range(
     range: admin_observability::TimeRange,
-) -> AdminStoreResult<ObservabilityRange> {
+) -> StoreResult<ObservabilityRange> {
     // 显式外部范围已经校验；自然日零点的空快照仍须返回零计数
     if range.start == range.end {
         return Ok(ObservabilityRange {
@@ -12,7 +12,7 @@ pub(crate) fn store_range(
             end: range.end,
         });
     }
-    ObservabilityRange::new(range.start, range.end).map_err(observability_error)
+    ObservabilityRange::new(range.start, range.end)
 }
 
 pub(crate) fn store_usage_filter(filter: admin_observability::UsageFilter) -> UsageRecordFilter {
@@ -41,7 +41,7 @@ pub(crate) fn store_usage_query(
     query: admin_observability::UsageQuery,
 ) -> AdminStoreResult<UsageRecordQuery> {
     Ok(UsageRecordQuery {
-        range: store_range(query.range)?,
+        range: store_range(query.range).map_err(observability_error)?,
         filter: store_usage_filter(query.filter),
         current_page: query.current_page,
         page_size: query.page_size,
@@ -52,25 +52,11 @@ pub(crate) fn store_ops_error_query(
     query: admin_observability::OpsErrorQuery,
 ) -> AdminStoreResult<OpsErrorQuery> {
     Ok(OpsErrorQuery {
-        range: store_range(query.range)?,
+        range: store_range(query.range).map_err(observability_error)?,
         filter: query.filter,
         current_page: query.current_page,
         page_size: query.page_size,
     })
-}
-
-pub(crate) const fn store_diagnostic_dimension(
-    dimension: admin_observability::DiagnosticDimension,
-) -> DiagnosticDimension {
-    match dimension {
-        admin_observability::DiagnosticDimension::Provider => DiagnosticDimension::Provider,
-        admin_observability::DiagnosticDimension::Model => DiagnosticDimension::Model,
-        admin_observability::DiagnosticDimension::Account => DiagnosticDimension::Account,
-        admin_observability::DiagnosticDimension::ApiKey => DiagnosticDimension::ApiKey,
-        admin_observability::DiagnosticDimension::Transport => DiagnosticDimension::Transport,
-        admin_observability::DiagnosticDimension::Failure => DiagnosticDimension::Failure,
-        admin_observability::DiagnosticDimension::Status => DiagnosticDimension::Status,
-    }
 }
 
 pub(crate) fn admin_dashboard_observation(
@@ -80,6 +66,7 @@ pub(crate) fn admin_dashboard_observation(
         range,
         totals,
         provider_accounts,
+        runtime_slots,
         trend,
         account_usage,
         recent_requests,
@@ -88,6 +75,7 @@ pub(crate) fn admin_dashboard_observation(
         range: admin_range(range),
         totals,
         provider_accounts,
+        runtime_slots: Some(runtime_slots),
         trend: trend.into_iter().map(admin_request_metric_point).collect(),
         account_usage: account_usage
             .into_iter()
@@ -101,45 +89,6 @@ pub(crate) const fn admin_range(range: ObservabilityRange) -> admin_observabilit
     admin_observability::TimeRange {
         start: range.start,
         end: range.end,
-    }
-}
-
-pub(crate) fn admin_request_metrics(
-    metrics: RequestMetrics,
-) -> admin_observability::RequestMetrics {
-    admin_observability::RequestMetrics {
-        request_count: metrics.request_count,
-        success_count: metrics.success_count,
-        failure_count: metrics.failure_count,
-        cancelled_count: metrics.cancelled_count,
-        incomplete_count: metrics.incomplete_count,
-        caller_error_count: metrics.caller_error_count,
-        input_tokens: metrics.input_tokens,
-        output_tokens: metrics.output_tokens,
-        cached_tokens: metrics.cached_tokens,
-        cache_write_tokens: metrics.cache_write_tokens,
-        reasoning_tokens: metrics.reasoning_tokens,
-        total_tokens: metrics.total_tokens,
-        first_token_latency_sum_ms: metrics.first_token_latency_sum,
-        first_token_latency_count: metrics.first_token_latency_count,
-        latency_sum_ms: metrics.latency_sum,
-        latency_count: metrics.latency_count,
-        min_latency_ms: metrics.min_latency_ms,
-        max_latency_ms: metrics.max_latency_ms,
-        latency_percentiles: metrics.latency_percentiles,
-        first_token_latency_percentiles: metrics.first_token_latency_percentiles,
-        admission_decision_count: metrics.admission_decision_count,
-        admission_decision_percentiles: metrics.admission_decision_percentiles,
-        account_selection_wait_count: metrics.account_selection_wait_count,
-        account_selection_wait_percentiles: metrics.account_selection_wait_percentiles,
-        output_throughput_p10: metrics.output_throughput_p10,
-        output_throughput_p50: metrics.output_throughput_p50,
-        output_throughput_p90: metrics.output_throughput_p90,
-        capacity_sample_count: metrics.capacity_sample_count,
-        capacity_utilization_avg_basis_points: metrics.capacity_utilization_avg_basis_points,
-        capacity_utilization_p95_basis_points: metrics.capacity_utilization_p95_basis_points,
-        cache_eligible_request_count: metrics.cache_eligible_request_count,
-        cache_hit_request_count: metrics.cache_hit_request_count,
     }
 }
 
@@ -237,8 +186,8 @@ pub(crate) fn admin_request_metric_point(
 ) -> admin_observability::RequestMetricPoint {
     admin_observability::RequestMetricPoint {
         bucket_start: point.bucket_start,
-        granularity: admin_granularity(point.granularity),
-        metrics: admin_request_metrics(point.metrics),
+        granularity: point.granularity,
+        metrics: point.metrics,
         cost_coverage: admin_cost_coverage(point.cost_coverage),
         costs: point.costs,
     }
@@ -261,16 +210,6 @@ pub(crate) fn admin_calculated_usage_billing_fact(
         cached_tokens: fact.cached_tokens,
         cache_write_tokens: fact.cache_write_tokens,
         total: fact.total,
-    }
-}
-
-pub(crate) const fn admin_granularity(
-    granularity: ObservationGranularity,
-) -> admin_observability::Granularity {
-    match granularity {
-        ObservationGranularity::FifteenMinutes => admin_observability::Granularity::FifteenMinutes,
-        ObservationGranularity::Hour => admin_observability::Granularity::Hour,
-        ObservationGranularity::Day => admin_observability::Granularity::Day,
     }
 }
 
@@ -303,25 +242,9 @@ pub(crate) fn request_outcome(outcome: &str) -> StoreResult<admin_observability:
 pub(crate) fn admin_usage_overview(overview: UsageOverview) -> admin_observability::UsageOverview {
     admin_observability::UsageOverview {
         range: admin_range(overview.range),
-        requests: admin_request_metrics(overview.requests),
+        requests: overview.requests,
         attempts: admin_attempt_metrics(overview.attempts),
-        providers: overview
-            .providers
-            .into_iter()
-            .map(admin_provider_observation)
-            .collect(),
-    }
-}
-
-pub(crate) fn admin_provider_observation(
-    observation: ProviderObservation,
-) -> admin_observability::ProviderObservation {
-    admin_observability::ProviderObservation {
-        provider_kind: observation.provider_kind,
-        request_count: observation.request_count,
-        attempt_count: observation.attempt_count,
-        failure_count: observation.failure_count,
-        total_tokens: observation.total_tokens,
+        providers: overview.providers,
     }
 }
 

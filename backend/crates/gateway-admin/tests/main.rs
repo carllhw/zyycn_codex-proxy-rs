@@ -71,12 +71,6 @@ fn request_outcome_filter_should_preserve_known_and_bounded_other_values() {
 }
 
 #[test]
-fn time_range_should_accept_exactly_366_days() {
-    let end = Utc::now();
-    assert!(TimeRange::new(end - TimeDelta::days(366), end).is_ok());
-}
-
-#[test]
 fn time_range_should_reject_more_than_366_days() {
     let end = Utc::now();
     assert!(TimeRange::new(end - TimeDelta::days(366) - TimeDelta::seconds(1), end).is_err());

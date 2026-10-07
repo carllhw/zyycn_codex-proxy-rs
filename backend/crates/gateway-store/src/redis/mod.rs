@@ -55,3 +55,6 @@ pub(crate) fn namespace(value: &str) -> StoreResult<String> {
     }
     Ok(value.to_owned())
 }
+
+/// 限制单批账号状态读取占用的 Redis 请求数，避免账号池规模直接变成并发峰值
+pub(crate) const ACCOUNT_STATE_READ_CONCURRENCY: usize = 128;

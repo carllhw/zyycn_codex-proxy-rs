@@ -17,14 +17,14 @@ use crate::{
         AdminError,
         observability::{
             CostCoverage, CurrencyCost, DashboardAccountUsage, DashboardCapacity,
-            DashboardPeriodMetrics, DashboardResult, DecimalAmount, DiagnosticDimension,
-            DiagnosticsItem, DiagnosticsResult, HealthStatus, HealthTimeline, HealthTimelinePoint,
-            OpsErrorPage, OpsErrorQuery, ProviderBillingInput, RequestMetricPoint, RequestMetrics,
-            TimeRange, Trend, TrendKind, TrendPoint, TrendSummary, UsageBilling,
-            UsageCalculatedBillingFact, UsageDetail, UsageFilter, UsageInsights, UsageInsightsCost,
-            UsageInsightsCostPoint, UsageInsightsHealth, UsageInsightsHealthPoint,
-            UsageInsightsPerformance, UsageInsightsPerformancePoint, UsageOverview, UsagePage,
-            UsageQuery, UsageSummary,
+            DashboardPeriodMetrics, DashboardQuery, DashboardResult, DecimalAmount,
+            DiagnosticDimension, DiagnosticsItem, DiagnosticsResult, Granularity, HealthStatus,
+            HealthTimeline, HealthTimelinePoint, OpsErrorPage, OpsErrorQuery, ProviderBillingInput,
+            RequestMetricPoint, RequestMetrics, TimeRange, Trend, TrendKind, TrendPoint,
+            TrendSummary, UsageBilling, UsageCalculatedBillingFact, UsageDetail, UsageFilter,
+            UsageInsights, UsageInsightsCost, UsageInsightsCostPoint, UsageInsightsHealth,
+            UsageInsightsHealthPoint, UsageInsightsPerformance, UsageInsightsPerformancePoint,
+            UsageOverview, UsagePage, UsageQuery, UsageSummary,
         },
         provider_credentials::ProviderQuotaRequest,
     },
@@ -157,12 +157,13 @@ impl DefaultObservabilityService {
         range: TimeRange,
     ) -> Result<DashboardResult, AdminError> {
         let observed_at = Utc::now();
-        let (mut observation, settings, runtime_slots) = futures::try_join!(
-            self.store.dashboard_summary(range, observed_at),
+        let (mut observation, settings) = futures::try_join!(
+            self.store
+                .dashboard_summary(DashboardQuery::new(range), observed_at),
             self.settings.load_runtime_settings(),
-            self.store.dashboard_runtime_slots(observed_at),
         )
         .map_err(|error| map_store_error(error, "dashboard"))?;
+        let runtime_slots = observation.runtime_slots;
         self.enrich_list_records(&mut observation.recent_requests);
         self.enrich_dashboard_quotas(&mut observation.account_usage)
             .await;
@@ -265,7 +266,7 @@ impl ObservabilityService for DefaultObservabilityService {
     ) -> Result<Trend, AdminError> {
         let points = self
             .store
-            .dashboard_trend(range)
+            .dashboard_trend(range, Granularity::for_range(range))
             .await
             .map_err(|error| map_store_error(error, "dashboard trend"))?;
         trend(kind, points)
@@ -319,10 +320,11 @@ impl ObservabilityService for DefaultObservabilityService {
         range: TimeRange,
         filter: UsageFilter,
     ) -> Result<UsageInsights, AdminError> {
+        let granularity = Granularity::for_range(range);
         let aggregates = async {
             futures::try_join!(
                 self.store.usage_summary(range, filter.clone()),
-                self.store.usage_trend(range, filter.clone()),
+                self.store.usage_trend(range, filter.clone(), granularity),
             )
             .map_err(|error| map_store_error(error, "usage insights"))
         };
@@ -331,7 +333,7 @@ impl ObservabilityService for DefaultObservabilityService {
             recover_standard_costs(
                 &self.providers,
                 self.store
-                    .usage_calculated_billing_facts(range, filter.clone()),
+                    .usage_calculated_billing_facts(range, filter.clone(), granularity),
             ),
         )?;
         build_usage_insights(overview, trend, standard_costs)
@@ -345,7 +347,7 @@ impl ObservabilityService for DefaultObservabilityService {
     ) -> Result<DiagnosticsResult, AdminError> {
         let observation = self
             .store
-            .usage_diagnostics(range, filter, dimension)
+            .usage_diagnostics(range, filter, dimension, 100)
             .await
             .map_err(|error| map_store_error(error, "usage diagnostics"))?;
         let items = observation

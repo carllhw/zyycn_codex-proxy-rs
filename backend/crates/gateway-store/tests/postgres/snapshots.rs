@@ -1,12 +1,14 @@
 //! 验证账号删除后请求、尝试与运维事件仍保留各自历史快照
 
+use gateway_admin::model::observability as admin_observability;
+
 use chrono::{DateTime, TimeDelta, Utc};
 use gateway_admin::ports::store::ObservabilityStore as _;
 use gateway_store::postgres::{
     DiagnosticDimension, ModelRequestAttemptStart, ModelRequestRepository, NewModelRequest,
-    ObservabilityPageSize, ObservabilityRange, ObservabilityRepository, OpsErrorFilter,
-    OpsErrorQuery, OpsEvent, OpsEventLevel, OpsEventRepository, PgExecutionStore,
-    PgOpsEventRepository, ProviderAccountUsageQuery, UsageRecordFilter, UsageRecordQuery,
+    ObservabilityPageSize, ObservabilityRange, OpsErrorFilter, OpsErrorQuery, OpsEvent,
+    OpsEventLevel, OpsEventRepository, PgExecutionStore, PgOpsEventRepository,
+    ProviderAccountUsageQuery, UsageRecordFilter, UsageRecordQuery,
 };
 use sqlx::PgPool;
 
@@ -112,6 +114,7 @@ async fn completed_usage_projections_should_accept_statusless_websocket_but_reje
             range_around(started_at),
             UsageRecordFilter::default(),
             DiagnosticDimension::Account,
+            100,
         )
         .await
         .expect("load statusless usage diagnostics")
@@ -517,6 +520,7 @@ async fn diagnostics_should_group_same_email_accounts_by_stable_ref() {
             range_around(started_at),
             UsageRecordFilter::default(),
             DiagnosticDimension::Account,
+            100,
         )
         .await
         .expect("account diagnostics")
@@ -590,6 +594,7 @@ async fn diagnostics_should_fallback_to_name_then_ref_for_missing_snapshots() {
             range_around(started_at),
             UsageRecordFilter::default(),
             DiagnosticDimension::Account,
+            100,
         )
         .await
         .expect("account diagnostics")
@@ -656,6 +661,7 @@ async fn diagnostics_should_prefer_the_latest_non_null_email_snapshot() {
             range_around(started_at),
             UsageRecordFilter::default(),
             DiagnosticDimension::Account,
+            100,
         )
         .await
         .expect("account diagnostics")
@@ -718,6 +724,7 @@ async fn failure_diagnostics_should_only_include_errored_requests() {
             range_around(started_at),
             UsageRecordFilter::default(),
             DiagnosticDimension::Failure,
+            100,
         )
         .await
         .expect("failure diagnostics")
@@ -783,6 +790,7 @@ async fn model_diagnostics_should_exclude_provider_endpoints_without_a_model() {
             range_around(started_at),
             UsageRecordFilter::default(),
             DiagnosticDimension::Model,
+            100,
         )
         .await
         .expect("model diagnostics")
@@ -878,6 +886,7 @@ async fn diagnostics_should_keep_filtered_totals_before_limiting_groups() {
             range_around(now),
             UsageRecordFilter::default(),
             DiagnosticDimension::Model,
+            100,
         )
         .await
         .expect("limited groups");
@@ -906,6 +915,7 @@ async fn diagnostics_should_keep_filtered_totals_before_limiting_groups() {
                 ..UsageRecordFilter::default()
             },
             DiagnosticDimension::Model,
+            100,
         )
         .await
         .expect("filtered denominator");
@@ -915,6 +925,7 @@ async fn diagnostics_should_keep_filtered_totals_before_limiting_groups() {
             range_around(now),
             UsageRecordFilter::default(),
             DiagnosticDimension::Failure,
+            100,
         )
         .await
         .expect("empty error dimension");
@@ -957,13 +968,14 @@ async fn diagnostics_should_distinguish_retry_attempts_from_retried_requests() {
     }
     let result = super::admin_observability_store(&database.pool)
         .usage_diagnostics(
-            gateway_admin::model::observability::TimeRange::new(
+            admin_observability::TimeRange::new(
                 now - TimeDelta::hours(1),
                 now + TimeDelta::hours(1),
             )
             .expect("range"),
             gateway_admin::model::observability::UsageFilter::default(),
             gateway_admin::model::observability::DiagnosticDimension::Model,
+            100,
         )
         .await
         .expect("retry metrics through admin adapter");
@@ -1024,6 +1036,7 @@ async fn api_key_diagnostics_should_display_key_name_and_fallback_to_ref() {
             range_around(started_at),
             UsageRecordFilter::default(),
             DiagnosticDimension::ApiKey,
+            100,
         )
         .await
         .expect("api key diagnostics")
@@ -1043,6 +1056,7 @@ async fn api_key_diagnostics_should_display_key_name_and_fallback_to_ref() {
             range_around(started_at),
             UsageRecordFilter::default(),
             DiagnosticDimension::ApiKey,
+            100,
         )
         .await
         .expect("api key diagnostics after deletion")

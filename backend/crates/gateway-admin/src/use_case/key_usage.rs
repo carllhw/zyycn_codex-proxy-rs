@@ -14,7 +14,9 @@ use crate::{
             KeyUsageOverview, KeyUsageQuery, KeyUsageRecordKind, KeyUsageRecords,
             KeyUsageRecordsQuery,
         },
-        observability::{OpsErrorFilter, OpsErrorQuery, TimeRange, UsageFilter, UsageQuery},
+        observability::{
+            Granularity, OpsErrorFilter, OpsErrorQuery, TimeRange, UsageFilter, UsageQuery,
+        },
         system::SystemVersion,
     },
     ports::store::{ClientKeyStore, ObservabilityStore},
@@ -192,9 +194,13 @@ impl KeyUsageService for DefaultKeyUsageService {
         };
         let (overview, trend, health_points) = futures::try_join!(
             self.observations.usage_summary(query.range, filter.clone()),
-            self.observations.usage_trend(query.range, filter),
             self.observations
-                .usage_trend(today, usage_filter(&id, None)),
+                .usage_trend(query.range, filter, Granularity::for_range(query.range)),
+            self.observations.usage_trend(
+                today,
+                usage_filter(&id, None),
+                Granularity::for_range(today)
+            ),
         )
         .map_err(|error| map_store_error(error, "key usage overview"))?;
         Ok(Some(KeyUsageOverview {
