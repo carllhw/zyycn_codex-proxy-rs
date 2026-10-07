@@ -415,7 +415,7 @@ impl gateway_core::engine::policy::RequestPolicyPlan for SessionScheduler {
     }
 }
 struct SessionExtensionLease;
-impl gateway_core::runtime::extensions::ExtensionSetLease for SessionExtensionLease {
+impl gateway_core::routing::extensions::ExtensionSetLease for SessionExtensionLease {
     fn is_ready(&self) -> bool {
         true
     }
@@ -424,7 +424,7 @@ impl gateway_core::runtime::extensions::ExtensionSetLease for SessionExtensionLe
 #[tokio::test]
 async fn child_binding_only_constrains_builtin_scheduling_and_preserves_plugin_choices() {
     use gateway_core::engine::policy::RequestPolicyContext;
-    use gateway_core::runtime::extensions::{ExtensionSetId, ExtensionSetReference};
+    use gateway_core::routing::extensions::{ExtensionSetId, ExtensionSetReference};
     for explicit in [false, true] {
         let store = Arc::new(MemoryAccountStore::default());
         create_account(&store, "acct_subagent_a").await;

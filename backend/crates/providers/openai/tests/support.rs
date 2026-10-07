@@ -54,11 +54,19 @@ pub(crate) struct MemoryAccountStore {
     accounts: Mutex<BTreeMap<ProviderAccountId, StoredAccount>>,
     quota_reads: AtomicUsize,
     fail_provider_listing: AtomicBool,
+    pending_account_reads: bool,
     credential_load_hook: Mutex<Option<Arc<CredentialLoadHook>>>,
     credential_loads: AtomicUsize,
 }
 
 impl MemoryAccountStore {
+    pub(crate) fn with_pending_account_reads() -> Self {
+        Self {
+            pending_account_reads: true,
+            ..Self::default()
+        }
+    }
+
     pub(crate) fn repository(self: &Arc<Self>) -> CodexCredentialRepository {
         CodexCredentialRepository::new(self.clone())
     }
@@ -236,6 +244,9 @@ impl ProviderAccountStore for MemoryAccountStore {
         &self,
         account: &ProviderAccountId,
     ) -> Result<Option<ProviderAccount>, StoreError> {
+        if self.pending_account_reads {
+            futures::future::pending::<()>().await;
+        }
         Ok(self
             .accounts
             .lock()

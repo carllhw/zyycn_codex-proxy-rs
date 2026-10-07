@@ -13,7 +13,7 @@ use gateway_admin::{
     model::{AdminError, Revision},
     ports::plugins::PluginStore,
 };
-use gateway_core::runtime::extensions::ExtensionSetReference;
+use gateway_core::routing::extensions::ExtensionSetReference;
 use gateway_plugin_sdk::call::management::CommandDescriptor;
 
 use crate::{RpcLimits, RpcSession, callback::PluginCallbacks};

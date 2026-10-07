@@ -1181,8 +1181,6 @@ fn project_quota(
                 .map_or(Value::Null, |value| Value::String(value.to_owned())),
         );
         for (key, value) in [
-            ("monthlyLimitCents", billing.monthly_limit_cents()),
-            ("includedUsedCents", billing.included_used_cents()),
             ("onDemandCapCents", billing.on_demand_cap_cents()),
             ("onDemandUsedCents", billing.on_demand_used_cents()),
             ("prepaidBalanceCents", billing.prepaid_balance_cents()),

@@ -38,8 +38,8 @@ use gateway_core::{
     },
     identity::ProviderKind,
     operation::OperationKind,
+    routing::extensions::ExtensionPreparationPort,
     routing::{ConfigRevision, PublicModelId},
-    runtime::extensions::ExtensionPreparationPort,
     upstream::UpstreamSendState,
 };
 use gateway_plugin_runtime::{

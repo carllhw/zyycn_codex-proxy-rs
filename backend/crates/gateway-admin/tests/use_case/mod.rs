@@ -107,7 +107,7 @@ pub(super) struct AdminHarness {
     plugin_store: Arc<dyn gateway_admin::ports::plugins::PluginStore>,
     plugin_inspector: Arc<dyn gateway_admin::ports::plugins::PluginPackageInspector>,
     client_key_verifier: Arc<dyn ClientKeyVerifier>,
-    service_middleware: gateway_admin::service::PlanSource,
+    service_middleware: gateway_admin::public_service::PlanSource,
 }
 
 impl AdminHarness {
@@ -194,7 +194,10 @@ impl AdminHarness {
         self
     }
 
-    pub(super) fn service_middleware(mut self, source: gateway_admin::service::PlanSource) -> Self {
+    pub(super) fn service_middleware(
+        mut self,
+        source: gateway_admin::public_service::PlanSource,
+    ) -> Self {
         self.service_middleware = source;
         self
     }

@@ -1,6 +1,8 @@
 //! Provider、模型目录、精确模型映射与请求级候选计划
 
 mod catalog;
+pub mod extensions;
+pub mod request_settings;
 pub mod snapshot;
 
 pub use crate::account::scope::{

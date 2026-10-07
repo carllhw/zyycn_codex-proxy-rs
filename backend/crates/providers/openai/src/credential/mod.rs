@@ -17,19 +17,17 @@ pub mod token_client;
 mod types;
 
 pub(crate) use affinity::{
-    CodexSessionAffinity, account_session_with_headers, derive_codex_cyber_policy_session_key,
+    CodexSessionAffinity, derive_codex_cyber_policy_session_key,
     derive_codex_endpoint_session_affinity, derive_codex_session_affinity,
     derive_codex_transport_key, derive_endpoint_affinity_with_headers,
     derive_live_session_affinity, derive_previous_response_id_hash, derive_turn_alias,
-    follows_session_with_headers, turn_id_with_headers,
 };
 pub(crate) use oauth::oauth_owner_ref;
 pub(crate) use types::parse_access_token_expiration;
 
-pub use api_key::{
-    ApiKeyAuthentication, ApiKeyConfiguration, ApiKeyCredentialData,
-    CODEX_AUTHENTICATION_KIND_API_KEY,
-};
+pub(crate) use crate::CODEX_AUTHENTICATION_KIND_API_KEY;
+
+pub use api_key::{ApiKeyAuthentication, ApiKeyConfiguration, ApiKeyCredentialData};
 
 pub use admin::{
     CodexCprExportDocument, CodexCredentialAdmin, CodexCredentialAdminError,

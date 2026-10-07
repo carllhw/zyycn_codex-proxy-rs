@@ -2,7 +2,7 @@
 
 use super::*;
 use crate::callback::websocket_middleware::Invocation as Messages;
-use gateway_core::middleware::{http::upgrade, websocket as ws};
+use gateway_core::engine::middleware::{http::upgrade, websocket as ws};
 use gateway_plugin_sdk::call::middleware::websocket as message;
 use gateway_plugin_sdk::call::middleware::{BODY_CLOSE_METHOD, BODY_READ_METHOD};
 

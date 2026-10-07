@@ -117,16 +117,34 @@ impl WorkerSupervisor {
     /// 不会被二次 poll，逾期的在 abort 后等待其真正终止
     pub async fn shutdown(&self, timeout: Duration) {
         self.cancellation.cancel();
-        let handles = std::mem::take(&mut *lock_unpoisoned(&self.handles));
+        let mut shutdown = WorkerShutdown {
+            handles: std::mem::take(&mut *lock_unpoisoned(&self.handles)),
+            health: &self.health,
+        };
         let deadline = tokio::time::Instant::now() + timeout;
-        for (_, mut handle) in handles {
-            if tokio::time::timeout_at(deadline, &mut handle)
+        for (_, handle) in &mut shutdown.handles {
+            if tokio::time::timeout_at(deadline, &mut *handle)
                 .await
                 .is_err()
             {
                 handle.abort();
                 let _ = handle.await;
             }
+        }
+    }
+}
+
+struct WorkerShutdown<'a> {
+    handles: Vec<(WorkerId, JoinHandle<()>)>,
+    health: &'a WorkerHealthRegistry,
+}
+
+impl Drop for WorkerShutdown<'_> {
+    fn drop(&mut self) {
+        // shutdown future 可在任一 join 点被丢弃；句柄始终留在同一 owner 内，
+        // 防止当前等待或尚未轮到的任务因 JoinHandle 析构而脱离监督
+        for (_, handle) in &self.handles {
+            handle.abort();
         }
         self.health.stop_all();
     }

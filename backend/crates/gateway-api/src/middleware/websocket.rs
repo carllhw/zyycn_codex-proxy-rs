@@ -14,15 +14,14 @@ use futures::{
     future::BoxFuture,
     stream::{SplitSink, SplitStream},
 };
-use gateway_core::{
-    engine::middleware::{FrozenMiddlewarePlan, MiddlewareError, MiddlewareHeader},
-    lifecycle::CancellationToken,
-    middleware::{
-        compose,
-        http::{self as http, upgrade},
-        websocket as core,
-    },
-};
+use gateway_core::engine::middleware::FrozenMiddlewarePlan;
+use gateway_core::engine::middleware::MiddlewareError;
+use gateway_core::engine::middleware::MiddlewareHeader;
+use gateway_core::engine::middleware::http;
+use gateway_core::engine::middleware::http::upgrade;
+use gateway_core::engine::middleware::websocket as core;
+use gateway_core::lifecycle::CancellationToken;
+use gateway_core::middleware::compose;
 use http_body_util::BodyExt as _;
 
 pub(super) struct Upgrade {

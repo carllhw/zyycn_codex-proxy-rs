@@ -49,12 +49,12 @@ use gateway_core::operation::{
 };
 use gateway_core::policy::ClientApiKeyId;
 use gateway_core::provider_ports::ProviderLeasePort;
+use gateway_core::routing::extensions::{ExtensionSetId, ExtensionSetLease, ExtensionSetReference};
 use gateway_core::routing::{
     ClientRoutingScope, ConfigRevision, FrozenAccountScope, ModelCapabilities, ModelServiceTier,
     ProviderKind, ProviderModel, PublicModelId, RoutingContext, RuntimeAccount,
     RuntimeAccountDirectory, RuntimeSnapshot, UpstreamModelId,
 };
-use gateway_core::runtime::extensions::{ExtensionSetId, ExtensionSetLease, ExtensionSetReference};
 use gateway_core::settings::SettingsValues;
 use gateway_core::upstream::UpstreamSendState;
 use provider_openai::config::DEFAULT_STREAM_MAX_RETRIES;

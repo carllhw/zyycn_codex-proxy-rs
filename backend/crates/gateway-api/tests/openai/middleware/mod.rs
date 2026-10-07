@@ -10,15 +10,22 @@ use std::{
 
 use bytes::Bytes;
 use futures::future::BoxFuture;
-use gateway_core::{
-    engine::middleware::{
-        FrozenMiddlewarePlan, MiddlewareBody, MiddlewareContext, MiddlewareError, MiddlewareFrame,
-        MiddlewareFraming, MiddlewareHeader, MiddlewareMount, MiddlewareNext, MiddlewarePlan,
-        MiddlewareRequest, MiddlewareResponse,
-    },
-    operation::OperationKind,
-    runtime::extensions::{ExtensionSetId, ExtensionSetLease, ExtensionSetReference},
-};
+use gateway_core::engine::middleware::FrozenMiddlewarePlan;
+use gateway_core::engine::middleware::MiddlewareBody;
+use gateway_core::engine::middleware::MiddlewareContext;
+use gateway_core::engine::middleware::MiddlewareError;
+use gateway_core::engine::middleware::MiddlewareFrame;
+use gateway_core::engine::middleware::MiddlewareFraming;
+use gateway_core::engine::middleware::MiddlewareHeader;
+use gateway_core::engine::middleware::MiddlewareMount;
+use gateway_core::engine::middleware::MiddlewareNext;
+use gateway_core::engine::middleware::MiddlewarePlan;
+use gateway_core::engine::middleware::MiddlewareRequest;
+use gateway_core::engine::middleware::MiddlewareResponse;
+use gateway_core::operation::OperationKind;
+use gateway_core::routing::extensions::ExtensionSetId;
+use gateway_core::routing::extensions::ExtensionSetLease;
+use gateway_core::routing::extensions::ExtensionSetReference;
 
 /// OpenAI API 入口共用的中间件夹具；授权和 RPC 由 Runtime 行为测试覆盖
 #[derive(Debug, Default)]
@@ -30,7 +37,8 @@ pub(super) struct RequestMiddleware {
     pub(super) response_actions: Mutex<VecDeque<ResponseFrameAction>>,
     pub(super) response_headers: Vec<MiddlewareHeader>,
     pub(super) short_circuit_json: Option<Bytes>,
-    pub(super) settings: Option<fn(&mut gateway_core::settings::ExecutionSettings)>,
+    pub(super) settings:
+        Option<fn(&mut gateway_core::routing::request_settings::ExecutionSettings)>,
 }
 
 #[derive(Debug, Clone)]

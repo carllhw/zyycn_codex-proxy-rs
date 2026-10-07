@@ -1,6 +1,6 @@
 //! 上游调用跨 Engine、Event、Error 与 Provider 共享的中立边界事实
 
-use std::fmt;
+use std::{fmt, num::NonZeroU32};
 
 use crate::validation::{IdentifierError, validate_text};
 
@@ -72,4 +72,16 @@ impl fmt::Debug for OpaqueUpstreamValue {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str("OpaqueUpstreamValue(<redacted-from-Debug>)")
     }
+}
+
+/// Provider 可为当前 attempt 选择的请求局部传输档位
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub enum AttemptTransport {
+    /// 使用 Provider 的默认传输策略
+    #[default]
+    Default,
+    /// 固定账号重试 Provider 的首选传输；序号由 Provider 的独立预算驱动
+    Retry(NonZeroU32),
+    /// 使用 Provider 定义的备用传输
+    Fallback,
 }

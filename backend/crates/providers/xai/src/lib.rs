@@ -1,7 +1,7 @@
 //! 官方 Grok Build OAuth Provider 边界
 
 mod admin;
-pub mod credential;
+mod credential;
 mod provider;
 mod reasoning_replay;
 pub mod transport;

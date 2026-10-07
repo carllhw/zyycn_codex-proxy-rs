@@ -371,12 +371,13 @@ pub(super) async fn load_client_key_budgets(
         .iter()
         .map(|record| record.id.as_str())
         .collect::<Vec<_>>();
+    // 起止相等是重置后的未开启窗口，不能因应用时钟领先数据库而投影为活跃预算
     let rows = sqlx::query(
         "select k.id, k.daily_limit_usd::text, k.weekly_limit_usd::text,
-        (case when w.daily_end > now() then w.daily_used_usd else 0 end)::text as daily_used,
-        (case when w.weekly_end > now() then w.weekly_used_usd else 0 end)::text as weekly_used,
-        case when w.daily_end > now() then w.daily_end end as daily_end,
-        case when w.weekly_end > now() then w.weekly_end end as weekly_end
+        (case when w.daily_end > w.daily_start and w.daily_end > now() then w.daily_used_usd else 0 end)::text as daily_used,
+        (case when w.weekly_end > w.weekly_start and w.weekly_end > now() then w.weekly_used_usd else 0 end)::text as weekly_used,
+        case when w.daily_end > w.daily_start and w.daily_end > now() then w.daily_end end as daily_end,
+        case when w.weekly_end > w.weekly_start and w.weekly_end > now() then w.weekly_end end as weekly_end
         from client_api_keys k left join client_key_budget_windows w on w.client_api_key_id = k.id
         where k.id = any($1)",
     )

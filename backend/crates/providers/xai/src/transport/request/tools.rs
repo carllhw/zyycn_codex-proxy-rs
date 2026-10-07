@@ -121,13 +121,26 @@ impl ToolNormalizer {
             identity.kind as u8, identity.namespace, identity.name
         );
         let mut alias = truncate_tool_alias(&base, &key);
-        if self
+        // Hosted tool 和 function 共用上游名称空间；缓存路由还会在归一化后注入搜索工具，
+        // 因此这两个官方 wire name 始终保留，避免同一函数随会话工具集变化而改名
+        if is_hosted_search_wire_name(&alias)
+            || self
+                .response
+                .aliases
+                .get(&alias)
+                .is_some_and(|existing| existing != &identity)
+        {
+            alias = hashed_tool_alias(&base, &key);
+        }
+        let mut collision_index = 0;
+        while self
             .response
             .aliases
             .get(&alias)
             .is_some_and(|existing| existing != &identity)
         {
-            alias = hashed_tool_alias(&base, &key);
+            collision_index += 1;
+            alias = hashed_tool_alias(&base, &format!("{key}\0{collision_index}"));
         }
         self.response
             .aliases
@@ -394,6 +407,10 @@ impl ToolNormalizer {
             ("parameters".to_owned(), parameters),
         ]))
     }
+}
+
+fn is_hosted_search_wire_name(name: &str) -> bool {
+    matches!(name, "web_search" | "x_search")
 }
 
 pub(super) fn optional_array(
@@ -765,7 +782,7 @@ impl ToolNormalizer {
         normalized_tools: &[Value],
     ) -> Result<(), GrokRequestEncodeError> {
         if let Some(Value::Object(function)) = object.get_mut("function") {
-            rewrite_namespace_choice(function, &self.identity_aliases)?;
+            rewrite_function_choice(function, &self.identity_aliases)?;
             let name = string_field(function, "name").trim();
             if !name.is_empty() && !has_named_tool(normalized_tools, "function", name) {
                 payload.remove("tool_choice");
@@ -774,7 +791,7 @@ impl ToolNormalizer {
             payload.insert("tool_choice".to_owned(), Value::Object(object));
             return Ok(());
         }
-        rewrite_namespace_choice(&mut object, &self.identity_aliases)?;
+        rewrite_function_choice(&mut object, &self.identity_aliases)?;
         let name = string_field(&object, "name").trim();
         if !name.is_empty() && !has_named_tool(normalized_tools, "function", name) {
             payload.remove("tool_choice");
@@ -788,27 +805,40 @@ impl ToolNormalizer {
 pub(super) fn normalize_web_search_filters(
     tool: &Map<String, Value>,
 ) -> Result<Option<Map<String, Value>>, GrokRequestEncodeError> {
-    let nested = match tool.get("filters") {
-        None | Some(Value::Null) => None,
-        Some(Value::Object(filters)) => filters
-            .get("allowed_domains")
-            .map(normalize_allowed_domains)
-            .transpose()?,
-        Some(_) => return Err(GrokRequestEncodeError::InvalidRequestNormalization),
-    };
-    let top_level = tool
-        .get("allowed_domains")
-        .map(normalize_allowed_domains)
-        .transpose()?;
-    if nested.is_some() && top_level.is_some() && nested != top_level {
+    // 域名限制只接受当前 filters 合同；丢弃已知旧字段会把受限搜索变成无限制搜索
+    if tool.contains_key("allowed_domains") {
         return Err(GrokRequestEncodeError::InvalidRequestNormalization);
     }
-    Ok(nested
-        .or(top_level)
+    let nested = match tool.get("filters") {
+        None | Some(Value::Null) => None,
+        Some(Value::Object(filters)) => Some(filters),
+        Some(_) => return Err(GrokRequestEncodeError::InvalidRequestNormalization),
+    };
+    let allowed = nested
+        .and_then(|filters| filters.get("allowed_domains"))
+        .map(normalize_web_search_domains)
+        .transpose()?
+        .filter(|domains| !domains.is_empty());
+    let excluded = nested
+        .and_then(|filters| filters.get("excluded_domains"))
+        .map(normalize_web_search_domains)
+        .transpose()?
+        .filter(|domains| !domains.is_empty());
+    if let Some(excluded) = excluded {
+        // Grok Build 的非空允许表和排除表互斥；空表不限制搜索，不能覆盖另一张表
+        if allowed.is_some() {
+            return Err(GrokRequestEncodeError::InvalidRequestNormalization);
+        }
+        return Ok(Some(Map::from_iter([(
+            "excluded_domains".to_owned(),
+            Value::Array(excluded),
+        )])));
+    }
+    Ok(allowed
         .map(|domains| Map::from_iter([("allowed_domains".to_owned(), Value::Array(domains))])))
 }
 
-pub(super) fn normalize_allowed_domains(
+pub(super) fn normalize_web_search_domains(
     value: &Value,
 ) -> Result<Vec<Value>, GrokRequestEncodeError> {
     let domains = value
@@ -862,21 +892,24 @@ pub(super) fn tools_of_type(tools: &[Value], kind: &str) -> Vec<Value> {
         .collect()
 }
 
-pub(super) fn rewrite_namespace_choice(
+pub(super) fn rewrite_function_choice(
     object: &mut Map<String, Value>,
     aliases: &BTreeMap<ToolIdentity, String>,
 ) -> Result<(), GrokRequestEncodeError> {
     let name = string_field(object, "name").trim();
     let namespace = string_field(object, "namespace").trim();
-    if name.is_empty() || namespace.is_empty() {
+    if name.is_empty() {
         return Ok(());
     }
     let identity = ToolIdentity::new(ToolKind::Function, namespace, name);
-    let alias = aliases
-        .get(&identity)
-        .cloned()
-        .ok_or(GrokRequestEncodeError::InvalidRequestNormalization)?;
-    object.insert("name".to_owned(), Value::String(alias));
+    let Some(alias) = aliases.get(&identity) else {
+        return if namespace.is_empty() {
+            Ok(())
+        } else {
+            Err(GrokRequestEncodeError::InvalidRequestNormalization)
+        };
+    };
+    object.insert("name".to_owned(), Value::String(alias.clone()));
     object.remove("namespace");
     Ok(())
 }
@@ -1085,7 +1118,7 @@ impl ToolNormalizer {
         Ok(converted)
     }
 
-    fn normalize_function_call_input(
+    pub(super) fn normalize_function_call_input(
         &mut self,
         item: &Map<String, Value>,
     ) -> Result<Map<String, Value>, GrokRequestEncodeError> {
@@ -1093,8 +1126,11 @@ impl ToolNormalizer {
         let call_id = required_trimmed_string(item, "call_id")?;
         let arguments = encode_function_arguments(item.get("arguments"))?;
         let namespace = string_field(item, "namespace").trim();
-        if !namespace.is_empty() {
-            name = self.alias(ToolIdentity::new(ToolKind::Function, namespace, &name));
+        let identity = ToolIdentity::new(ToolKind::Function, namespace, &name);
+        if !namespace.is_empty() || is_hosted_search_wire_name(&name) {
+            name = self.alias(identity);
+        } else if let Some(alias) = self.identity_aliases.get(&identity) {
+            name.clone_from(alias);
         }
         let mut converted = item.clone();
         strip_grok_internal_keys(&mut converted);

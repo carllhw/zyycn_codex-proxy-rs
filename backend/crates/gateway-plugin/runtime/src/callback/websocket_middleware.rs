@@ -3,7 +3,7 @@ use super::MiddlewareCallback;
 use crate::RpcReply;
 use bytes::Bytes;
 use futures::future::BoxFuture;
-use gateway_core::middleware::websocket as core;
+use gateway_core::engine::middleware::websocket as core;
 use gateway_plugin_sdk::{
     ErrorCode, PluginFault,
     call::middleware::{

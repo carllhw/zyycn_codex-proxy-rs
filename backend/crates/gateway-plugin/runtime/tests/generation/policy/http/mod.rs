@@ -4,7 +4,7 @@ mod dispatch;
 mod websocket;
 
 use super::*;
-use gateway_core::middleware::{compose, http as core};
+use gateway_core::{engine::middleware::http as core, middleware::compose};
 use http_body::Frame;
 use http_body_util::{BodyExt as _, StreamBody};
 
@@ -54,7 +54,10 @@ async fn http_plugin_with_limits(
     )
     .await;
     let generation = prepare(&runtime).await;
-    let plan = runtime.middleware_registry().resolve(&generation).unwrap();
+    let plan = runtime
+        .execution_registry()
+        .middleware(&generation)
+        .unwrap();
     assert!(plan.has_http());
     (cache, runtime, generation, plan)
 }
@@ -521,7 +524,7 @@ async fn http_onion_performance_baseline() {
             .collect();
         let (_cache, runtime) = setup_package(instances, package.clone()).await;
         let generation = prepare(&runtime).await;
-        let plan = runtime.middleware_registry().resolve(&generation);
+        let plan = runtime.execution_registry().middleware(&generation);
         let snapshot = gateway_core::routing::RuntimeSnapshot::new(
             ConfigRevision::new(1).unwrap(),
             gateway_core::settings::SettingsValues::new(
@@ -537,7 +540,8 @@ async fn http_onion_performance_baseline() {
             vec![],
         )
         .unwrap();
-        let settings = gateway_core::settings::RequestSettings::new(Arc::new(snapshot));
+        let settings =
+            gateway_core::routing::request_settings::RequestSettings::new(Arc::new(snapshot));
         for size in [64 * 1024, 2 * 1024 * 1024] {
             let payload = Bytes::from(vec![b'a'; size]);
             for _ in 0..5 {
@@ -585,7 +589,7 @@ async fn http_onion_performance_baseline() {
 #[cfg(not(debug_assertions))]
 async fn benchmark_http_request(
     plan: Option<&gateway_core::engine::middleware::FrozenMiddlewarePlan>,
-    settings: &gateway_core::settings::RequestSettings,
+    settings: &gateway_core::routing::request_settings::RequestSettings,
     payload: Bytes,
     uppercase: bool,
 ) -> (Duration, Duration) {

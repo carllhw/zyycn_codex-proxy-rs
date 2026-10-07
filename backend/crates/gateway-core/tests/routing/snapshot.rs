@@ -10,6 +10,10 @@ use futures::future::BoxFuture;
 use gateway_core::account::FastMode;
 use gateway_core::operation::OperationKind;
 use gateway_core::policy::{ClientApiKeyId, PlaintextClientApiKey, RateLimits};
+use gateway_core::routing::extensions::{
+    ExtensionPreparationError, ExtensionPreparationPort, ExtensionSetId, ExtensionSetLease,
+    ExtensionSetReference,
+};
 use gateway_core::routing::snapshot::{
     RuntimeSnapshotCompileError, RuntimeSnapshotCompiler, SnapshotAccountGroupFacts,
     SnapshotAccountGroupMemberFacts, SnapshotClientPolicyFacts, SnapshotFacts,
@@ -19,10 +23,6 @@ use gateway_core::routing::{
     ConfigRevision, ContributedModelAlias, ModelCapabilities, ModelPresentation,
     ProviderCatalogGeneration, ProviderCatalogPort, ProviderCatalogUnavailable, ProviderKind,
     ProviderModelCapabilities, PublicModelId, UpstreamModelId,
-};
-use gateway_core::runtime::extensions::{
-    ExtensionPreparationError, ExtensionPreparationPort, ExtensionSetId, ExtensionSetLease,
-    ExtensionSetReference,
 };
 use gateway_core::settings::SettingsValues;
 
@@ -1084,7 +1084,9 @@ fn key_profiles_replace_whole_global_choice_and_previous_snapshot_stays_frozen()
         .unwrap()
     };
     let values = |snapshot: &gateway_core::routing::RuntimeSnapshot| {
-        let settings = gateway_core::settings::RequestSettings::new(Arc::new(snapshot.clone()));
+        let settings = gateway_core::routing::request_settings::RequestSettings::new(Arc::new(
+            snapshot.clone(),
+        ));
         let mut values: Vec<_> = snapshot
             .client_policies()
             .map(|policy| {

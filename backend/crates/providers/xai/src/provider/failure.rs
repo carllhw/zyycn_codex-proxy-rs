@@ -383,15 +383,23 @@ pub(super) fn map_request_error(error: GrokRequestEncodeError) -> ProviderError 
         GrokRequestEncodeError::InvalidProtocolPayload
         | GrokRequestEncodeError::InvalidRequestNormalization
         | GrokRequestEncodeError::InvalidRequestField { .. } => ProviderErrorKind::InvalidRequest,
+        GrokRequestEncodeError::UnsupportedPrewarm => ProviderErrorKind::Unsupported,
         GrokRequestEncodeError::Serialization => ProviderErrorKind::Protocol,
     };
     let provider_error = provider_error(kind, UpstreamSendState::NotSent);
-    if kind != ProviderErrorKind::InvalidRequest {
+    if !matches!(
+        kind,
+        ProviderErrorKind::InvalidRequest | ProviderErrorKind::Unsupported
+    ) {
         return provider_error;
     }
+    let code = match error {
+        GrokRequestEncodeError::UnsupportedPrewarm => "unsupported_prewarm",
+        _ => "invalid_request_normalization",
+    };
     provider_error.with_client_visible_upstream_error(ClientVisibleUpstreamError::new(
         error.to_string(),
-        Some("invalid_request_normalization".to_owned()),
+        Some(code.to_owned()),
         Some("invalid_request_error".to_owned()),
     ))
 }

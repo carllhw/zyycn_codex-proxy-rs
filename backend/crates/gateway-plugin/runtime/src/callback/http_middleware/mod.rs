@@ -9,7 +9,7 @@ use std::{
 };
 
 use futures::future::BoxFuture;
-use gateway_core::{engine::middleware::MiddlewareError, middleware::http as core};
+use gateway_core::{engine::middleware::MiddlewareError, engine::middleware::http as core};
 use gateway_plugin_sdk::{
     ErrorCode, PluginFault,
     call::middleware::{MiddlewareHeader, NEXT_METHOD, http as wire},
@@ -27,13 +27,13 @@ pub(crate) struct Invocation {
 }
 
 struct State {
-    settings: Option<gateway_core::settings::RequestSettings>,
+    settings: Option<gateway_core::routing::request_settings::RequestSettings>,
     request: Option<http::request::Parts>,
     next: Option<core::Next>,
 }
 
 pub(super) fn resolve_settings(
-    settings: Option<gateway_core::settings::RequestSettings>,
+    settings: Option<gateway_core::routing::request_settings::RequestSettings>,
     value: serde_json::Value,
     timeout_ms: Option<u64>,
     instance_id: &str,
@@ -171,7 +171,7 @@ impl Invocation {
 }
 
 impl MiddlewareCallback for Invocation {
-    fn request_settings(&self) -> Option<gateway_core::settings::RequestSettings> {
+    fn request_settings(&self) -> Option<gateway_core::routing::request_settings::RequestSettings> {
         self.state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)

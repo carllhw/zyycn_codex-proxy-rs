@@ -8,6 +8,8 @@ use base64::Engine as _;
 use gateway_core::event::ProviderEvent;
 use serde_json::{Map, Value};
 
+use crate::transport::GrokReplayItem;
+
 const REASONING_REPLAY_TTL: Duration = Duration::from_secs(60 * 60);
 const REASONING_REPLAY_MAX_ENTRIES: usize = 1_024;
 const REASONING_REPLAY_MAX_BYTES: usize = 8 * 1024 * 1024;
@@ -82,7 +84,7 @@ impl GrokReasoningReplay {
         &self,
         key: &GrokReasoningReplayKey,
         input: &[Value],
-    ) -> Option<Vec<Value>> {
+    ) -> Option<Vec<GrokReplayItem>> {
         if input.is_empty() {
             return None;
         }
@@ -560,17 +562,17 @@ fn replay_call_keys(item_type: &str, call_id: &str) -> Vec<String> {
         .collect()
 }
 
-fn insert_replay_items(input: &[Value], replay: &[Value]) -> Vec<Value> {
+fn insert_replay_items(input: &[Value], replay: &[Value]) -> Vec<GrokReplayItem> {
     let insert_at = replay_insert_index(input, replay);
     let mut result = Vec::new();
     for (index, item) in input.iter().enumerate() {
         if index == insert_at {
-            result.extend(replay.iter().cloned());
+            result.extend(replay.iter().cloned().map(GrokReplayItem::ClientOutput));
         }
-        result.push(item.clone());
+        result.push(GrokReplayItem::UpstreamInput(item.clone()));
     }
     if insert_at == input.len() {
-        result.extend(replay.iter().cloned());
+        result.extend(replay.iter().cloned().map(GrokReplayItem::ClientOutput));
     }
     result
 }

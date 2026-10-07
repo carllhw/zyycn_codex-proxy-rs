@@ -10,6 +10,7 @@ mod http;
 mod import;
 mod oidc_verifier;
 mod pkce;
+mod quota;
 mod refresh;
 mod repository;
 mod secret;

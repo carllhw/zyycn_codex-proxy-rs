@@ -3,6 +3,7 @@
 mod accounts;
 mod admin;
 mod affinity;
+mod call_resources;
 mod data;
 pub(crate) mod error;
 mod facts;
@@ -23,19 +24,19 @@ pub(crate) mod websocket_middleware;
 use std::{
     collections::BTreeMap,
     sync::{Arc, Mutex, Weak},
-    time::Duration,
 };
 
 use futures::future::BoxFuture;
 use gateway_admin::model::AdminError;
 use gateway_core::{account::OutboundProxy, lifecycle::CancellationToken};
-use gateway_host::outbound::{HttpBody, HttpClient, NetworkPolicy};
+use gateway_host::outbound::{HttpClient, NetworkPolicy};
 use gateway_plugin_sdk::{CallContext, ErrorCode, PluginFault};
 use tokio::time::Instant;
 
 use crate::{CallbackHandler, RpcReply};
 pub(crate) use accounts::PluginAccountPortSlot;
 pub(crate) use affinity::PluginAffinityPortSlot;
+use call_resources::{CallResources, HttpStream};
 pub(crate) use keys::PluginClientKeyPortSlot;
 pub(crate) use middleware::{
     MiddlewareBinding, MiddlewareBodyAuthority, MiddlewareCallback, MiddlewareCompletionBody,
@@ -95,71 +96,6 @@ pub(crate) struct PluginCallbacks {
     pending_middleware: Mutex<BTreeMap<String, Arc<dyn MiddlewareCallback>>>,
     calls: Mutex<BTreeMap<u64, Arc<CallResources>>>,
     maximum_payload: usize,
-}
-
-struct CallResources {
-    deadline: Instant,
-    operation_timeout: Duration,
-    cancellation: CancellationToken,
-    scope: Arc<CallbackScope>,
-    http_resources: Arc<http_middleware::resources::Resources>,
-    model_bindings: tokio::sync::Mutex<
-        BTreeMap<String, gateway_core::engine::execution::BoundModelExecutionContext>,
-    >,
-    state: Mutex<CallState>,
-}
-
-impl CallResources {
-    fn request_settings(&self) -> Option<gateway_core::settings::RequestSettings> {
-        let middleware = self
-            .state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .middleware
-            .clone();
-        middleware.and_then(|middleware| middleware.request_settings())
-    }
-
-    /// 建立受管流后，网络操作各自计时；连接空闲时间不消耗后续操作的预算
-    fn timeout(&self) -> Result<Duration, PluginFault> {
-        let state = self
-            .state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if state.closed {
-            return Err(denied());
-        }
-        if state.resource_stream {
-            return Ok(self.operation_timeout);
-        }
-        self.deadline
-            .checked_duration_since(Instant::now())
-            .filter(|timeout| !timeout.is_zero())
-            .ok_or_else(|| PluginFault::new(ErrorCode::Timeout, "callback deadline elapsed"))
-    }
-}
-
-#[derive(Default)]
-struct CallState {
-    closed: bool,
-    resource_stream: bool,
-    middleware: Option<Arc<dyn MiddlewareCallback>>,
-    streams: BTreeMap<String, Arc<HttpStream>>,
-    model_streams: BTreeMap<String, Arc<model::ModelStream>>,
-}
-
-struct HttpStream {
-    body: tokio::sync::Mutex<Option<HttpBody>>,
-    closed: tokio::sync::watch::Sender<bool>,
-}
-
-impl HttpStream {
-    fn close(&self) {
-        self.closed.send_replace(true);
-        if let Ok(mut body) = self.body.try_lock() {
-            body.take();
-        }
-    }
 }
 
 impl PluginCallbacks {
@@ -411,21 +347,7 @@ impl CallbackHandler for PluginCallbacks {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .insert(
                 context.call_id,
-                Arc::new(CallResources {
-                    deadline: Instant::now() + Duration::from_millis(context.timeout_ms),
-                    operation_timeout: Duration::from_millis(context.timeout_ms),
-                    cancellation: CancellationToken::new(),
-                    scope,
-                    http_resources: middleware
-                        .as_ref()
-                        .and_then(|middleware| middleware.http_resources())
-                        .unwrap_or_default(),
-                    model_bindings: tokio::sync::Mutex::new(BTreeMap::new()),
-                    state: Mutex::new(CallState {
-                        middleware,
-                        ..CallState::default()
-                    }),
-                }),
+                Arc::new(CallResources::new(context, scope, middleware)),
             );
     }
 
@@ -436,10 +358,7 @@ impl CallbackHandler for PluginCallbacks {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .get(&context.call_id)
         {
-            call.state
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .resource_stream = context.resource_stream;
+            call.set_streaming(context.resource_stream);
         }
     }
 
@@ -450,25 +369,7 @@ impl CallbackHandler for PluginCallbacks {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .remove(&context.call_id)
         {
-            call.cancellation.cancel();
-            let mut state = call
-                .state
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            state.closed = true;
-            // RPC End 可以先于消费者取完已入队的中间件正文到达
-            // 这里只撤销新的
-            // callback 入口；正文包装器持有 invocation，最后一个 owner 释放时再关闭
-            // 下游，避免提前丢失尚未搬运的计量/终态信封
-            state.middleware.take();
-            for stream in state.streams.values() {
-                stream.close();
-            }
-            state.streams.clear();
-            for stream in state.model_streams.values() {
-                stream.close();
-            }
-            state.model_streams.clear();
+            call.close();
         }
     }
 

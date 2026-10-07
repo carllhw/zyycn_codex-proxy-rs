@@ -2,7 +2,7 @@
 
 use gateway_core::{
     account::FastMode,
-    settings::{ExecutionSettings, RequestSettings},
+    routing::request_settings::{ExecutionSettings, RequestSettings},
 };
 use gateway_plugin_sdk::{
     Capability, ErrorCode, PluginFault,

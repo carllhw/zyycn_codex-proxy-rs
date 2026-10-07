@@ -16,7 +16,7 @@ use gateway_core::{
         WebSocketResponseObservation,
     },
     metering::{CostEstimateStatus, CostSource},
-    runtime::extensions::ExtensionSetReference,
+    routing::extensions::ExtensionSetReference,
     upstream::UpstreamSendState,
 };
 use gateway_plugin_sdk::{

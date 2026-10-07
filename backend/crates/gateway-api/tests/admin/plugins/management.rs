@@ -5,24 +5,31 @@ use axum::{
     http::{Request, StatusCode},
 };
 use futures::future::BoxFuture;
-use gateway_core::{
-    engine::{
-        execution::{
-            AuthenticatedClient, ClientAuthenticationError, ExecutionService,
-            PreparedRootExecution, StartExecution, StartProviderExecution, StartedExecution,
-        },
-        middleware::{
-            FrozenMiddlewarePlan, MiddlewareBody, MiddlewareContext, MiddlewareError,
-            MiddlewareFrame, MiddlewareFraming, MiddlewareHeader, MiddlewareNext, MiddlewarePlan,
-            MiddlewareRequest, MiddlewareResponse,
-        },
-    },
-    error::GatewayError,
-    lifecycle::CancellationToken,
-    policy::ClientApiKeyId,
-    routing::PublicModelId,
-    runtime::extensions::{ExtensionSetId, ExtensionSetLease, ExtensionSetReference},
-};
+use gateway_core::engine::execution::AuthenticatedClient;
+use gateway_core::engine::execution::ClientAuthenticationError;
+use gateway_core::engine::execution::ExecutionService;
+use gateway_core::engine::execution::PreparedRootExecution;
+use gateway_core::engine::execution::StartExecution;
+use gateway_core::engine::execution::StartProviderExecution;
+use gateway_core::engine::execution::StartedExecution;
+use gateway_core::engine::middleware::FrozenMiddlewarePlan;
+use gateway_core::engine::middleware::MiddlewareBody;
+use gateway_core::engine::middleware::MiddlewareContext;
+use gateway_core::engine::middleware::MiddlewareError;
+use gateway_core::engine::middleware::MiddlewareFrame;
+use gateway_core::engine::middleware::MiddlewareFraming;
+use gateway_core::engine::middleware::MiddlewareHeader;
+use gateway_core::engine::middleware::MiddlewareNext;
+use gateway_core::engine::middleware::MiddlewarePlan;
+use gateway_core::engine::middleware::MiddlewareRequest;
+use gateway_core::engine::middleware::MiddlewareResponse;
+use gateway_core::error::GatewayError;
+use gateway_core::lifecycle::CancellationToken;
+use gateway_core::policy::ClientApiKeyId;
+use gateway_core::routing::PublicModelId;
+use gateway_core::routing::extensions::ExtensionSetId;
+use gateway_core::routing::extensions::ExtensionSetLease;
+use gateway_core::routing::extensions::ExtensionSetReference;
 use std::sync::{
     Arc, Mutex,
     atomic::{AtomicBool, Ordering},
@@ -368,10 +375,11 @@ pub(super) fn resource_fixture(
 }
 
 async fn published_fixture() -> AdminTestFixture {
-    use gateway_core::{
-        routing::{ConfigRevision, RuntimeSnapshot},
-        runtime::extensions::{ExtensionSetId, ExtensionSetLease, ExtensionSetReference},
-    };
+    use gateway_core::routing::ConfigRevision;
+    use gateway_core::routing::RuntimeSnapshot;
+    use gateway_core::routing::extensions::ExtensionSetId;
+    use gateway_core::routing::extensions::ExtensionSetLease;
+    use gateway_core::routing::extensions::ExtensionSetReference;
     use std::sync::Arc;
     struct Lease;
     impl ExtensionSetLease for Lease {

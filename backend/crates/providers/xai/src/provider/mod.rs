@@ -81,7 +81,6 @@ use stream::*;
 pub(crate) use workers::worker_contributions;
 
 const HTTP_SSE_TRANSPORT: &str = "http_sse";
-const DEFAULT_GROK_MODEL: &str = "grok-4.5";
 const XAI_SESSION_STATE_MAX_BYTES: usize = 8 * 1024 * 1024;
 const XAI_SESSION_OUTPUT_LIMIT: usize = 4_096;
 const REASONING_DECODE_FAILED_CODE: &str = "reasoning_decode_failed";
@@ -205,12 +204,9 @@ impl Provider for GrokBuildProvider {
     async fn query_model_capabilities(
         &self,
     ) -> Result<Vec<ProviderModelCapabilities>, ProviderError> {
-        let Ok(models) = self.catalog.query_models().await else {
-            return Ok(vec![default_grok_model_capabilities()?]);
-        };
-        if models.is_empty() {
-            return Ok(vec![default_grok_model_capabilities()?]);
-        }
+        let models = self.catalog.query_models().await.map_err(|_| {
+            provider_error(ProviderErrorKind::Unavailable, UpstreamSendState::NotSent)
+        })?;
         Ok(models
             .into_iter()
             .map(compile_grok_model_capabilities)
@@ -842,97 +838,41 @@ fn compile_grok_model_capabilities(model: GrokCatalogModel) -> ProviderModelCapa
         .with_presentation(grok_model_presentation(&model))
 }
 
-fn default_grok_model_capabilities() -> Result<ProviderModelCapabilities, ProviderError> {
-    let model = UpstreamModelId::new(DEFAULT_GROK_MODEL.to_owned())
-        .map_err(|_| provider_error(ProviderErrorKind::Protocol, UpstreamSendState::NotSent))?;
-    let capabilities = ModelCapabilities::new(BTreeSet::from([OperationKind::Generate]), None)
-        .with_upstream_feature_validation();
-    Ok(ProviderModelCapabilities::new(model, capabilities)
-        .with_presentation(default_grok_model_presentation()))
-}
-
-fn default_grok_model_presentation() -> ModelPresentation {
-    ModelPresentation::new(
-        Some("Grok 4.5".to_owned()),
-        Some("xAI Grok 4.5 frontier model with reasoning and vision.".to_owned()),
-    )
-    .with_context_window_tokens(Some(500_000))
-    .with_max_context_window_tokens(Some(500_000))
-    .with_image_input(true)
-    .with_agent_tools(true, true)
-}
-
 fn grok_model_presentation(model: &GrokCatalogModel) -> ModelPresentation {
-    let slug = model.request_model().as_str();
-    let known_grok_4_5 = is_known_grok_4_5_model(slug);
-    let reasoning_evidence = model.capabilities().reasoning_effort();
-    let catalog_reasoning_efforts = model
+    let reasoning_efforts = model
         .capabilities()
         .reasoning_efforts()
         .iter()
         .map(|effort| effort.as_str().to_owned())
         .collect::<Vec<_>>();
-    let catalog_default_reasoning = model
+    let default_reasoning = model
         .capabilities()
         .default_reasoning_effort()
         .map(|effort| effort.as_str().to_owned());
-    let (default_reasoning, reasoning_efforts) = match reasoning_evidence {
-        GrokCatalogCapabilityEvidence::DeclaredNative if !catalog_reasoning_efforts.is_empty() => {
-            let default_reasoning = catalog_default_reasoning
-                .filter(|default| {
-                    catalog_reasoning_efforts
-                        .iter()
-                        .any(|effort| effort == default)
-                })
-                .or_else(|| catalog_reasoning_efforts.first().cloned());
-            (default_reasoning, catalog_reasoning_efforts)
-        }
-        GrokCatalogCapabilityEvidence::DeclaredNative => (None, Vec::new()),
-        GrokCatalogCapabilityEvidence::DeclaredUnsupported => {
-            (Some("none".to_owned()), vec!["none".to_owned()])
-        }
-        GrokCatalogCapabilityEvidence::Unknown => (None, Vec::new()),
-    };
     let context_window_tokens = model
         .limits()
         .context_window_tokens()
-        .map(std::num::NonZeroU64::get)
-        .or(known_grok_4_5.then_some(500_000));
+        .map(std::num::NonZeroU64::get);
     let tool_evidence = model.capabilities().streaming_tool_calls();
 
     ModelPresentation::new(
-        model
-            .display_name()
-            .map(str::to_owned)
-            .or_else(|| known_grok_4_5.then(|| "Grok 4.5".to_owned())),
-        model
-            .metadata()
-            .description()
-            .map(str::to_owned)
-            .or_else(|| {
-                known_grok_4_5
-                    .then(|| "xAI Grok 4.5 frontier model with reasoning and vision.".to_owned())
-            }),
+        model.display_name().map(str::to_owned),
+        model.metadata().description().map(str::to_owned),
     )
     .with_reasoning(default_reasoning, reasoning_efforts)
     .with_context_window_tokens(context_window_tokens)
-    // Grok 目录只声明一个窗口，继续将它作为客户端可覆盖上限
-    .with_max_context_window_tokens(context_window_tokens)
-    .with_image_input(known_grok_4_5)
+    .with_max_context_window_tokens(
+        model
+            .limits()
+            .max_context_window_tokens()
+            .map(std::num::NonZeroU64::get),
+    )
     .with_agent_tools(
         tool_evidence != GrokCatalogCapabilityEvidence::DeclaredUnsupported,
-        tool_evidence == GrokCatalogCapabilityEvidence::DeclaredNative
-            || (known_grok_4_5 && tool_evidence == GrokCatalogCapabilityEvidence::Unknown),
+        tool_evidence == GrokCatalogCapabilityEvidence::DeclaredNative,
     )
     .with_search_tool(
         model.capabilities().backend_search() == GrokCatalogCapabilityEvidence::DeclaredNative,
     )
     .with_hidden(model.metadata().hidden().unwrap_or(false))
-}
-
-fn is_known_grok_4_5_model(slug: &str) -> bool {
-    matches!(
-        slug,
-        DEFAULT_GROK_MODEL | "grok-4.5-latest" | "grok-4.5-build-free" | "grok-build-latest"
-    )
 }

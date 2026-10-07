@@ -19,8 +19,8 @@ use crate::{
     identity::ProviderKind,
     operation::Operation,
     policy::ClientApiKeyId,
+    routing::extensions::{ExtensionSetId, ExtensionSetReference},
     routing::{AccountGroupId, PublicModelId},
-    runtime::extensions::{ExtensionSetId, ExtensionSetReference},
 };
 
 /// 模型路由插件的一次输入；正文仍保存在 `operation` 中，由 Runtime 按权限投影

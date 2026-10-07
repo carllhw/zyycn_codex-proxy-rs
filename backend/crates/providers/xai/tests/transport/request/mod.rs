@@ -6,6 +6,11 @@ use serde_json::{Map, Value, json};
 
 use provider_xai::{GrokRequestEncodeError, GrokResponsesRequest};
 
+mod hosted_names;
+mod model_identity;
+mod parameters;
+mod web_search;
+
 fn raw_request(body: Value) -> GenerateRequest {
     let Value::Object(body) = body else {
         panic!("request fixture must be an object");
@@ -191,7 +196,7 @@ fn encoder_should_apply_build_defaults_and_normalize_reasoning_effort() {
             "reasoning.encrypted_content"
         ]))
     );
-    assert_eq!(body.pointer("/reasoning/effort"), Some(&json!("high")));
+    assert_eq!(body.pointer("/reasoning/effort"), Some(&json!("xhigh")));
     assert_eq!(body.pointer("/reasoning/summary"), Some(&json!("auto")));
 
     let request = raw_request(json!({
@@ -200,9 +205,9 @@ fn encoder_should_apply_build_defaults_and_normalize_reasoning_effort() {
         "reasoning": {"effort": "xhigh"}
     }));
     let encoded = GrokResponsesRequest::encode(&request, "xai/grok-4.6-latest", &client_key())
-        .expect("aliased request");
+        .expect("routed model request");
     let body = Value::Object(encoded.body().clone());
-    assert_eq!(body.pointer("/model"), Some(&json!("grok-4.6")));
+    assert_eq!(body.pointer("/model"), Some(&json!("xai/grok-4.6-latest")));
     assert_eq!(body.pointer("/reasoning/effort"), Some(&json!("xhigh")));
     assert_eq!(body.pointer("/reasoning_effort"), None);
     assert_eq!(body.pointer("/reasoningEffort"), None);
@@ -215,7 +220,10 @@ fn encoder_should_apply_build_defaults_and_normalize_reasoning_effort() {
     let encoded = GrokResponsesRequest::encode(&request, "grok-composer-2.5-fast", &client_key())
         .expect("Composer request");
     let body = Value::Object(encoded.body().clone());
-    assert_eq!(body.pointer("/reasoning"), None);
+    assert_eq!(
+        body.pointer("/reasoning"),
+        Some(&json!({"effort":"high", "summary":"auto"}))
+    );
 
     let request = raw_request(json!({
         "model": "client-model",
@@ -232,7 +240,7 @@ fn encoder_should_apply_build_defaults_and_normalize_reasoning_effort() {
         body.pointer("/include"),
         Some(&json!(["reasoning.encrypted_content"]))
     );
-    assert_eq!(body.pointer("/reasoning"), None);
+    assert_eq!(body.pointer("/reasoning"), Some(&json!({"effort":"max"})));
 
     let request = raw_request(json!({
         "model": "client-model",
@@ -243,7 +251,7 @@ fn encoder_should_apply_build_defaults_and_normalize_reasoning_effort() {
         .expect("Composer reasoning without effort");
     assert_eq!(
         Value::Object(encoded.body().clone()).pointer("/reasoning"),
-        None
+        Some(&json!({}))
     );
 
     let request = raw_request(json!({
@@ -255,12 +263,12 @@ fn encoder_should_apply_build_defaults_and_normalize_reasoning_effort() {
         .expect("unknown provider prefix");
     assert_eq!(
         Value::Object(encoded.body().clone()).pointer("/reasoning/effort"),
-        None
+        Some(&json!("max"))
     );
 }
 
 #[test]
-fn encoder_should_strip_grok_unsupported_fields() {
+fn encoder_should_strip_codex_only_fields_without_model_guesses() {
     let request = raw_request(json!({
         "model": "client-model",
         "input": "hello",
@@ -285,16 +293,11 @@ fn encoder_should_strip_grok_unsupported_fields() {
     }));
 
     let encoded = GrokResponsesRequest::encode(&request, "grok-latest", &client_key())
-        .expect("sanitized 4.5 request");
+        .expect("sanitized request");
     let body = Value::Object(encoded.body().clone());
     for pointer in [
         "/prompt_cache_retention",
         "/safety_identifier",
-        "/presence_penalty",
-        "/presencePenalty",
-        "/frequency_penalty",
-        "/frequencyPenalty",
-        "/stop",
         "/external_web_access",
         "/metadata/external_web_access",
         "/tools/0/external_web_access",
@@ -311,12 +314,9 @@ fn encoder_should_strip_grok_unsupported_fields() {
     let encoded = GrokResponsesRequest::encode(&request, "grok-4.20-reasoning", &client_key())
         .expect("sanitized 4.20 request");
     let body = Value::Object(encoded.body().clone());
-    assert_eq!(
-        body.pointer("/model"),
-        Some(&json!("grok-4.20-0309-reasoning"))
-    );
-    assert_eq!(body.pointer("/logprobs"), None);
-    assert_eq!(body.pointer("/top_logprobs"), None);
+    assert_eq!(body.pointer("/model"), Some(&json!("grok-4.20-reasoning")));
+    assert_eq!(body.pointer("/logprobs"), Some(&json!(true)));
+    assert_eq!(body.pointer("/top_logprobs"), Some(&json!(5)));
 }
 
 #[test]
@@ -1004,7 +1004,7 @@ fn hosted_tool_choice_should_preserve_normalized_web_search_choice() {
         "model": "client",
         "input": "search",
         "tools": [
-            {"type": "web_search_preview", "allowed_domains": ["example.com"]},
+            {"type": "web_search_preview", "filters": {"allowed_domains": ["example.com"]}},
             {"type": "x_search"}
         ],
         "tool_choice": {"type": "web_search_preview"}

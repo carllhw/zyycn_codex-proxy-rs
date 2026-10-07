@@ -2,7 +2,8 @@
 
 use std::sync::Arc;
 
-use gateway_core::runtime::{RuntimeSnapshotHandle, extensions::ExtensionSetReference};
+use gateway_core::routing::extensions::ExtensionSetReference;
+use gateway_core::runtime::RuntimeSnapshotHandle;
 
 use crate::{
     model::{

@@ -15,8 +15,8 @@ use gateway_admin::{
 };
 use gateway_core::{
     account::{AccountWeight, CredentialState, ProviderAccountId, QuotaState},
+    routing::extensions::ExtensionPreparationPort,
     routing::{ConfigRevision, ProviderKind},
-    runtime::extensions::ExtensionPreparationPort,
 };
 use gateway_plugin_sdk::{Capability, Contributions, Stage};
 use serde_json::{Value, json};
@@ -180,7 +180,12 @@ async fn management_facts_validate_queries_without_permission_declarations() {
             ExtensionPreparationPort::prepare(&runtime, ConfigRevision::new(1).unwrap())
                 .await
                 .unwrap();
-        assert!(runtime.middleware_registry().resolve(&generation).is_none());
+        assert!(
+            runtime
+                .execution_registry()
+                .middleware(&generation)
+                .is_none()
+        );
         assert!(runtime.policy_registry().resolve(&generation).is_none());
         let view = runtime.views(&generation).await.unwrap().remove(0);
         let response = runtime
@@ -266,7 +271,12 @@ async fn quota_refresh_is_available_without_permission_declarations() {
             ExtensionPreparationPort::prepare(&runtime, ConfigRevision::new(1).unwrap())
                 .await
                 .unwrap();
-        assert!(runtime.middleware_registry().resolve(&generation).is_none());
+        assert!(
+            runtime
+                .execution_registry()
+                .middleware(&generation)
+                .is_none()
+        );
         assert!(runtime.policy_registry().resolve(&generation).is_none());
         let view = runtime.views(&generation).await.unwrap().remove(0);
         let response = runtime

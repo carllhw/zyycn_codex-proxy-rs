@@ -24,12 +24,10 @@ use gateway_admin::{
         store::{AdminStoreError, AdminStoreErrorKind, AdminStoreResult},
     },
 };
+use gateway_core::routing::extensions::{ExtensionSetId, ExtensionSetLease, ExtensionSetReference};
 use gateway_core::{
     routing::ConfigRevision,
-    runtime::{
-        RuntimeSnapshotHandle, SnapshotControl,
-        extensions::{ExtensionSetId, ExtensionSetLease, ExtensionSetReference},
-    },
+    runtime::{RuntimeSnapshotHandle, SnapshotControl},
 };
 use serde_json::json;
 
@@ -117,7 +115,7 @@ impl gateway_admin::ports::plugins::PluginRuntimeDiagnostics for Fixture {
         &self,
         _: &gateway_admin::model::plugins::instances::PluginInstanceSnapshot,
         _: Option<u64>,
-        _: Option<&gateway_core::runtime::extensions::ExtensionSetReference>,
+        _: Option<&gateway_core::routing::extensions::ExtensionSetReference>,
     ) -> Option<
         std::collections::BTreeMap<
             String,
@@ -132,7 +130,7 @@ impl gateway_admin::ports::plugins::PluginRuntimeDiagnostics for Fixture {
 impl gateway_admin::ports::plugins::PluginStateLifecycle for Fixture {
     async fn activate_state(
         &self,
-        _: &gateway_core::runtime::extensions::ExtensionSetReference,
+        _: &gateway_core::routing::extensions::ExtensionSetReference,
         _: &gateway_admin::model::plugins::instances::PluginInstance,
     ) -> Result<(), AdminError> {
         Ok(())
@@ -142,7 +140,7 @@ impl gateway_admin::ports::plugins::PluginStateLifecycle for Fixture {
     }
     async fn migrate_state(
         &self,
-        _: &gateway_core::runtime::extensions::ExtensionSetReference,
+        _: &gateway_core::routing::extensions::ExtensionSetReference,
         _: gateway_admin::model::plugins::state::PluginStateTransition,
     ) -> Result<(), AdminError> {
         panic!("unexpected state migration")

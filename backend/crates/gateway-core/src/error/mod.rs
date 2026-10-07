@@ -144,7 +144,7 @@ pub enum PreDeliveryRetry {
     /// 可靠 NotSent 的建连恢复；次数与时间由 Core 的请求级预算裁决
     SameAccountConnectionRetry {
         /// Provider 明确指定实际失败的传输，避免 HTTP 恢复重新进入 WS
-        transport: crate::engine::AttemptTransport,
+        transport: crate::upstream::AttemptTransport,
     },
     /// 固定本次账号，并要求 Provider 使用备用传输
     SameAccountTransportFallback,
@@ -666,7 +666,7 @@ impl ProviderError {
     }
 
     #[must_use]
-    pub fn with_connection_retry(mut self, transport: crate::engine::AttemptTransport) -> Self {
+    pub fn with_connection_retry(mut self, transport: crate::upstream::AttemptTransport) -> Self {
         self.pre_delivery_retry = Some(Box::new(PreDeliveryRetry::SameAccountConnectionRetry {
             transport,
         }));

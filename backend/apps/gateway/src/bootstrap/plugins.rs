@@ -72,11 +72,11 @@ impl ManagementPorts {
 pub(super) fn service_middleware(
     snapshots: RuntimeSnapshotHandle,
     runtime: &PluginRuntime,
-) -> gateway_admin::service::PlanSource {
-    let middleware = runtime.middleware_registry();
+) -> gateway_admin::public_service::PlanSource {
+    let middleware = runtime.execution_registry();
     Arc::new(move || {
         let snapshot = snapshots.snapshot_for_diagnostics()?;
-        middleware.resolve(snapshot.extensions()?)
+        middleware.middleware(snapshot.extensions()?)
     })
 }
 

@@ -1,6 +1,6 @@
 //! 宿主设置服务的操作标识与请求、响应数据合同
 //!
-//! 从宿主设置类型与 service/settings.rs 生成；更新命令见 SDK 维护说明
+//! 从宿主设置类型与 public_service/settings.rs 生成；更新命令见 SDK 维护说明
 use super::Operation;
 use serde::{Deserialize, Serialize};
 use std::{

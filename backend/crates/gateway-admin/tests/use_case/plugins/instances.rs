@@ -40,12 +40,10 @@ use gateway_admin::{
         store::{AdminStoreError, AdminStoreErrorKind, AdminStoreResult},
     },
 };
+use gateway_core::routing::extensions::{ExtensionSetId, ExtensionSetLease, ExtensionSetReference};
 use gateway_core::{
     routing::ConfigRevision,
-    runtime::{
-        RuntimeSnapshotHandle, SnapshotControl,
-        extensions::{ExtensionSetId, ExtensionSetLease, ExtensionSetReference},
-    },
+    runtime::{RuntimeSnapshotHandle, SnapshotControl},
 };
 use serde_json::json;
 

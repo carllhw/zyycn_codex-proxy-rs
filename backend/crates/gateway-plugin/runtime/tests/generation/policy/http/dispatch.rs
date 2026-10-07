@@ -116,7 +116,10 @@ async fn setup(
     )
     .await;
     let generation = prepare(&runtime).await;
-    let plan = runtime.middleware_registry().resolve(&generation).unwrap();
+    let plan = runtime
+        .execution_registry()
+        .middleware(&generation)
+        .unwrap();
     (cache, runtime, generation, plan)
 }
 
@@ -378,7 +381,7 @@ async fn cancelling_a_parent_drops_its_active_http_child() {
 
 #[tokio::test]
 async fn active_http_children_inherit_settings_and_preserve_override_sources() {
-    use gateway_core::{routing::RuntimeSnapshot, settings::RequestSettings};
+    use gateway_core::{routing::RuntimeSnapshot, routing::request_settings::RequestSettings};
     let (_cache, runtime, generation, plan) = setup("settings").await;
     let settings = Arc::new(Mutex::new(Vec::new()));
     let dispatcher: Arc<dyn core::Dispatcher> = Arc::new(Dispatcher {

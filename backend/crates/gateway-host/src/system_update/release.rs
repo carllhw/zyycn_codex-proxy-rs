@@ -4,7 +4,9 @@ use std::env;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
-use gateway_admin::model::system::{SystemUpdateChannel as UpdateChannel, SystemUpdateDetail};
+use gateway_admin::model::system::{
+    SystemUpdateChannel as UpdateChannel, SystemUpdateDetail, SystemUpdatePolicy,
+};
 use serde::Deserialize;
 use tokio::sync::Mutex;
 
@@ -53,12 +55,7 @@ impl ReleaseCache {
         channel: UpdateChannel,
     ) -> Result<SystemUpdateDetail, OperationError> {
         if let Some(reason) = config.update_support_error() {
-            return Ok(super::base_update_detail(
-                config,
-                channel,
-                Some(reason),
-                None,
-            ));
+            return Ok(base_update_detail(config, channel, Some(reason), None));
         }
         let repository = config
             .update_repository
@@ -81,14 +78,7 @@ impl ReleaseCache {
         {
             Ok(release) => {
                 let detail = release.as_ref().map_or_else(
-                    || {
-                        super::base_update_detail(
-                            config,
-                            channel,
-                            config.update_support_error(),
-                            None,
-                        )
-                    },
+                    || base_update_detail(config, channel, config.update_support_error(), None),
                     |release| detail_from_release(config, release, channel),
                 );
                 let mut entry = self.entry.lock().await;
@@ -218,10 +208,10 @@ pub(crate) fn detail_from_release(
     if unsupported_reason.is_some()
         || (!has_update && latest_version != normalize_version(&config.version))
     {
-        return super::base_update_detail(config, channel, unsupported_reason, None);
+        return base_update_detail(config, channel, unsupported_reason, None);
     }
     SystemUpdateDetail {
-        policy: super::update_policy(config, channel),
+        policy: update_policy(config, channel),
         current_version: config.version.clone(),
         latest_version,
         has_update,
@@ -487,4 +477,79 @@ fn url_host_is_loopback(url: &reqwest::Url) -> bool {
                 .parse::<std::net::IpAddr>()
                 .is_ok_and(|address| address.is_loopback())
     })
+}
+
+impl SystemUpdateConfig {
+    pub(super) fn update_support_error(&self) -> Option<String> {
+        if !matches!(self.build_type.as_str(), "release" | "experimental") {
+            return Some("在线更新需要官方发布构建".to_owned());
+        }
+        let Some(channel) = version_channel(&self.version) else {
+            return Some("当前版本不符合发行命名规范，无法确定更新通道".to_owned());
+        };
+        if self.build_type == "experimental" && channel != UpdateChannel::Experimental {
+            return Some("实验构建必须使用 exp.N 版本，无法在线更新".to_owned());
+        }
+        let Some(repository) = self.update_repository.as_deref() else {
+            return Some("检查更新需要配置 CPR_UPDATE_REPOSITORY".to_owned());
+        };
+        if let Err(error) = validate_repository(repository) {
+            return Some(error.to_string());
+        }
+        if let Err(error) = validate_api_base(&self.github_api_base) {
+            return Some(error);
+        }
+        if let Err(error) = self.web_dist_dir() {
+            return Some(error.to_string());
+        }
+        None
+    }
+
+    fn release_cache_key(&self) -> String {
+        format!(
+            "{}|{}|{}|{}|{}",
+            self.update_repository.as_deref().unwrap_or_default(),
+            self.github_api_base,
+            self.version,
+            self.deployment_mode,
+            self.build_type,
+        )
+    }
+}
+
+pub(super) fn update_policy(
+    config: &SystemUpdateConfig,
+    channel: UpdateChannel,
+) -> SystemUpdatePolicy {
+    use UpdateChannel::{Alpha, Beta, Experimental, Rc, Stable};
+    SystemUpdatePolicy {
+        channel,
+        available_channels: if version_channel(&config.version) == Some(Experimental) {
+            vec![Experimental]
+        } else {
+            vec![Stable, Rc, Beta, Alpha]
+        },
+    }
+}
+
+pub(super) fn base_update_detail(
+    config: &SystemUpdateConfig,
+    channel: UpdateChannel,
+    unsupported_reason: Option<String>,
+    warning: Option<String>,
+) -> SystemUpdateDetail {
+    SystemUpdateDetail {
+        policy: update_policy(config, channel),
+        current_version: config.version.clone(),
+        latest_version: config.version.clone(),
+        has_update: false,
+        deployment_mode: config.deployment_mode.clone(),
+        build_type: config.build_type.clone(),
+        release_url: None,
+        notes: None,
+        cached: false,
+        update_supported: unsupported_reason.is_none() && warning.is_none(),
+        unsupported_reason,
+        warning,
+    }
 }

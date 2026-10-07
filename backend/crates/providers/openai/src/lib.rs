@@ -4,7 +4,11 @@ mod admin;
 pub mod config;
 mod jitter;
 mod provider;
+mod request_identity;
 mod session_transport;
+
+/// 持久账号使用的 API Key 认证种类，凭据与账号传输隔离共用
+pub(crate) const CODEX_AUTHENTICATION_KIND_API_KEY: &str = "api_key";
 
 use std::sync::Arc;
 

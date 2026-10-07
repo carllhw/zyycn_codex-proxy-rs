@@ -294,10 +294,10 @@ async fn cli_service_callback_uses_the_same_public_settings_and_plugin_chain() {
         crate::support::native::admin_registry(),
         Arc::new(Pricing),
     );
-    let mut registry = gateway_admin::service::Registry::new({
+    let mut registry = gateway_admin::public_service::Registry::new({
         let snapshots = core.snapshots();
-        let middleware = runtime.middleware_registry();
-        Arc::new(move || middleware.resolve(snapshots.snapshot_for_diagnostics()?.extensions()?))
+        let middleware = runtime.execution_registry();
+        Arc::new(move || middleware.middleware(snapshots.snapshot_for_diagnostics()?.extensions()?))
     });
     registry.register_settings(&settings).unwrap();
     let registry = Arc::new(registry);
@@ -345,7 +345,7 @@ async fn cli_service_callback_uses_the_same_public_settings_and_plugin_chain() {
 #[tokio::test]
 async fn service_chain_preserves_onion_order_parent_scope_and_native_results_without_a_database() {
     use super::*;
-    use gateway_core::middleware::{compose, service as core};
+    use gateway_core::{engine::middleware::service as core, middleware::compose};
 
     let directory = tempfile::tempdir().unwrap();
     let records = directory.path().join("onion.jsonl");
@@ -377,7 +377,10 @@ async fn service_chain_preserves_onion_order_parent_scope_and_native_results_wit
     )
     .await;
     let generation = prepare(&runtime).await;
-    let plan = runtime.middleware_registry().resolve(&generation).unwrap();
+    let plan = runtime
+        .execution_registry()
+        .middleware(&generation)
+        .unwrap();
     let calls = Arc::new(AtomicUsize::new(0));
     let input = json!({"opaque":[null,false,0,""]});
     for reject in [false, true] {

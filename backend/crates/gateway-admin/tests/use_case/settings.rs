@@ -28,7 +28,7 @@ struct PricingSettingsStore {
 
 #[tokio::test]
 async fn explicit_service_calls_freeze_empty_plan_and_cancel_before_entering_terminal() {
-    use gateway_admin::service::{Origin, Plan, scope};
+    use gateway_admin::public_service::{Origin, Plan, scope};
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     let resolutions = Arc::new(AtomicUsize::new(0));

@@ -8,8 +8,9 @@ use std::time::Duration;
 use futures::StreamExt as _;
 use sha2::Digest as _;
 
+use super::events::UpdateEvents;
 use super::release::{download_client, validate_download_url};
-use super::{OperationError, UpdateEvents, invalid, upstream};
+use super::{OperationError, invalid, upstream};
 
 pub(crate) const MAX_DOWNLOAD_SIZE: u64 = 500 * 1024 * 1024;
 pub(crate) const MAX_CHECKSUM_SIZE: u64 = 1024 * 1024;

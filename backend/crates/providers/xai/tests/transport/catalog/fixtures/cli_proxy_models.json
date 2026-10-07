@@ -1,0 +1,42 @@
+{
+  "object": "list",
+  "data": [
+    {
+      "id": "grok-4.5-catalog-entry",
+      "model": "grok-4.5",
+      "name": "Grok 4.5",
+      "description": "Official Grok Build coding model.",
+      "hidden": false,
+      "apiKey": "provider-only field must not enter catalog metadata",
+      "extraHeaders": {
+        "x-api-key": "provider-only field"
+      },
+      "baseUrl": "https://provider-only.invalid/v1",
+      "context_window": 1000000,
+      "max_completion_tokens": 131072,
+      "api_backend": "responses",
+      "supported_in_api": true,
+      "supports_reasoning_effort": true,
+      "reasoning_efforts": [
+        {
+          "value": "low"
+        },
+        {
+          "value": "medium",
+          "label": "Balanced",
+          "default": true
+        },
+        {
+          "value": "high"
+        },
+        {
+          "id": "extended",
+          "value": "xhigh",
+          "label": "Extended"
+        }
+      ],
+      "supports_backend_search": true,
+      "stream_tool_calls": true
+    }
+  ]
+}

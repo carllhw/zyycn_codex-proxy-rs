@@ -250,16 +250,22 @@ HTTP 字段见 [插件 API](api.md#12-插件管理)，更新与数据恢复见 [
 | `account` | Provider 账号/credential/quota 值对象、持久化端口与请求级账号选择；`scope` 持有分组、账号目录和冻结账号范围 |
 | `policy` | Client API Key 准入、原始 Key 设置与客户端版本策略；只使用账号范围、Provider 身份和基础校验 |
 | `metering` | 标准化 Usage、金额、费用估算与费用明细；不表示账号或开票系统 |
-| `upstream` | 跨 Engine、Event、Error 与 Provider 共用的 transport 名称、发送状态和不透明上游值 |
+| `upstream` | 跨 Engine、Event、Error 与 Provider 共用的 transport 名称、尝试传输档位、发送状态和不透明上游值 |
 | `lifecycle` | 取消信号、可选执行截止与租约生命周期、连接注册与 drain 合同 |
-| `engine` | attempt、发送/提交屏障、执行编排和持久化调用时序 |
-| `routing` | 冻结路由事实、请求计划、Provider 只读目录合同以及运行时快照的表示与编译 |
+| `middleware` | 与领域无关的类型化组合器及单次续体 |
+| `engine` | attempt、发送/提交屏障、执行编排、具体中间件与上游适配计划、持久化调用时序 |
+| `routing` | 冻结路由事实、请求计划、Provider 只读目录合同、扩展集合身份与保活合同、运行时快照及请求设置派生 |
 | `runtime` | 当前快照的发布、读取、revision 订阅与周期对账任务 |
-| `settings` | 请求设置事实及其编译、宿主与 Key 默认值解析、显式覆盖来源；由 `routing` 快照组合并冻结 |
+| `settings` | 设置值及纯编译规则；由 `routing` 快照组合并冻结 |
 
 `event` 通过 `validation` / `upstream` 使用基础值，不依赖承载原始事件的执行错误；账号值对象和
 选择策略通过 `identity` / `account::scope` 使用身份与范围，不依赖路由计划。`routing` 和 `error` 的
-相关公开类型通过 re-export 引用上述定义，类型所有权和 Core 内部依赖归属定义模块。架构测试约束这些叶子依赖
+相关公开类型通过 re-export 引用上述定义，类型所有权和 Core 内部依赖归属定义模块。架构测试约束这些叶子依赖，
+并检查一级 owner 的显式 `crate` / `self` / `super` 路径与重导出形成的依赖图；它不替代 Rust 名称解析和行为测试
+
+`routing::request_settings` 统一解析宿主与 Key 默认值、显式覆盖来源及请求快照重算，不向全局发布请求改写。
+`routing::extensions` 只表达扩展集合的中立身份、静态目录和租约；`engine::extensions` 按冻结身份弱引用索引
+具体执行计划，插件 Runtime（`gateway-plugin/runtime`）的 `PreparedSet` 负责强持有计划。请求取得的冻结计划同时保活该集合，旧代次随最后一个使用者退出
 
 Provider 模型能力、目录代次与 `ProviderCatalogPort` 由 `routing::catalog` 定义。快照编译和对账只消费
 该只读合同，不反向依赖执行注册表；`ProviderRegistry` 实现目录端口，维护唯一的 Provider

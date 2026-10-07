@@ -220,7 +220,7 @@ pub enum RuntimeSnapshotCompileError {
 pub struct RuntimeSnapshotCompiler {
     store: Arc<dyn SnapshotStorePort>,
     catalogs: Arc<dyn ProviderCatalogPort>,
-    extensions: Option<Arc<dyn crate::runtime::extensions::ExtensionPreparationPort>>,
+    extensions: Option<Arc<dyn crate::routing::extensions::ExtensionPreparationPort>>,
 }
 
 impl RuntimeSnapshotCompiler {
@@ -239,7 +239,7 @@ impl RuntimeSnapshotCompiler {
     #[must_use]
     pub fn with_extensions(
         mut self,
-        extensions: Arc<dyn crate::runtime::extensions::ExtensionPreparationPort>,
+        extensions: Arc<dyn crate::routing::extensions::ExtensionPreparationPort>,
     ) -> Self {
         self.extensions = Some(extensions);
         self
@@ -275,7 +275,7 @@ impl RuntimeSnapshotCompiler {
         // 同一配置 revision 的重试复用扩展候选，保留插件策略的发布一致性
         let mut prepared_extensions: Option<(
             ConfigRevision,
-            crate::runtime::extensions::ExtensionSetReference,
+            crate::routing::extensions::ExtensionSetReference,
         )> = None;
         for _ in 0..MAXIMUM_CATALOG_STABILITY_ATTEMPTS {
             let facts = self
@@ -524,7 +524,7 @@ async fn compile_runtime_snapshot(
 #[derive(Debug, Clone)]
 pub struct RuntimeSnapshot {
     settings: Arc<CompiledSettings>,
-    extensions: Option<crate::runtime::extensions::ExtensionSetReference>,
+    extensions: Option<crate::routing::extensions::ExtensionSetReference>,
     revision: ConfigRevision,
     providers: Arc<BTreeSet<ProviderKind>>,
     provider_models: Arc<BTreeMap<ProviderKind, BTreeMap<UpstreamModelId, ModelCapabilities>>>,
@@ -570,14 +570,14 @@ impl RuntimeSnapshot {
     #[must_use]
     pub fn with_extensions(
         mut self,
-        extensions: Option<crate::runtime::extensions::ExtensionSetReference>,
+        extensions: Option<crate::routing::extensions::ExtensionSetReference>,
     ) -> Self {
         self.extensions = extensions;
         self
     }
 
     #[must_use]
-    pub const fn extensions(&self) -> Option<&crate::runtime::extensions::ExtensionSetReference> {
+    pub const fn extensions(&self) -> Option<&crate::routing::extensions::ExtensionSetReference> {
         self.extensions.as_ref()
     }
 

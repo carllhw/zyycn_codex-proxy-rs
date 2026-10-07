@@ -1,7 +1,7 @@
 //! 主动 HTTP 子调用只进入 API 分派端口，正文复用当前 RPC 的资源池
 use super::{CallResources, http_middleware, invalid, services::ServicePorts};
 use crate::RpcReply;
-use gateway_core::middleware::http as core;
+use gateway_core::engine::middleware::http as core;
 use gateway_plugin_sdk::{CallContext, PluginFault, call::middleware::http as wire};
 
 pub(super) async fn call(

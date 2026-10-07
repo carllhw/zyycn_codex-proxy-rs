@@ -439,7 +439,7 @@ impl Environment {
             Some(runtime.clone()),
             Some(runtime.observer_registry()),
             Some(runtime.policy_registry()),
-            Some(runtime.middleware_registry()),
+            Some(runtime.execution_registry()),
             Some(runtime.frontend_authentication_registry()),
         );
         let access = gateway_admin::initialize_plugin_accounts(
@@ -472,7 +472,7 @@ impl Environment {
             Some(runtime.clone()),
             Some(runtime.observer_registry()),
             Some(runtime.policy_registry()),
-            Some(runtime.middleware_registry()),
+            Some(runtime.execution_registry()),
         )
         .activate()
         .await
@@ -536,10 +536,10 @@ impl Environment {
                 timezone: Default::default(),
                 service_middleware: {
                     let snapshots = core.snapshots();
-                    let middleware = runtime.middleware_registry();
+                    let middleware = runtime.execution_registry();
                     std::sync::Arc::new(move || {
                         let snapshot = snapshots.snapshot_for_diagnostics()?;
-                        middleware.resolve(snapshot.extensions()?)
+                        middleware.middleware(snapshot.extensions()?)
                     })
                 },
                 plugin_preparation: runtime.clone(),

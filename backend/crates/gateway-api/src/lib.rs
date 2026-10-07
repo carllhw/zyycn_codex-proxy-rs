@@ -138,7 +138,7 @@ impl ApiBundle {
     }
 
     /// 内部调用使用同一总路由；组合根持有强引用，Runtime 只保存 Weak
-    pub fn dispatcher(&self) -> Arc<dyn gateway_core::middleware::http::Dispatcher> {
+    pub fn dispatcher(&self) -> Arc<dyn gateway_core::engine::middleware::http::Dispatcher> {
         Arc::new(middleware::RouterDispatcher {
             router: middleware::wrap(
                 self.router.clone(),

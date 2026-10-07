@@ -77,6 +77,41 @@ fn context() -> MutationContext {
 }
 
 #[tokio::test]
+async fn unopened_future_budget_windows_do_not_report_usage_or_reset_times() {
+    let Some(database) = TestDatabase::create("budget_unopened_future").await else {
+        return;
+    };
+    seed(&database, "key", "10", "20").await;
+    PgClientBudgetStore::new(database.pool.clone())
+        .settle(charge("key", "before", "3"))
+        .await
+        .unwrap();
+    // 起止相等表示窗口未开启；未来边界确定性覆盖应用时钟领先数据库的场景
+    sqlx::query(
+        "update client_key_budget_windows set
+        daily_start = now() + interval '1 hour', daily_end = now() + interval '1 hour',
+        weekly_start = now() + interval '1 hour', weekly_end = now() + interval '1 hour'
+        where client_api_key_id = $1",
+    )
+    .bind("key")
+    .execute(&database.pool)
+    .await
+    .unwrap();
+
+    let budget = status(&database, "key").await;
+    assert_eq!(
+        (
+            budget.daily_used_usd.canonical(),
+            budget.weekly_used_usd.canonical(),
+            budget.daily_resets_at,
+            budget.weekly_resets_at,
+        ),
+        ("0".to_owned(), "0".to_owned(), None, None)
+    );
+    database.close().await;
+}
+
+#[tokio::test]
 async fn manual_reset_clears_selected_windows_and_preserves_policy_and_history() {
     let Some(database) = TestDatabase::create("budget_manual_reset").await else {
         return;

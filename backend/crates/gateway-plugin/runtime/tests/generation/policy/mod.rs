@@ -51,8 +51,8 @@ use gateway_core::{
     lifecycle::CancellationToken,
     operation::{GenerateRequest, Operation, OperationKind, ProtocolPayload},
     policy::ClientApiKeyId,
+    routing::extensions::{ExtensionPreparationPort, ExtensionSetReference},
     routing::{AccountGroupId, ConfigRevision, PublicModelId},
-    runtime::extensions::{ExtensionPreparationPort, ExtensionSetReference},
 };
 use gateway_plugin_runtime::{
     PackageInspector, PackageLimits, PluginRuntime, PluginRuntimeConfig, RpcLimits,
@@ -766,8 +766,8 @@ async fn attempt_middleware_can_delegate_after_a_managed_http_side_effect() {
     .await;
     let generation = prepare(&runtime).await;
     let plan = runtime
-        .middleware_registry()
-        .resolve(&generation)
+        .execution_registry()
+        .middleware(&generation)
         .expect("middleware plan");
     let calls = Arc::new(AtomicUsize::new(0));
     let closes = Arc::new(AtomicUsize::new(0));
@@ -821,8 +821,8 @@ async fn middleware_next_and_lazy_body_mapping_use_one_real_rpc_call() {
     .await;
     let generation = prepare(&runtime).await;
     let plan = runtime
-        .middleware_registry()
-        .resolve(&generation)
+        .execution_registry()
+        .middleware(&generation)
         .expect("middleware plan");
     let calls = Arc::new(AtomicUsize::new(0));
     let closes = Arc::new(AtomicUsize::new(0));
@@ -974,7 +974,10 @@ async fn middleware_classifies_real_rpc_output_after_a_terminal_frame() {
         }])
         .await;
         let generation = prepare(&runtime).await;
-        let plan = runtime.middleware_registry().resolve(&generation).unwrap();
+        let plan = runtime
+            .execution_registry()
+            .middleware(&generation)
+            .unwrap();
         let calls = Arc::new(AtomicUsize::new(0));
         let closes = Arc::new(AtomicUsize::new(0));
         let response = plan
@@ -1035,7 +1038,10 @@ async fn outer_plugin_receives_inner_rejection_details_and_preserves_rejection_s
         InstanceFixture {id:"inner-error", configuration:serde_json::json!({"mode":"rejected"}), bindings:vec![binding(MIDDLEWARE_CONTRIBUTION,"request",1,PluginFailurePolicy::Reject)]},
     ],package).await;
     let generation = prepare(&runtime).await;
-    let plan = runtime.middleware_registry().resolve(&generation).unwrap();
+    let plan = runtime
+        .execution_registry()
+        .middleware(&generation)
+        .unwrap();
     let result = plan
         .handle(
             middleware_context(ClientTransport::HttpJson),
@@ -1090,7 +1096,10 @@ async fn real_request_plugin_receives_downstream_error_details_without_consuming
         bindings:vec![binding(MIDDLEWARE_CONTRIBUTION,"request",0,PluginFailurePolicy::Reject)],
     }],package).await;
     let generation = prepare(&runtime).await;
-    let plan = runtime.middleware_registry().resolve(&generation).unwrap();
+    let plan = runtime
+        .execution_registry()
+        .middleware(&generation)
+        .unwrap();
     let result = plan
         .handle(
             middleware_context(ClientTransport::HttpJson),
@@ -1140,7 +1149,9 @@ async fn real_request_plugin_receives_downstream_error_details_without_consuming
 
 #[tokio::test]
 async fn real_request_plugins_rewrite_settings_in_onion_order() {
-    use gateway_core::{policy::RateLimits, settings::ExecutionSettings, settings::SettingsValues};
+    use gateway_core::{
+        policy::RateLimits, routing::request_settings::ExecutionSettings, settings::SettingsValues,
+    };
     let profiles = |identity| {
         BTreeMap::from([(
             gateway_core::identity::ProviderKind::new("openai").unwrap(),
@@ -1178,26 +1189,27 @@ async fn real_request_plugins_rewrite_settings_in_onion_order() {
             .with_request_profiles(profiles("host")),
     )
     .unwrap();
-    let configuration = gateway_core::settings::RequestSettings::new(Arc::new(host_snapshot))
-        .with_execution(
-            &gateway_core::policy::ClientPolicy::new(
-                middleware_context(ClientTransport::HttpJson)
-                    .client_key_id()
-                    .clone(),
-                gateway_core::policy::PlaintextClientApiKey::new("fixture-key").unwrap(),
-                Arc::new(
-                    gateway_core::routing::FrozenAccountScope::new(
-                        Arc::default(),
-                        gateway_core::routing::ClientRoutingScope::all_accounts(),
-                    )
-                    .with_request_profiles(profiles("key-default"))
-                    .with_fast_mode(baseline.fast_mode),
+    let configuration =
+        gateway_core::routing::request_settings::RequestSettings::new(Arc::new(host_snapshot))
+            .with_execution(
+                &gateway_core::policy::ClientPolicy::new(
+                    middleware_context(ClientTransport::HttpJson)
+                        .client_key_id()
+                        .clone(),
+                    gateway_core::policy::PlaintextClientApiKey::new("fixture-key").unwrap(),
+                    Arc::new(
+                        gateway_core::routing::FrozenAccountScope::new(
+                            Arc::default(),
+                            gateway_core::routing::ClientRoutingScope::all_accounts(),
+                        )
+                        .with_request_profiles(profiles("key-default"))
+                        .with_fast_mode(baseline.fast_mode),
+                    ),
+                    true,
+                    baseline.client_limits,
                 ),
-                true,
-                baseline.client_limits,
-            ),
-            baseline.timeout_ms,
-        );
+                baseline.timeout_ms,
+            );
     let mut first = baseline_json.clone();
     first["fast_mode"] = serde_json::json!("default");
     first["runtime"]["request_interval_ms"] = serde_json::json!(0);
@@ -1223,7 +1235,10 @@ async fn real_request_plugins_rewrite_settings_in_onion_order() {
         InstanceFixture { id: "settings-pass", configuration: serde_json::json!({"mode":"settings","expected_settings":last}), bindings: vec![binding(MIDDLEWARE_CONTRIBUTION,"request",2,PluginFailurePolicy::Reject)] },
     ], package).await;
     let generation = prepare(&runtime).await;
-    let plan = runtime.middleware_registry().resolve(&generation).unwrap();
+    let plan = runtime
+        .execution_registry()
+        .middleware(&generation)
+        .unwrap();
     // 连续调用使用同一宿主基线，前一次插件改写不能泄漏到后一次
     for _ in 0..2 {
         let expected: ExecutionSettings = serde_json::from_value(last.clone()).unwrap();
@@ -1310,7 +1325,10 @@ async fn sdk_middleware_entry_registers_and_maps_a_real_process_response() {
     )
     .await;
     let generation = prepare(&runtime).await;
-    let plan = runtime.middleware_registry().resolve(&generation).unwrap();
+    let plan = runtime
+        .execution_registry()
+        .middleware(&generation)
+        .unwrap();
     let calls = Arc::new(AtomicUsize::new(0));
     let closes = Arc::new(AtomicUsize::new(0));
     let reads = Arc::new(AtomicUsize::new(0));
@@ -1448,7 +1466,12 @@ async fn instances_without_data_plane_bindings_publish_neither_plan() {
     .await;
     let generation = prepare(&runtime).await;
     assert!(runtime.policy_registry().resolve(&generation).is_none());
-    assert!(runtime.middleware_registry().resolve(&generation).is_none());
+    assert!(
+        runtime
+            .execution_registry()
+            .middleware(&generation)
+            .is_none()
+    );
     drop(generation);
     super::wait_until_empty(cache.path()).await;
 }
@@ -1522,7 +1545,10 @@ async fn sdk_capability_declarations_require_request_stage() {
             bindings: vec![binding(MIDDLEWARE_CONTRIBUTION, if attempt { "attempt" } else { "request" }, 0, PluginFailurePolicy::Reject)],
         }], package).await;
         let generation = prepare(&runtime).await;
-        let plan = runtime.middleware_registry().resolve(&generation).unwrap();
+        let plan = runtime
+            .execution_registry()
+            .middleware(&generation)
+            .unwrap();
         let calls = Arc::new(AtomicUsize::new(0));
         let context = if attempt {
             attempt_middleware_context(Arc::default())
@@ -1604,7 +1630,10 @@ async fn assert_sdk_transparency(mode: &'static str) {
     )
     .await;
     let generation = prepare(&runtime).await;
-    let plan = runtime.middleware_registry().resolve(&generation).unwrap();
+    let plan = runtime
+        .execution_registry()
+        .middleware(&generation)
+        .unwrap();
     let mut headers = middleware_headers();
     headers.extend([
         MiddlewareHeader::new("X-Repeated", Bytes::from_static(b"first")),
@@ -1777,7 +1806,10 @@ async fn a_failed_middleware_preserves_scope_and_the_configured_failure_policy()
         }])
         .await;
         let generation = prepare(&runtime).await;
-        let plan = runtime.middleware_registry().resolve(&generation).unwrap();
+        let plan = runtime
+            .execution_registry()
+            .middleware(&generation)
+            .unwrap();
         let calls = Arc::new(AtomicUsize::new(0));
         let response = plan
             .handle(
@@ -1853,7 +1885,10 @@ async fn middleware_preserves_large_body_and_following_requests() {
     }])
     .await;
     let generation = prepare(&runtime).await;
-    let plan = runtime.middleware_registry().resolve(&generation).unwrap();
+    let plan = runtime
+        .execution_registry()
+        .middleware(&generation)
+        .unwrap();
     for length in [4 * 1024 * 1024 + 17, 32] {
         let payload = Bytes::from(
             (0..length)

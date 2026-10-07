@@ -2,7 +2,7 @@
 
 use super::*;
 use futures::FutureExt as _;
-use gateway_core::middleware::{http::upgrade, websocket as ws};
+use gateway_core::engine::middleware::{http::upgrade, websocket as ws};
 use std::sync::atomic::AtomicBool;
 
 struct Transport {
@@ -75,8 +75,8 @@ async fn session_model_and_network_callbacks_outlive_handshake_and_each_executio
     environment.store.start_command_line_writes().unwrap();
     let snapshot = bundle.snapshots().snapshot_for_diagnostics().unwrap();
     let plan = runtime
-        .middleware_registry()
-        .resolve(snapshot.extensions().unwrap())
+        .execution_registry()
+        .middleware(snapshot.extensions().unwrap())
         .unwrap();
     let (send, incoming) = tokio::sync::mpsc::channel(1);
     let (outgoing, mut receive) = tokio::sync::mpsc::channel(1);

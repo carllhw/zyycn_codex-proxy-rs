@@ -1,4 +1,4 @@
-//! 插件嵌套调用的递归作用域
+//! 执行扩展计划的弱引用索引、冻结解析与插件递归作用域
 
 use std::{collections::BTreeSet, sync::Arc};
 
@@ -41,5 +41,84 @@ impl ExtensionCallScope {
         Some(Self {
             instance_ids: Arc::new(instance_ids),
         })
+    }
+}
+
+/// 同一代次的具体执行计划；不拥有发布状态，运行资源由对应发布集合保活
+#[derive(Debug, Default)]
+pub struct ExecutionExtensionPlans {
+    pub middleware: Option<Arc<dyn super::middleware::MiddlewarePlan>>,
+    pub upstream_adapters: Option<Arc<dyn super::upstream_adapter::UpstreamAdapterPlan>>,
+}
+
+/// 同一发布代次不能被静默替换
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+#[error("execution extension generation is already registered")]
+pub struct ExtensionRegistrationError;
+
+/// 仅以弱引用按冻结身份解析执行计划，不延长旧代次寿命或决定何时发布
+#[derive(Clone, Default)]
+pub struct ExecutionExtensionIndex {
+    sets: Arc<
+        std::sync::RwLock<
+            std::collections::BTreeMap<
+                crate::routing::extensions::ExtensionSetId,
+                std::sync::Weak<ExecutionExtensionPlans>,
+            >,
+        >,
+    >,
+}
+
+impl ExecutionExtensionIndex {
+    pub fn register(
+        &self,
+        id: crate::routing::extensions::ExtensionSetId,
+        plans: Arc<ExecutionExtensionPlans>,
+    ) -> Result<Arc<ExecutionExtensionPlans>, ExtensionRegistrationError> {
+        let mut sets = self
+            .sets
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        sets.retain(|_, plans| plans.strong_count() > 0);
+        if sets.contains_key(&id) {
+            return Err(ExtensionRegistrationError);
+        }
+        sets.insert(id, Arc::downgrade(&plans));
+        Ok(plans)
+    }
+
+    fn resolve(
+        &self,
+        generation: &crate::routing::extensions::ExtensionSetReference,
+    ) -> Option<Arc<ExecutionExtensionPlans>> {
+        self.sets
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(generation.id())
+            .and_then(std::sync::Weak::upgrade)
+    }
+
+    #[must_use]
+    pub fn middleware(
+        &self,
+        generation: &crate::routing::extensions::ExtensionSetReference,
+    ) -> Option<super::middleware::FrozenMiddlewarePlan> {
+        let plan = self.resolve(generation)?.middleware.clone()?;
+        Some(super::middleware::FrozenMiddlewarePlan::new(
+            plan,
+            generation.clone(),
+        ))
+    }
+
+    #[must_use]
+    pub fn upstream_adapters(
+        &self,
+        generation: &crate::routing::extensions::ExtensionSetReference,
+    ) -> Option<super::upstream_adapter::FrozenUpstreamAdapterPlan> {
+        let plan = self.resolve(generation)?.upstream_adapters.clone()?;
+        Some(super::upstream_adapter::FrozenUpstreamAdapterPlan::new(
+            plan,
+            generation.clone(),
+        ))
     }
 }

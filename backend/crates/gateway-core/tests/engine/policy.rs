@@ -24,7 +24,7 @@ use gateway_core::{
     },
     policy::ClientApiKeyId,
     routing::ProviderKind,
-    runtime::extensions::{ExtensionSetId, ExtensionSetLease, ExtensionSetReference},
+    routing::extensions::{ExtensionSetId, ExtensionSetLease, ExtensionSetReference},
 };
 
 #[derive(Debug)]

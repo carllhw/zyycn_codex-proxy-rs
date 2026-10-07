@@ -13,8 +13,7 @@ use provider_xai::{
     MAX_GROK_MODEL_CATALOG_BYTES, SecretValue, parse_grok_billing, parse_grok_model_catalog,
 };
 
-const OFFICIAL_FIXTURE: &[u8] =
-    include_bytes!("catalog/fixtures/official_grok_models_snapshot.json");
+const CLI_PROXY_FIXTURE: &[u8] = include_bytes!("catalog/fixtures/cli_proxy_models.json");
 
 struct CapturingTransport {
     calls: AtomicUsize,
@@ -80,7 +79,7 @@ impl GrokBillingTransport for CapturingBillingTransport {
 #[tokio::test]
 async fn client_should_send_exact_oauth_headers_without_api_key() {
     let transport = Arc::new(CapturingTransport::success(
-        OFFICIAL_FIXTURE,
+        CLI_PROXY_FIXTURE,
         Some("\"grok-v1\""),
     ));
     let client = GrokModelCatalogClient::new(transport.clone());
@@ -128,7 +127,7 @@ async fn client_should_send_exact_oauth_headers_without_api_key() {
 
 #[tokio::test]
 async fn client_should_omit_email_when_verified_profile_has_none() {
-    let transport = Arc::new(CapturingTransport::success(OFFICIAL_FIXTURE, None));
+    let transport = Arc::new(CapturingTransport::success(CLI_PROXY_FIXTURE, None));
     let client = GrokModelCatalogClient::new(transport.clone());
     client
         .fetch(&session(None))
@@ -262,10 +261,13 @@ async fn subscription_query_rejects_malformed_or_oversized_user_responses() {
 }
 
 #[test]
-fn billing_parser_should_accept_credits_and_legacy_shapes() {
+fn billing_parser_should_accept_current_credits_fields() {
     for body in [
         br#"{"config":{"creditUsagePercent":31.25,"currentPeriod":{"type":"USAGE_PERIOD_TYPE_WEEKLY","start":"2026-07-13T00:00:00Z","end":"2026-07-20T00:00:00Z"},"prepaidBalance":{"val":2500}}}"#.as_slice(),
-        br#"{"config":{"monthlyLimit":{"val":2000},"used":{"val":500},"onDemandCap":{"val":1000},"onDemandUsed":{"val":100}}}"#.as_slice(),
+        br#"{"config":{"prepaidBalance":{"val":-500}}}"#.as_slice(),
+        br#"{"config":{"prepaidBalance":{"val":-9223372036854775808}}}"#.as_slice(),
+        br#"{"config":{"onDemandCap":{},"onDemandUsed":{},"prepaidBalance":{}}}"#.as_slice(),
+        br#"{"config":{"onDemandCap":{"val":1000},"onDemandUsed":{"val":100}}}"#.as_slice(),
         br#"{"config":null}"#.as_slice(),
     ] {
         parse_grok_billing(body).expect("supported official billing shape");
@@ -278,7 +280,13 @@ fn billing_parser_should_reject_invalid_known_fields() {
         br#"[]"#.as_slice(),
         br#"{"config":[]}"#.as_slice(),
         br#"{"config":{"creditUsagePercent":101}}"#.as_slice(),
-        br#"{"config":{"used":{"val":-1}}}"#.as_slice(),
+        br#"{"config":{"onDemandCap":{"val":-1}}}"#.as_slice(),
+        br#"{"config":{"onDemandUsed":{"val":-1}}}"#.as_slice(),
+        br#"{"config":{"prepaidBalance":{"val":null}}}"#.as_slice(),
+        br#"{"config":{"prepaidBalance":{"val":"-500"}}}"#.as_slice(),
+        br#"{"config":{"prepaidBalance":{"val":-0.5}}}"#.as_slice(),
+        br#"{"config":{"prepaidBalance":{"val":9223372036854775808}}}"#.as_slice(),
+        br#"{"config":{"prepaidBalance":{"val":-9223372036854775809}}}"#.as_slice(),
         br#"{"config":{"currentPeriod":"weekly"}}"#.as_slice(),
         br#"{"onDemandEnabled":"yes"}"#.as_slice(),
     ] {
@@ -309,9 +317,9 @@ fn billing_snapshot_debug_should_not_print_values() {
 }
 
 #[test]
-fn official_fixture_should_use_actual_model_and_whitelisted_metadata() {
-    let snapshot = parse_grok_model_catalog(OFFICIAL_FIXTURE, Some("W/\"grok-v1\""))
-        .expect("official fixture should parse");
+fn cli_proxy_fixture_should_use_actual_model_and_whitelisted_metadata() {
+    let snapshot = parse_grok_model_catalog(CLI_PROXY_FIXTURE, Some("W/\"grok-v1\""))
+        .expect("CLI proxy fixture should parse");
     let model = &snapshot.models()[0];
 
     assert_eq!(
@@ -370,7 +378,7 @@ fn official_fixture_should_use_actual_model_and_whitelisted_metadata() {
 #[test]
 fn non_whitelisted_wire_fields_should_not_survive_normalization() {
     let snapshot =
-        parse_grok_model_catalog(OFFICIAL_FIXTURE, None).expect("official fixture should parse");
+        parse_grok_model_catalog(CLI_PROXY_FIXTURE, None).expect("CLI proxy fixture should parse");
     let debug = format!("{snapshot:?}");
 
     assert!(
@@ -382,16 +390,18 @@ fn non_whitelisted_wire_fields_should_not_survive_normalization() {
 
 #[test]
 fn invalid_etag_should_fail_the_entire_snapshot() {
-    let result = parse_grok_model_catalog(OFFICIAL_FIXTURE, Some("raw-unquoted-etag"));
+    let result = parse_grok_model_catalog(CLI_PROXY_FIXTURE, Some("raw-unquoted-etag"));
 
     assert!(matches!(result, Err(GrokModelCatalogError::InvalidEtag)));
 }
 
 #[test]
 fn missing_capability_fields_should_remain_unknown() {
-    let snapshot =
-        parse_grok_model_catalog(br#"{"object":"list","data":[{"id":"grok-unknown"}]}"#, None)
-            .expect("identity-only official entry should parse");
+    let snapshot = parse_grok_model_catalog(
+        br#"{"object":"list","data":[{"id":"grok-unknown","model":"grok-unknown"}]}"#,
+        None,
+    )
+    .expect("identity-only official entry should parse");
     let model = &snapshot.models()[0];
 
     assert_eq!(
@@ -417,7 +427,7 @@ fn missing_capability_fields_should_remain_unknown() {
 #[test]
 fn reasoning_effort_menu_should_be_capability_evidence_without_legacy_flag() {
     let snapshot = parse_grok_model_catalog(
-        br#"{"object":"list","data":[{"id":"grok-reasoning","reasoningEfforts":[{"value":"xhigh","default":true},"low"]}]}"#,
+        br#"{"object":"list","data":[{"id":"grok-reasoning","reasoning_efforts":[{"value":"xhigh","default":true},{"value":"low"}],"model":"grok-reasoning"}]}"#,
         None,
     )
     .expect("reasoning effort menu");
@@ -444,38 +454,30 @@ fn reasoning_effort_menu_should_be_capability_evidence_without_legacy_flag() {
 }
 
 #[test]
-fn reasoning_effort_options_should_read_official_features_shape() {
+fn historical_and_other_endpoint_fields_do_not_supply_model_facts() {
     let snapshot = parse_grok_model_catalog(
-        br#"{"object":"list","data":[{"id":"grok-4.5","reasoningEfforts":["high"],"features":{"reasoning":true,"reasoningEffortOptions":{"supportedEfforts":["low","medium","high","xhigh"],"defaultEffort":"high"}}}]}"#,
+        br#"{"object":"list","data":[{"model":"grok-future","contextWindow":500000,"contextWindows":[1000000],"apiBackend":"responses","reasoningEfforts":[{"value":"high","default":true}],"features":{"reasoning":true,"reasoningEffortOptions":{"supportedEfforts":["high"],"defaultEffort":"high"}},"_meta":{"contextWindow":500000,"reasoningEfforts":[{"value":"high","default":true}]},"capabilities":{"reasoning_effort":["high"],"default_reasoning_effort":"high"},"reasoning_effort":"high"}]}"#,
         None,
-    )
-    .expect("official feature reasoning options should parse");
-    let capabilities = snapshot.models()[0].capabilities();
-
+    ).expect("unknown fields do not define CLI proxy facts");
+    let model = &snapshot.models()[0];
     assert_eq!(
-        (
-            capabilities.reasoning_effort(),
-            capabilities
-                .reasoning_efforts()
-                .iter()
-                .map(|effort| effort.as_str())
-                .collect::<Vec<_>>(),
-            capabilities
-                .default_reasoning_effort()
-                .map(|effort| effort.as_str()),
-        ),
-        (
-            GrokCatalogCapabilityEvidence::DeclaredNative,
-            vec!["low", "medium", "high", "xhigh"],
-            Some("high"),
-        )
+        model.capabilities().reasoning_effort(),
+        GrokCatalogCapabilityEvidence::Unknown
+    );
+    assert!(model.capabilities().reasoning_efforts().is_empty());
+    assert_eq!(model.capabilities().default_reasoning_effort(), None);
+    assert_eq!(model.limits().context_window_tokens(), None);
+    assert_eq!(model.limits().max_context_window_tokens(), None);
+    assert_eq!(
+        model.capabilities().responses_api(),
+        GrokCatalogCapabilityEvidence::Unknown
     );
 }
 
 #[test]
 fn unknown_reasoning_effort_values_should_not_fail_the_snapshot() {
     let snapshot = parse_grok_model_catalog(
-        br#"{"object":"list","data":[{"id":"grok-reasoning","reasoningEffort":"ultra","reasoningEfforts":[{"value":"ultra","default":true},"low","hyper"]}]}"#,
+        br#"{"object":"list","data":[{"id":"grok-reasoning","reasoning_effort":"ultra","reasoning_efforts":[{"value":"ultra","default":true},{"value":"low"},{"value":"hyper"}],"model":"grok-reasoning"}]}"#,
         None,
     )
     .expect("unknown effort values must not break catalog parsing");
@@ -492,25 +494,143 @@ fn unknown_reasoning_effort_values_should_not_fail_the_snapshot() {
                 .default_reasoning_effort()
                 .map(|effort| effort.as_str()),
         ),
-        (vec!["low"], Some("low"))
+        (vec!["low"], None)
     );
 }
 
 #[test]
-fn model_id_should_take_priority_over_catalog_id() {
+fn reasoning_menu_uses_only_known_explicit_default() {
+    for (menu, expected) in [
+        (
+            serde_json::json!([{"value":"low"},{"value":"high","default":true}]),
+            Some("high"),
+        ),
+        (serde_json::json!([{"value":"low"},{"value":"high"}]), None),
+        (
+            serde_json::json!([{"value":"low"},{"value":"quantum","default":true}]),
+            None,
+        ),
+    ] {
+        let body = serde_json::to_vec(&serde_json::json!({
+            "object":"list", "data":[{"model":"grok-4.7","reasoning_efforts":menu}]
+        }))
+        .expect("fixture");
+        let snapshot = parse_grok_model_catalog(&body, None).expect("current menu");
+        assert_eq!(
+            snapshot.models()[0]
+                .capabilities()
+                .default_reasoning_effort()
+                .map(|effort| effort.as_str()),
+            expected
+        );
+    }
+}
+
+#[test]
+fn current_reasoning_menu_does_not_borrow_defaults_from_other_sources() {
     let snapshot = parse_grok_model_catalog(
-        br#"{"object":"list","data":[{"id":"catalog-entry","modelId":"grok-4-fast"}]}"#,
+        br#"{"object":"list","data":[{"model":"grok-future","reasoning_efforts":[{"value":"low"}],"reasoning_effort":"low","capabilities":{"reasoning_effort":["high"],"default_reasoning_effort":"high"}}]}"#,
+        None,
+    ).expect("current menu");
+    let capabilities = snapshot.models()[0].capabilities();
+    assert_eq!(
+        capabilities
+            .reasoning_efforts()
+            .iter()
+            .map(|effort| effort.as_str())
+            .collect::<Vec<_>>(),
+        ["low"]
+    );
+    assert_eq!(capabilities.default_reasoning_effort(), None);
+}
+
+#[test]
+fn unknown_reasoning_menu_does_not_fall_back_to_other_sources() {
+    let snapshot = parse_grok_model_catalog(
+        br#"{"object":"list","data":[{"model":"grok-future","reasoning_efforts":[{"value":"quantum","default":true}],"capabilities":{"reasoning_effort":["high"],"default_reasoning_effort":"high"}}]}"#,
+        None,
+    ).expect("unknown effort");
+    let capabilities = snapshot.models()[0].capabilities();
+    assert!(capabilities.reasoning_efforts().is_empty());
+    assert_eq!(capabilities.default_reasoning_effort(), None);
+}
+
+#[test]
+fn context_window_choices_supply_default_when_scalar_is_missing() {
+    let snapshot = parse_grok_model_catalog(
+        br#"{"object":"list","data":[{"model":"grok-4.7","context_windows":[500000,256000]}]}"#,
         None,
     )
-    .expect("modelId is official fallback");
+    .expect("window choices");
+    assert_eq!(
+        snapshot.models()[0]
+            .limits()
+            .context_window_tokens()
+            .map(std::num::NonZeroU64::get),
+        Some(500000)
+    );
+}
 
-    assert_eq!(snapshot.models()[0].request_model().as_str(), "grok-4-fast");
+#[test]
+fn context_window_choices_keep_scalar_default_and_publish_largest_supported_window() {
+    for (scalar, windows, maximum) in [
+        (256000, vec![500000, 256000], 500000),
+        (1000000, vec![256000, 500000], 1000000),
+    ] {
+        let body = serde_json::to_vec(&serde_json::json!({"object":"list","data":[{"model":"grok-4.7","context_window":scalar,"context_windows":windows}]})).expect("fixture");
+        let snapshot = parse_grok_model_catalog(&body, None).expect("window choices");
+        let limits = snapshot.models()[0].limits();
+        assert_eq!(
+            limits
+                .context_window_tokens()
+                .map(std::num::NonZeroU64::get),
+            Some(scalar)
+        );
+        assert_eq!(
+            limits
+                .max_context_window_tokens()
+                .map(std::num::NonZeroU64::get),
+            Some(maximum)
+        );
+    }
+}
+
+#[test]
+fn malformed_context_window_choices_are_rejected() {
+    for windows in [
+        serde_json::json!([256000, "big"]),
+        serde_json::json!([0]),
+        serde_json::json!(500000),
+        serde_json::json!([-1, 500000]),
+        serde_json::Value::Null,
+    ] {
+        let body = serde_json::to_vec(&serde_json::json!({"object":"list","data":[{"model":"grok-future","context_window":300000,"context_windows":windows}]})).expect("fixture");
+        assert!(matches!(
+            parse_grok_model_catalog(&body, None),
+            Err(GrokModelCatalogError::InvalidWire | GrokModelCatalogError::InvalidLimits)
+        ));
+    }
+}
+
+#[test]
+fn current_proxy_requires_the_explicit_request_model() {
+    for entry in [
+        serde_json::json!({"id":"grok-4.7"}),
+        serde_json::json!({"modelId":"grok-4.7"}),
+    ] {
+        let body = serde_json::to_vec(&serde_json::json!({"object":"list","data":[entry]}))
+            .expect("fixture");
+        assert!(matches!(
+            parse_grok_model_catalog(&body, None),
+            Err(GrokModelCatalogError::InvalidWire)
+        ));
+    }
 }
 
 #[test]
 fn official_responses_backend_should_be_native_without_redundant_supported_flag() {
     let snapshot = parse_grok_model_catalog(
-        br#"{"object":"list","data":[{"id":"grok-responses","api_backend":"responses"}]}"#,
+        br#"{"object":"list","data":[{"id":"grok-responses","api_backend":"responses","model":"grok-responses"}]}"#,
         None,
     )
     .expect("Responses backend is explicit capability evidence");
@@ -524,8 +644,8 @@ fn official_responses_backend_should_be_native_without_redundant_supported_flag(
 #[test]
 fn explicit_api_disable_and_non_responses_backend_should_remain_unsupported() {
     for body in [
-        br#"{"object":"list","data":[{"id":"grok-disabled","api_backend":"responses","supported_in_api":false}]}"#.as_slice(),
-        br#"{"object":"list","data":[{"id":"grok-chat","api_backend":"chat_completions","supported_in_api":true}]}"#.as_slice(),
+        br#"{"object":"list","data":[{"id":"grok-disabled","api_backend":"responses","supported_in_api":false,"model":"grok-disabled"}]}"#.as_slice(),
+        br#"{"object":"list","data":[{"id":"grok-chat","api_backend":"chat_completions","supported_in_api":true,"model":"grok-chat"}]}"#.as_slice(),
     ] {
         let snapshot = parse_grok_model_catalog(body, None).expect("valid unsupported entry");
         assert_eq!(
@@ -538,8 +658,8 @@ fn explicit_api_disable_and_non_responses_backend_should_remain_unsupported() {
 #[test]
 fn list_discriminator_should_be_required_and_exact() {
     for body in [
-        br#"{"data":[{"id":"grok-4"}]}"#.as_slice(),
-        br#"{"object":"collection","data":[{"id":"grok-4"}]}"#.as_slice(),
+        br#"{"data":[{"id":"grok-4","model":"grok-4"}]}"#.as_slice(),
+        br#"{"object":"collection","data":[{"id":"grok-4","model":"grok-4"}]}"#.as_slice(),
     ] {
         assert!(matches!(
             parse_grok_model_catalog(body, None),
@@ -565,7 +685,7 @@ fn empty_data_should_fail_the_entire_snapshot() {
 #[test]
 fn duplicate_actual_models_should_fail_the_entire_snapshot() {
     let result = parse_grok_model_catalog(
-        br#"{"object":"list","data":[{"id":"entry-a","model":"grok-4"},{"id":"entry-b","modelId":"grok-4"}]}"#,
+        br#"{"object":"list","data":[{"id":"entry-a","model":"grok-4"},{"id":"entry-b","model":"grok-4"}]}"#,
         None,
     );
 
@@ -578,7 +698,7 @@ fn duplicate_actual_models_should_fail_the_entire_snapshot() {
 #[test]
 fn unknown_top_level_pagination_fields_should_not_reject_the_snapshot() {
     let snapshot = parse_grok_model_catalog(
-        br#"{"object":"list","data":[{"id":"grok-4"}],"has_more":true,"cursor":"next"}"#,
+        br#"{"object":"list","data":[{"id":"grok-4","model":"grok-4"}],"has_more":true,"cursor":"next"}"#,
         None,
     )
     .expect("unknown pagination fields are not part of the model contract");
@@ -589,7 +709,7 @@ fn unknown_top_level_pagination_fields_should_not_reject_the_snapshot() {
 #[test]
 fn unknown_api_backend_should_degrade_to_unknown_without_rejecting_the_snapshot() {
     let snapshot = parse_grok_model_catalog(
-        br#"{"object":"list","future_top_level":true,"data":[{"id":"grok-future","apiBackend":"future_backend","future_field":{"keep":true}}]}"#,
+        br#"{"object":"list","future_top_level":true,"data":[{"id":"grok-future","future_field":{"keep":true},"api_backend":"future_backend","model":"grok-future"}]}"#,
         None,
     )
     .expect("future backend should not reject the snapshot");
@@ -605,7 +725,7 @@ fn unknown_api_backend_should_degrade_to_unknown_without_rejecting_the_snapshot(
 #[test]
 fn invalid_preferred_model_should_fail_without_falling_back() {
     let result = parse_grok_model_catalog(
-        br#"{"object":"list","data":[{"model":"https://evil.invalid/model","modelId":"grok-4","id":"entry"}]}"#,
+        br#"{"object":"list","data":[{"model":"https://evil.invalid/model","id":"entry"}]}"#,
         None,
     );
 
@@ -686,7 +806,7 @@ fn header_value<'a>(headers: &'a [(String, &str)], name: &str) -> Option<&'a str
 #[tokio::test]
 async fn captured_sensitive_headers_should_remain_typed_as_sensitive() {
     let session = session(Some("person@example.com"));
-    let transport = Arc::new(CapturingTransport::success(OFFICIAL_FIXTURE, None));
+    let transport = Arc::new(CapturingTransport::success(CLI_PROXY_FIXTURE, None));
     let client = GrokModelCatalogClient::new(transport.clone());
     client.fetch(&session).await.expect("fetch fixture");
     let request = transport.request.lock().expect("captured request");

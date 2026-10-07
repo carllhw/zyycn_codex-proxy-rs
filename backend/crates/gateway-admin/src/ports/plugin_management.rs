@@ -1,7 +1,7 @@
 //! 插件管理页面、资源访问与授权回调的运行时端口
 
 use async_trait::async_trait;
-use gateway_core::runtime::extensions::ExtensionSetReference;
+use gateway_core::routing::extensions::ExtensionSetReference;
 
 use crate::model::{
     AdminError,

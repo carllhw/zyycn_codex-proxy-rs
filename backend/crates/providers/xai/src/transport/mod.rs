@@ -49,6 +49,7 @@ pub use network::{
     ReqwestGrokModelCatalogTransport, ReqwestOAuthTransport,
 };
 pub use profile::{XaiWireProfile, XaiWireProfileState};
+pub(crate) use request::GrokReplayItem;
 pub use request::{GrokRequestEncodeError, GrokResponsesRequest};
 pub use session::{
     GrokCredentialFailure, GrokCredentialFeedbackFuture, GrokSessionAffinityKey,

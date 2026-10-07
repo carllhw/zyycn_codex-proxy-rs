@@ -730,7 +730,7 @@ fn apply_protocol_context(request: &mut CodexResponsesRequest, context: &Map<Str
         .or(prompt_cache_key);
     request.client_session_id = gateway_protocol::openai::codex_session_id(request.body(), context);
     request.client_account_follow_only =
-        crate::credential::follows_session_with_headers(request.body(), context, &[]);
+        crate::request_identity::follows_session_with_headers(request.body(), context, &[]);
     request.client_account_session_id =
         gateway_protocol::openai::codex_account_session_id(request.body(), context);
     request.client_thread_id = gateway_protocol::openai::codex_thread_id(request.body(), context);

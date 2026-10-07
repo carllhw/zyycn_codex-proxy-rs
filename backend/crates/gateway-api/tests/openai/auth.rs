@@ -374,9 +374,9 @@ fn chatgpt_remote_suffix_created_by_header_truncation_should_not_skip_the_gate()
 
 #[tokio::test]
 async fn http_settings_freeze_before_plan_resolution_and_apply_before_admission() {
-    use gateway_core::{
-        engine::middleware::*, middleware::http as contract, runtime::extensions::*,
-    };
+    use gateway_core::engine::middleware::http as contract;
+    use gateway_core::engine::middleware::*;
+    use gateway_core::routing::extensions::*;
     struct Lease;
     impl ExtensionSetLease for Lease {
         fn is_ready(&self) -> bool {

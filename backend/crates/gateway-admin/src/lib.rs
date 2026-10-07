@@ -20,7 +20,7 @@ pub mod backup;
 pub mod freeze_recovery;
 pub mod model;
 pub mod ports;
-pub mod service;
+pub mod public_service;
 mod use_case;
 pub use use_case::plugins::{PluginDistributionPorts, PluginManagementService, PluginsService};
 
@@ -205,7 +205,7 @@ pub enum AdminConfigError {
 #[derive(Clone)]
 pub struct AdminServices {
     timezone: gateway_core::time::DeploymentTimeZone,
-    public_services: Arc<service::Registry>,
+    public_services: Arc<public_service::Registry>,
     plugins: Arc<PluginsService>,
     plugin_management: Arc<PluginManagementService>,
     proxies: Arc<dyn ProxiesService>,
@@ -231,7 +231,7 @@ impl AdminServices {
         self.timezone
     }
 
-    pub fn public_services(&self) -> Arc<service::Registry> {
+    pub fn public_services(&self) -> Arc<public_service::Registry> {
         self.public_services.clone()
     }
 
@@ -331,7 +331,7 @@ impl AdminBundle {
 /// 组合根提供给控制面的运行能力；与配置和存储端口分别传入
 pub struct AdminRuntimePorts {
     pub timezone: gateway_core::time::DeploymentTimeZone,
-    pub service_middleware: service::PlanSource,
+    pub service_middleware: public_service::PlanSource,
     pub plugin_preparation: Arc<dyn ports::plugins::PluginPreparation>,
     pub plugin_management: Arc<dyn ports::plugin_management::PluginManagement>,
     pub published_snapshot: gateway_core::runtime::RuntimeSnapshotHandle,
@@ -466,7 +466,7 @@ async fn initialize_inner(
         registry.clone(),
         pricing_source,
     );
-    let mut public_services = service::Registry::new(service_middleware);
+    let mut public_services = public_service::Registry::new(service_middleware);
     public_services.register_settings(&settings)?;
     let services = AdminServices {
         timezone,

@@ -1,7 +1,7 @@
 //! 验证运行时快照发布、版本对账与并发更新行为
 
 use std::collections::BTreeMap;
-mod extensions;
+mod publications;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 

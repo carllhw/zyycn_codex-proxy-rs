@@ -4,6 +4,7 @@ mod capacity_freeze;
 mod initial_sync;
 mod recovery;
 mod refresh_timing;
+mod reset_credits;
 mod scheduling;
 mod slots;
 mod snapshot;

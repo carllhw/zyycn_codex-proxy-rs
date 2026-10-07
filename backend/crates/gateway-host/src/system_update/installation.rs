@@ -10,6 +10,8 @@ use sha2::{Digest as _, Sha256};
 use super::swap::backup_path_for;
 use super::{OperationError, SystemUpdateConfig, conflict, internal};
 
+pub(super) const OFFICIAL_PLUGIN_MANIFEST: &str = "plugin-release-manifest.json";
+
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct ReleaseFiles {
@@ -36,9 +38,7 @@ impl ReleaseFiles {
     }
 
     fn read(binary: &Path, web: &Path, plugins: &Path) -> Result<Self, OperationError> {
-        if !web.join("index.html").is_file()
-            || !plugins.join(super::OFFICIAL_PLUGIN_MANIFEST).is_file()
-        {
+        if !web.join("index.html").is_file() || !plugins.join(OFFICIAL_PLUGIN_MANIFEST).is_file() {
             return Err(conflict("安装文件不完整，请核对部署后重试"));
         }
         let mut binary_hash = Sha256::new();

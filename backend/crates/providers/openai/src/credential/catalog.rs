@@ -745,7 +745,7 @@ impl CodexCredentialCatalogService {
                 .map_err(|error| CodexCredentialCatalogError::Upstream {
                     detail: error.to_string(),
                 })?
-                .with_authentication(&credential.authentication)
+                .with_responses_api_base_url(credential.authentication.responses_api_base_url())
                 .fetch_models_with_context(
                     CodexRequestContext::auxiliary(
                         authorization.expose_secret(),

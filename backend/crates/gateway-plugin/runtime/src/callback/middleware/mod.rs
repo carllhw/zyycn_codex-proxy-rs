@@ -7,7 +7,7 @@ use futures::future::BoxFuture;
 use std::sync::{Arc, Mutex};
 
 pub(crate) trait MiddlewareCallback: Send + Sync {
-    fn request_settings(&self) -> Option<gateway_core::settings::RequestSettings> {
+    fn request_settings(&self) -> Option<gateway_core::routing::request_settings::RequestSettings> {
         None
     }
 
@@ -25,7 +25,7 @@ pub(crate) trait MiddlewareCallback: Send + Sync {
 }
 
 impl MiddlewareCallback for MiddlewareInvocation {
-    fn request_settings(&self) -> Option<gateway_core::settings::RequestSettings> {
+    fn request_settings(&self) -> Option<gateway_core::routing::request_settings::RequestSettings> {
         self.state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)

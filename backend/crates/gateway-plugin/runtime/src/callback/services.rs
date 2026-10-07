@@ -3,8 +3,8 @@
 use super::{CallbackScope, MiddlewareCallback, invalid};
 use crate::RpcReply;
 use futures::future::BoxFuture;
-use gateway_admin::{model::AdminError, service::Registry};
-use gateway_core::middleware::service as core;
+use gateway_admin::{model::AdminError, public_service::Registry};
+use gateway_core::engine::middleware::service as core;
 use gateway_plugin_sdk::{
     CallContext, PluginFault,
     call::{middleware::NEXT_METHOD, services as wire},
@@ -14,13 +14,13 @@ use std::sync::{Arc, Mutex, OnceLock, Weak};
 #[derive(Default)]
 pub(crate) struct ServicePorts {
     registry: OnceLock<Weak<Registry>>,
-    http: OnceLock<Weak<dyn gateway_core::middleware::http::Dispatcher>>,
+    http: OnceLock<Weak<dyn gateway_core::engine::middleware::http::Dispatcher>>,
 }
 
 impl ServicePorts {
     pub(crate) fn bind_http(
         &self,
-        dispatcher: &Arc<dyn gateway_core::middleware::http::Dispatcher>,
+        dispatcher: &Arc<dyn gateway_core::engine::middleware::http::Dispatcher>,
     ) -> Result<(), AdminError> {
         self.http
             .set(Arc::downgrade(dispatcher))
@@ -29,7 +29,7 @@ impl ServicePorts {
 
     pub(super) fn http(
         &self,
-    ) -> Result<Arc<dyn gateway_core::middleware::http::Dispatcher>, PluginFault> {
+    ) -> Result<Arc<dyn gateway_core::engine::middleware::http::Dispatcher>, PluginFault> {
         self.http.get().and_then(Weak::upgrade).ok_or_else(|| {
             PluginFault::new(
                 gateway_plugin_sdk::ErrorCode::Fault,
@@ -64,7 +64,7 @@ impl ServicePorts {
         })?;
         let call = registry.call(&request.operation, request.input);
         let origin = scope.origin.as_ref();
-        let parent = gateway_admin::service::Origin {
+        let parent = gateway_admin::public_service::Origin {
             request_id: origin.map_or_else(
                 || {
                     context
@@ -80,11 +80,11 @@ impl ServicePorts {
             ),
             cancellation,
             extensions: scope.child_extensions(&context.instance_id)?,
-            plan: origin.map_or(gateway_admin::service::Plan::Current, |origin| {
-                gateway_admin::service::Plan::Frozen(Some(origin.plan.clone()))
+            plan: origin.map_or(gateway_admin::public_service::Plan::Current, |origin| {
+                gateway_admin::public_service::Plan::Frozen(Some(origin.plan.clone()))
             }),
         };
-        let result = gateway_admin::service::scope(parent, call).await;
+        let result = gateway_admin::public_service::scope(parent, call).await;
         encode(result)
     }
 }

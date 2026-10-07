@@ -18,6 +18,7 @@ use gateway_core::routing::{
     UpstreamModelId,
 };
 
+mod request_settings;
 mod snapshot;
 
 fn settings() -> gateway_core::settings::SettingsValues {

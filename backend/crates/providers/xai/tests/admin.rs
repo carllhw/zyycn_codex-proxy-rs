@@ -485,7 +485,12 @@ async fn xai_admin_provider_projects_cached_quota_models_and_canonical_export() 
             quota: OpaqueProviderData::new(
                 serde_json::from_value(serde_json::json!({
                     "subscriptionTier": "Free",
-                    "config": {}
+                    "config": {
+                        "creditUsagePercent": 25,
+                        "onDemandCap": {"val": 500},
+                        "onDemandUsed": {"val": 100},
+                        "prepaidBalance": {"val": -500}
+                    }
                 }))
                 .expect("quota document"),
             ),
@@ -503,6 +508,19 @@ async fn xai_admin_provider_projects_cached_quota_models_and_canonical_export() 
         .await
         .expect("cached subscription");
     assert_eq!(quota.plan_type.as_deref(), Some("Free"));
+    assert_eq!(quota.windows.len(), 1);
+    assert_eq!(quota.windows[0].used_percent, Some(25.0));
+    let window_data = quota.windows[0]
+        .provider_data
+        .as_ref()
+        .expect("quota details")
+        .expose_to_provider()
+        .expose_to_provider();
+    assert_eq!(window_data["onDemandCapCents"], 500);
+    assert_eq!(window_data["onDemandUsedCents"], 100);
+    assert_eq!(window_data["prepaidBalanceCents"], -500);
+    assert!(!window_data.contains_key("monthlyLimitCents"));
+    assert!(!window_data.contains_key("includedUsedCents"));
     let models = admin
         .models(account.id(), false)
         .await

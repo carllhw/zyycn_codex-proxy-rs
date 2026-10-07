@@ -1,7 +1,7 @@
 //! 验证旧中间件的 Fast 设置适配与不兼容插件的实例故障隔离
 
 use super::*;
-use gateway_core::{policy::ClientPolicy, settings::RequestSettings};
+use gateway_core::{policy::ClientPolicy, routing::request_settings::RequestSettings};
 use serde_json::{Value, json};
 
 #[tokio::test]
@@ -75,7 +75,10 @@ async fn legacy_middleware_preserves_three_state_fast_and_projects_sources() {
             bindings: vec![binding(MIDDLEWARE_CONTRIBUTION,"request",0,PluginFailurePolicy::Reject)],
         }], package).await;
         let generation = prepare(&runtime).await;
-        let plan = runtime.middleware_registry().resolve(&generation).unwrap();
+        let plan = runtime
+            .execution_registry()
+            .middleware(&generation)
+            .unwrap();
         let next = (Downstream {
             calls: Arc::default(),
             closes: Arc::default(),
@@ -158,7 +161,10 @@ async fn unsupported_contract_starts_and_runtime_faults_only_stop_the_failed_ins
         }
         let generation = prepare(&runtime).await;
         assert!(generation.is_ready(), "版本警告允许随宿主启动");
-        let plan = runtime.middleware_registry().resolve(&generation).unwrap();
+        let plan = runtime
+            .execution_registry()
+            .middleware(&generation)
+            .unwrap();
         let calls = Arc::new(AtomicUsize::new(0));
         for _ in 0..2 {
             let response = plan

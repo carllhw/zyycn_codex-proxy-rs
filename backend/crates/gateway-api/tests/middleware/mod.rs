@@ -16,15 +16,18 @@ use axum::{
 };
 use bytes::Bytes;
 use futures::{future::BoxFuture, stream};
-use gateway_core::{
-    engine::middleware::{
-        FrozenMiddlewarePlan, MiddlewareContext, MiddlewareError, MiddlewareNext, MiddlewarePlan,
-        MiddlewareRequest, MiddlewareResponse,
-    },
-    lifecycle::CancellationToken,
-    middleware::http as contract,
-    runtime::extensions::{ExtensionSetId, ExtensionSetLease, ExtensionSetReference},
-};
+use gateway_core::engine::middleware::FrozenMiddlewarePlan;
+use gateway_core::engine::middleware::MiddlewareContext;
+use gateway_core::engine::middleware::MiddlewareError;
+use gateway_core::engine::middleware::MiddlewareNext;
+use gateway_core::engine::middleware::MiddlewarePlan;
+use gateway_core::engine::middleware::MiddlewareRequest;
+use gateway_core::engine::middleware::MiddlewareResponse;
+use gateway_core::engine::middleware::http as contract;
+use gateway_core::lifecycle::CancellationToken;
+use gateway_core::routing::extensions::ExtensionSetId;
+use gateway_core::routing::extensions::ExtensionSetLease;
+use gateway_core::routing::extensions::ExtensionSetReference;
 use http_body::Frame;
 use http_body_util::{BodyExt as _, StreamBody};
 use tower::ServiceExt as _;
@@ -70,12 +73,12 @@ impl MiddlewarePlan for Plan {
     }
     fn handle_websocket(
         &self,
-        context: gateway_core::middleware::websocket::Context,
-        message: gateway_core::middleware::websocket::Message,
-        next: gateway_core::middleware::websocket::Next,
+        context: gateway_core::engine::middleware::websocket::Context,
+        message: gateway_core::engine::middleware::websocket::Message,
+        next: gateway_core::engine::middleware::websocket::Next,
     ) -> BoxFuture<
         'static,
-        Result<Option<gateway_core::middleware::websocket::Message>, MiddlewareError>,
+        Result<Option<gateway_core::engine::middleware::websocket::Message>, MiddlewareError>,
     > {
         assert!(context.plan.is_some());
         self.calls.fetch_add(1, Ordering::SeqCst);
@@ -103,11 +106,13 @@ impl MiddlewarePlan for Plan {
     }
     fn handle_service(
         &self,
-        context: gateway_core::middleware::service::Context,
+        context: gateway_core::engine::middleware::service::Context,
         input: serde_json::Value,
-        next: gateway_core::middleware::service::Next,
-    ) -> BoxFuture<'static, Result<serde_json::Value, gateway_core::middleware::service::Error>>
-    {
+        next: gateway_core::engine::middleware::service::Next,
+    ) -> BoxFuture<
+        'static,
+        Result<serde_json::Value, gateway_core::engine::middleware::service::Error>,
+    > {
         self.calls.fetch_add(1, Ordering::SeqCst);
         assert_eq!(context.operation, "settings.load");
         assert_eq!(context.request_id, "service-request");
@@ -146,7 +151,7 @@ impl MiddlewarePlan for Plan {
                     response.extensions_mut().insert(contract::upgrade::Upgraded::new(status, Box::pin(async move {
                         let session = session.await.map_err(|_| MiddlewareError::Fault)?;
                         if idle { return std::future::pending().await; }
-                        use gateway_core::middleware::websocket::{Kind, Message};
+                        use gateway_core::engine::middleware::websocket::{Kind, Message};
                         let receive = session.receive();
                         tokio::pin!(receive);
                         tokio::select! {

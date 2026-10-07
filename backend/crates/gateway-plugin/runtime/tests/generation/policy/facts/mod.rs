@@ -41,7 +41,10 @@ async fn facts_are_readable_without_replacing_or_duplicating_the_original_execut
         bindings: vec![binding(MIDDLEWARE_CONTRIBUTION, "attempt", 0, PluginFailurePolicy::Reject)],
     }], package).await;
     let generation = prepare(&runtime).await;
-    let plan = runtime.middleware_registry().resolve(&generation).unwrap();
+    let plan = runtime
+        .execution_registry()
+        .middleware(&generation)
+        .unwrap();
     let metadata = ProviderCallMetadata::new(
         ProviderKind::new("openai").unwrap(),
         UpstreamModelId::new("native-model").unwrap(),

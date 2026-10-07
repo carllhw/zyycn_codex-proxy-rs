@@ -1,7 +1,10 @@
 //! 验证混合中间件挂载保持独立顺序与各次调用的续接状态
 
 use super::*;
-use gateway_core::middleware::{compose, http, service, websocket};
+use gateway_core::{
+    engine::middleware::{http, service, websocket},
+    middleware::compose,
+};
 use http_body_util::BodyExt as _;
 
 struct Sender;
@@ -71,7 +74,10 @@ async fn mixed_mounts_keep_independent_order_and_fresh_continuations() {
     )
     .await;
     let generation = prepare(&runtime).await;
-    let plan = runtime.middleware_registry().resolve(&generation).unwrap();
+    let plan = runtime
+        .execution_registry()
+        .middleware(&generation)
+        .unwrap();
     assert!(plan.has_http() && plan.has_websocket() && plan.has_service());
     let mut expected = Vec::new();
     for direction in [

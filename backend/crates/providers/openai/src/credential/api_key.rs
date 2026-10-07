@@ -5,7 +5,7 @@ use std::fmt;
 use secrecy::SecretString;
 use serde::{Deserialize, Serialize};
 
-pub const CODEX_AUTHENTICATION_KIND_API_KEY: &str = "api_key";
+pub(super) use crate::CODEX_AUTHENTICATION_KIND_API_KEY;
 
 use super::types::ResponsesTransport;
 

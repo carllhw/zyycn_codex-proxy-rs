@@ -10,7 +10,7 @@ use futures::future::BoxFuture;
 
 use crate::{
     policy::{ClientApiKeyId, PlaintextClientApiKey},
-    runtime::extensions::{ExtensionSetId, ExtensionSetReference},
+    routing::extensions::{ExtensionSetId, ExtensionSetReference},
 };
 
 pub const MAXIMUM_AUTHORIZATION_BYTES: usize = 8 * 1024;
@@ -18,24 +18,29 @@ pub const MAXIMUM_AUTHORIZATION_BYTES: usize = 8 * 1024;
 /// API 从数据面 Authorization 头构造的有界认证信封
 #[derive(Clone, PartialEq, Eq)]
 pub struct ClientAuthenticationRequest {
-    settings: Option<crate::settings::RequestSettings>,
+    settings: Option<crate::routing::request_settings::RequestSettings>,
     authorization: Arc<str>,
     native_bearer: Option<PlaintextClientApiKey>,
 }
 
 impl ClientAuthenticationRequest {
     #[must_use]
-    pub fn with_settings(mut self, settings: crate::settings::RequestSettings) -> Self {
+    pub fn with_settings(
+        mut self,
+        settings: crate::routing::request_settings::RequestSettings,
+    ) -> Self {
         self.settings = Some(settings);
         self
     }
 
     #[must_use]
-    pub fn settings(&self) -> Option<&crate::settings::RequestSettings> {
+    pub fn settings(&self) -> Option<&crate::routing::request_settings::RequestSettings> {
         self.settings.as_ref()
     }
 
-    pub(crate) fn take_settings(&mut self) -> Option<crate::settings::RequestSettings> {
+    pub(crate) fn take_settings(
+        &mut self,
+    ) -> Option<crate::routing::request_settings::RequestSettings> {
         self.settings.take()
     }
 

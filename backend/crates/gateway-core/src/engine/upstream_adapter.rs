@@ -15,7 +15,7 @@ use crate::{
     metering::{CalculatedCost, Usage},
     operation::Operation,
     routing::UpstreamModelId,
-    runtime::extensions::ExtensionSetReference,
+    routing::extensions::ExtensionSetReference,
 };
 
 use super::{

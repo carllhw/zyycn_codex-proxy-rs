@@ -17,23 +17,21 @@ use axum::{
     http::{HeaderName, HeaderValue, Request, StatusCode},
     response::{IntoResponse as _, Response},
 };
-use gateway_core::{
-    engine::middleware::FrozenMiddlewarePlan,
-    lifecycle::CancellationToken,
-    middleware::{
-        compose,
-        http::{self as contract, Settings},
-    },
-};
+use gateway_core::engine::middleware::FrozenMiddlewarePlan;
+use gateway_core::engine::middleware::http as contract;
+use gateway_core::engine::middleware::http::Settings;
+use gateway_core::lifecycle::CancellationToken;
+use gateway_core::middleware::compose;
 use http_body::{Body as HttpBody, Frame, SizeHint};
 use http_body_util::BodyExt as _;
 use tokio::time::Instant;
 use tower::ServiceExt as _;
 
 tokio::task_local! { static CURRENT: contract::Context; }
-tokio::task_local! { static SETTINGS: Option<gateway_core::settings::RequestSettings>; }
+tokio::task_local! { static SETTINGS: Option<gateway_core::routing::request_settings::RequestSettings>; }
 
-pub(crate) fn current_settings() -> Option<gateway_core::settings::RequestSettings> {
+pub(crate) fn current_settings() -> Option<gateway_core::routing::request_settings::RequestSettings>
+{
     SETTINGS.try_with(Clone::clone).ok().flatten()
 }
 
@@ -52,7 +50,7 @@ pub(crate) async fn scope<T>(
 }
 
 pub(crate) type SettingsSource =
-    Arc<dyn Fn() -> Option<gateway_core::settings::RequestSettings> + Send + Sync>;
+    Arc<dyn Fn() -> Option<gateway_core::routing::request_settings::RequestSettings> + Send + Sync>;
 
 pub(crate) struct RouterDispatcher {
     pub(crate) router: Router,
@@ -60,7 +58,7 @@ pub(crate) struct RouterDispatcher {
 }
 
 impl contract::Dispatcher for RouterDispatcher {
-    fn request_settings(&self) -> Option<gateway_core::settings::RequestSettings> {
+    fn request_settings(&self) -> Option<gateway_core::routing::request_settings::RequestSettings> {
         (self.settings)()
     }
 
@@ -195,12 +193,12 @@ async fn handle(
     });
     request.extensions_mut().insert(guard.clone());
     request.extensions_mut().insert(context.clone());
-    let service_context = gateway_admin::service::Origin {
+    let service_context = gateway_admin::public_service::Origin {
         request_id: context.request_id.clone(),
         call_id: context.call_id.clone(),
         cancellation: context.cancellation.clone(),
         extensions: context.extensions.clone(),
-        plan: gateway_admin::service::Plan::Frozen(plan.clone()),
+        plan: gateway_admin::public_service::Plan::Frozen(plan.clone()),
     };
     request
         .extensions_mut()
@@ -220,7 +218,7 @@ async fn handle(
                     terminal_context,
                     SETTINGS.scope(
                         settings,
-                        gateway_admin::service::scope(
+                        gateway_admin::public_service::scope(
                             service_context,
                             dispatch(router, request.map(Body::new), started),
                         ),

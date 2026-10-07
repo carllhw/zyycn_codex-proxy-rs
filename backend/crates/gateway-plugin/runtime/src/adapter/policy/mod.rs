@@ -1,11 +1,8 @@
 //! 编译插件请求策略与中间件绑定，组合为请求级执行计划
 
-mod http;
 mod middleware;
 mod retry;
 mod route_schedule;
-mod service;
-mod websocket;
 
 use std::{collections::BTreeMap, fmt, sync::Arc, time::Duration};
 

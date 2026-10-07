@@ -22,8 +22,8 @@ use crate::{
     metering::{CostEstimate, CostSource, Usage},
     operation::OperationKind,
     policy::ClientApiKeyId,
+    routing::extensions::{ExtensionSetId, ExtensionSetReference},
     routing::{AccountGroupId, ConfigRevision, PublicModelId},
-    runtime::extensions::{ExtensionSetId, ExtensionSetReference},
     upstream::UpstreamSendState,
 };
 

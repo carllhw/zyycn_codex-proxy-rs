@@ -10,6 +10,7 @@ mod http;
 mod import;
 mod oidc_verifier;
 mod pkce;
+mod quota;
 mod refresh;
 mod repository;
 mod secret;
@@ -26,11 +27,9 @@ pub use config::{
 };
 
 pub use catalog::{
-    GROK_FREE_ROLLING_WINDOW_SECONDS, GrokBillingPresentation, GrokCatalogCache,
-    GrokCatalogCacheError, GrokCatalogScope, GrokCredentialCatalogCache,
+    GrokCatalogCache, GrokCatalogCacheError, GrokCatalogScope, GrokCredentialCatalogCache,
     GrokCredentialCatalogError, GrokCredentialCatalogSeed, GrokCredentialCatalogService,
-    GrokCredentialQuotaService, GrokPlanCatalog, GrokQuotaError, GrokQuotaPeriodKind,
-    GrokQuotaSnapshot,
+    GrokPlanCatalog,
 };
 pub use discovery::DiscoveryDocument;
 pub use error::{
@@ -47,6 +46,10 @@ pub use import::{
 };
 pub use oidc_verifier::ReqwestOidcTokenVerifier;
 pub use pkce::Pkce;
+pub use quota::{
+    GROK_FREE_ROLLING_WINDOW_SECONDS, GrokBillingPresentation, GrokCredentialQuotaService,
+    GrokQuotaError, GrokQuotaPeriodKind, GrokQuotaSnapshot,
+};
 pub use refresh::{
     DueGrokCredential, GrokCredentialRecovery, GrokCredentialRecoveryOutcome,
     GrokCredentialRefreshError, GrokCredentialRefreshOutcome, GrokCredentialRefreshService,

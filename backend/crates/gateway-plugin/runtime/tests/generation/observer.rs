@@ -251,7 +251,7 @@ async fn frozen_plan_applies_scope_order_and_instance_deduplication() {
         RpcLimits::default(),
     )
     .await;
-    let generation = gateway_core::runtime::extensions::ExtensionPreparationPort::prepare(
+    let generation = gateway_core::routing::extensions::ExtensionPreparationPort::prepare(
         &runtime,
         ConfigRevision::new(1).unwrap(),
     )
@@ -322,7 +322,7 @@ async fn websocket_observer_preserves_order_generation_and_complete_payload() {
         RpcLimits::default(),
     )
     .await;
-    let generation = gateway_core::runtime::extensions::ExtensionPreparationPort::prepare(
+    let generation = gateway_core::routing::extensions::ExtensionPreparationPort::prepare(
         &runtime,
         ConfigRevision::new(1).unwrap(),
     )
@@ -416,7 +416,7 @@ async fn websocket_observer_bounds_event_count_and_payload_bytes_without_blockin
         limits,
     )
     .await;
-    let count_generation = gateway_core::runtime::extensions::ExtensionPreparationPort::prepare(
+    let count_generation = gateway_core::routing::extensions::ExtensionPreparationPort::prepare(
         &count_runtime,
         ConfigRevision::new(1).unwrap(),
     )
@@ -487,7 +487,7 @@ async fn websocket_observer_bounds_event_count_and_payload_bytes_without_blockin
         RpcLimits::default(),
     )
     .await;
-    let byte_generation = gateway_core::runtime::extensions::ExtensionPreparationPort::prepare(
+    let byte_generation = gateway_core::routing::extensions::ExtensionPreparationPort::prepare(
         &byte_runtime,
         ConfigRevision::new(1).unwrap(),
     )
@@ -547,7 +547,7 @@ async fn malformed_observer_response_stops_only_the_observer() {
         RpcLimits::default(),
     )
     .await;
-    let generation = gateway_core::runtime::extensions::ExtensionPreparationPort::prepare(
+    let generation = gateway_core::routing::extensions::ExtensionPreparationPort::prepare(
         &runtime,
         ConfigRevision::new(1).unwrap(),
     )
@@ -598,7 +598,7 @@ async fn observer_failure_continues_the_plan_and_timeout_is_bounded() {
         RpcLimits::default(),
     )
     .await;
-    let generation = gateway_core::runtime::extensions::ExtensionPreparationPort::prepare(
+    let generation = gateway_core::routing::extensions::ExtensionPreparationPort::prepare(
         &runtime,
         ConfigRevision::new(1).unwrap(),
     )
@@ -690,7 +690,7 @@ async fn client_scope_filters_observations_and_exposes_only_the_key_identifier()
         RpcLimits::default(),
     )
     .await;
-    let generation = gateway_core::runtime::extensions::ExtensionPreparationPort::prepare(
+    let generation = gateway_core::routing::extensions::ExtensionPreparationPort::prepare(
         &runtime,
         ConfigRevision::new(1).unwrap(),
     )
@@ -767,7 +767,7 @@ async fn completed_observation_contains_terminal_cost_timings_and_failure() {
         RpcLimits::default(),
     )
     .await;
-    let generation = gateway_core::runtime::extensions::ExtensionPreparationPort::prepare(
+    let generation = gateway_core::routing::extensions::ExtensionPreparationPort::prepare(
         &runtime,
         ConfigRevision::new(1).unwrap(),
     )
@@ -874,7 +874,7 @@ async fn observer_backpressure_drops_excess_and_inflight_dispatch_keeps_generati
         limits,
     )
     .await;
-    let generation = gateway_core::runtime::extensions::ExtensionPreparationPort::prepare(
+    let generation = gateway_core::routing::extensions::ExtensionPreparationPort::prepare(
         &runtime,
         ConfigRevision::new(1).unwrap(),
     )
@@ -924,7 +924,7 @@ async fn one_observer_matches_completed_and_websocket_scopes_independently() {
         RpcLimits::default(),
     )
     .await;
-    let generation = gateway_core::runtime::extensions::ExtensionPreparationPort::prepare(
+    let generation = gateway_core::routing::extensions::ExtensionPreparationPort::prepare(
         &runtime,
         ConfigRevision::new(1).unwrap(),
     )

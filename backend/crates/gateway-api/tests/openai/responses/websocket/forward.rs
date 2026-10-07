@@ -19,7 +19,7 @@ use gateway_core::error::{
     ClientVisibleUpstreamError, ClientVisibleUpstreamResponse, ProviderError, ProviderErrorKind,
 };
 use gateway_core::event::{ProtocolWireEvent, ProviderEvent, ProviderResponseHeader};
-use gateway_core::runtime::extensions::{ExtensionSetId, ExtensionSetLease, ExtensionSetReference};
+use gateway_core::routing::extensions::{ExtensionSetId, ExtensionSetLease, ExtensionSetReference};
 use gateway_core::upstream::{OpaqueUpstreamValue, UpstreamSendState};
 use serde_json::{Value, json};
 use tokio::net::TcpStream;

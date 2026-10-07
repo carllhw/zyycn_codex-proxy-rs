@@ -1041,7 +1041,10 @@ fn provider_reported_cost(response: &Value) -> Result<Option<ProviderReportedCos
         return Ok(None);
     };
     let ticks = value.as_u64().ok_or_else(protocol_error_marker)?;
-    // 明确返回的零费用也是上游账单事实，不能当作缺失而改用本地估算
+    // 官方 Grok REST 层会把未报告费用回填为 0，只有正数才是已报告账单
+    if ticks == 0 {
+        return Ok(None);
+    }
     ProviderReportedCost::from_usd_ticks(u128::from(ticks))
         .map(Some)
         .map_err(protocol_error)
@@ -1107,21 +1110,12 @@ fn calculated_cost(
 }
 
 const PRICING_RULES: &[(&[&str], ModelPricing)] = &[
-    (&["grok-4.6", "grok-4.6-latest"], GROK_46_PRICING),
-    (
-        &[
-            "grok-4.5",
-            "grok-4.5-latest",
-            "grok-4.5-build-free",
-            "grok-build-latest",
-        ],
-        GROK_45_PRICING,
-    ),
+    (&["grok-4.6"], GROK_46_PRICING),
+    (&["grok-4.5", "grok-4.5-build-free"], GROK_45_PRICING),
     (
         &[
             "grok-build-0.1",
             "grok-code-fast-1",
-            "grok-code-fast",
             "grok-code-fast-1-0825",
         ],
         GROK_BUILD_PRICING,
@@ -1129,40 +1123,22 @@ const PRICING_RULES: &[(&[&str], ModelPricing)] = &[
     (
         &[
             "grok-4.3",
-            "grok-4.3-latest",
-            "grok-latest",
             "grok-4.20-multi-agent-0309",
             "grok-4.20-multi-agent",
-            "grok-4.20-multi-agent-latest",
-            "grok-4.20-multi-agent-beta-latest",
             "grok-4.20-multi-agent-experimental-beta-0304",
-            "grok-4.20-multi-agent-experimental-beta-latest",
             "grok-4.20-multi-agent-beta-0309",
             "grok-4.20-0309-reasoning",
-            "grok-4.20-reasoning-latest",
             "grok-4.20",
             "grok-4.20-reasoning",
             "grok-4.20-0309",
             "grok-4.20-beta-0309-reasoning",
-            "grok-4.20-beta",
             "grok-4.20-beta-0309",
-            "grok-4.20-beta-latest",
-            "grok-4.20-beta-latest-reasoning",
-            "grok-4.20-beta-reasoning",
             "grok-4.20-experimental-beta-0304-reasoning",
             "grok-4.20-experimental-beta-0304",
-            "grok-4.20-experimental-beta-reasoning-latest",
-            "grok-4.20-experimental-beta-latest",
-            "grok-4.20-reasoning-gv2",
             "grok-4.20-0309-non-reasoning",
             "grok-4.20-non-reasoning",
-            "grok-4.20-non-reasoning-latest",
-            "grok-4.20-beta-non-reasoning",
-            "grok-4.20-beta-latest-non-reasoning",
             "grok-4.20-experimental-beta-0304-non-reasoning",
-            "grok-4.20-experimental-beta-non-reasoning-latest",
             "grok-4.20-beta-0309-non-reasoning",
-            "grok-4.20-non-reasoning-gv2",
         ],
         GROK_43_PRICING,
     ),
@@ -1224,7 +1200,9 @@ fn incomplete_finish_reason(response: &Value) -> FinishReason {
         .pointer("/incomplete_details/reason")
         .and_then(Value::as_str)
     {
-        Some("max_output_tokens" | "max_tokens") => FinishReason::Length,
+        Some("max_output_tokens" | "max_tokens" | "max_prompt_tokens" | "max_time_limit") => {
+            FinishReason::Length
+        }
         Some("content_filter") => FinishReason::ContentFilter,
         _ => FinishReason::Other,
     }

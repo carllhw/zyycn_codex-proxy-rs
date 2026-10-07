@@ -93,7 +93,7 @@ async fn execute(
         Some(plugin_runtime.clone()),
         Some(plugin_runtime.observer_registry()),
         Some(plugin_runtime.policy_registry()),
-        Some(plugin_runtime.middleware_registry()),
+        Some(plugin_runtime.execution_registry()),
     );
     let management = ManagementPorts::new(&store, providers.admin.clone(), core.snapshot_control());
     or_shutdown!(plugin_runtime, management.bind(&plugin_runtime));
@@ -110,7 +110,7 @@ async fn execute(
         providers.admin,
         std::sync::Arc::new(gateway_host::pricing::ModelsDevPricing),
     );
-    let mut services = gateway_admin::service::Registry::new(service_middleware(
+    let mut services = gateway_admin::public_service::Registry::new(service_middleware(
         core.snapshots(),
         &plugin_runtime,
     ));

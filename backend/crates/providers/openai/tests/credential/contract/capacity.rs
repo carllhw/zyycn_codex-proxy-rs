@@ -7,7 +7,7 @@ use gateway_core::engine::policy::{
     AccountScheduleDecision, AccountScheduleInput, ModelRouteDecision, ModelRouteInput,
     RequestPolicyContext, RequestPolicyFault, RequestPolicyPlan,
 };
-use gateway_core::runtime::extensions::{ExtensionSetId, ExtensionSetLease, ExtensionSetReference};
+use gateway_core::routing::extensions::{ExtensionSetId, ExtensionSetLease, ExtensionSetReference};
 
 use super::*;
 

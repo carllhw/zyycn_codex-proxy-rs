@@ -247,7 +247,7 @@ fn sdk_settings_contract_matches_host_declarations() {
             _ => None,
         })
         .collect();
-    let register = source(root, "src/service/settings.rs")
+    let register = source(root, "src/public_service/settings.rs")
         .items
         .into_iter()
         .find_map(|item| match item {
@@ -293,7 +293,7 @@ fn sdk_settings_contract_matches_host_declarations() {
     let generated = quote! {
         //! 宿主设置服务的操作标识与请求、响应数据合同
         //!
-        //! 从宿主设置类型与 service/settings.rs 生成；更新命令见 SDK 维护说明
+        //! 从宿主设置类型与 public_service/settings.rs 生成；更新命令见 SDK 维护说明
 
         use super::Operation;
         use serde::{Deserialize, Serialize};

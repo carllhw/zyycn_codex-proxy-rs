@@ -59,12 +59,12 @@ use crate::credential::{
     CodexCredentialRefreshService, CodexCredentialRepository, CodexCredentialSelector,
     CodexCyberPolicyScope, CodexQuotaRefreshPolicy, CodexSessionAffinity, CredentialSelectionError,
     RuntimeCodexCookie, SelectCodexCredential, SelectCodexProviderEndpointCredential,
-    account_session_with_headers, derive_codex_cyber_policy_session_key,
-    derive_codex_endpoint_session_affinity, derive_codex_session_affinity,
-    derive_codex_transport_key, derive_endpoint_affinity_with_headers,
-    derive_live_session_affinity, derive_previous_response_id_hash, derive_turn_alias,
-    turn_id_with_headers,
+    derive_codex_cyber_policy_session_key, derive_codex_endpoint_session_affinity,
+    derive_codex_session_affinity, derive_codex_transport_key,
+    derive_endpoint_affinity_with_headers, derive_live_session_affinity,
+    derive_previous_response_id_hash, derive_turn_alias,
 };
+use crate::request_identity::{account_session_with_headers, turn_id_with_headers};
 use crate::session_transport::CodexSessionTransportRecovery;
 use crate::transport::canonical::{
     CodexCanonicalDecoder, CodexCanonicalError, CodexCanonicalOutcome,
@@ -704,7 +704,7 @@ impl CodexProvider {
         validate_openai_reasoning(generate.protocol_payload().body())?;
         let mut upstream = encode_generate_request(&generate, upstream_model.as_str(), None)
             .map_err(map_request_error)?;
-        upstream.client_account_follow_only = crate::credential::follows_session_with_headers(
+        upstream.client_account_follow_only = crate::request_identity::follows_session_with_headers(
             generate.protocol_payload().body(),
             generate.protocol_payload().context(),
             &middleware_headers,
@@ -1002,7 +1002,7 @@ impl CodexProvider {
                 .client_for_request(&context)?
                 .for_account(lease.account())
                 .map_err(|error| map_client_error(error, UpstreamSendState::NotSent, false).error)?
-                .with_authentication(lease.authentication())
+                .with_responses_api_base_url(lease.authentication().responses_api_base_url())
                 .with_connection_budget(context.connection_budget().clone())
                 .with_response_control(context.response_control().cloned())
                 .with_middleware_headers(middleware_headers),

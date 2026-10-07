@@ -1,6 +1,7 @@
 //! 对账只从已发布集合开始；通知合并，实例串行，失败和停用不阻塞其他实例
 
-use super::{PluginRuntime, PreparedSet, RpcSession};
+use super::{PluginRuntime, set::PreparedSet};
+use crate::RpcSession;
 use futures::{StreamExt as _, future::BoxFuture};
 use gateway_core::{
     lifecycle::CancellationToken,

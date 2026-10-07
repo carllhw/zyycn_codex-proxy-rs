@@ -101,17 +101,7 @@ pub enum AttemptTrigger {
     AccountRetry,
 }
 
-/// Provider 可为当前 attempt 选择的请求局部传输档位
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
-pub enum AttemptTransport {
-    /// 使用 Provider 的默认传输策略
-    #[default]
-    Default,
-    /// 固定账号重试 Provider 的首选传输；序号由 Provider 的独立预算驱动
-    Retry(NonZeroU32),
-    /// 使用 Provider 定义的备用传输
-    Fallback,
-}
+pub use crate::upstream::AttemptTransport;
 
 impl AttemptTrigger {
     #[must_use]

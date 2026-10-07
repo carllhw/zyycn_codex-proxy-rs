@@ -101,7 +101,7 @@ sequenceDiagram
 
 ## 本地验证
 
-设置服务的 SDK 类型和操作由宿主领域类型及[操作声明](../../gateway-admin/src/service/settings.rs)生成，SDK 构建不依赖宿主源码。
+设置服务的 SDK 类型和操作由宿主领域类型及[操作声明](../../gateway-admin/src/public_service/settings.rs)生成，SDK 构建不依赖宿主源码。
 修改宿主合同后，在仓库根目录更新生成文件；Admin 合同测试会检查生成结果是否同步：
 
 ```bash

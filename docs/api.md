@@ -322,6 +322,10 @@ OAuth 账号默认 `prefer_websocket`，客户端使用 HTTP/SSE 时仍可能选
 客户端配置的 `supports_websockets` 只控制第一段连接，不是服务端传输策略开关。
 上游在响应终态前发送 Close 1000 仍属于失败，不能按“正常关闭”计为成功
 
+内建 xAI 适配器不支持 `generate=false` 的非生成预热请求，在发送推理请求前返回
+`400 unsupported_prewarm`，不会将其当作普通生成调用。`generate=true` 或省略该字段正常执行；
+客户端可跳过预热继续正式请求，外部插件 adapter 按各自的协议能力处理
+
 Codex OAuth backend 的候选上游为 WS 时，无 `previous_response_id` 的普通新链若规范化
 `response.create` 达到 15 MiB，发送前选择 HTTP/SSE；HTTP 和 WS 入站均适用，下游交付协议不变。
 该阈值为已观察到的上游消息大小边界预留余量，不是网关输入长度上限或 OpenAI 公布的统一限制；
@@ -359,7 +363,9 @@ API Key 上游返回完整 Codex `models` 目录时沿用该合同；仅返回�
 未提供的推理能力保持未知，不补充推理档位。
 模型别名仅替换 `slug`，不替换上游展示名、提示词、能力或 `priority`；保持原生模型顺序，新增别名附在后面。
 目录按当前路由快照的模型存在性及账号模型政策过滤，避免公布已知无法路由的模型；新模型需待后台目录对账后进入列表。
-xAI 没有 Codex 原生目录，继续使用明确的通用画像适配
+xAI 没有 Codex 原生目录，使用官方 CLI proxy 当前目录生成通用画像。推理菜单读取
+`reasoning_efforts` 对象列表，默认值只取菜单中的显式标记；缺失时保持未知，不以首项代替，
+也不回退旧字段或其他端点的目录形状
 
 目录账号只能来自本次 Client Key 冻结的账号范围。OpenAI 的 OAuth 目录按账号 ID 排序，使用首个成功读取的
 合格账号，最多尝试三个账号；API Key 目录按账号模型权限过滤后聚合。同名模型优先采用 OAuth 原生对象，
@@ -380,7 +386,8 @@ xAI 没有 Codex 原生目录，继续使用明确的通用画像适配
 Codex 专用目录中的 `context_window` 与 `max_context_window` 分别表示默认上下文窗口和客户端本地
 覆盖的上限。OpenAI Provider 原样保留上游对应字段，缺失与 `null` 不互相转换；网关不通过部署配置
 覆盖这些值。Codex 客户端配置 `model_context_window` 后，按该值与非空 `max_context_window` 的较小值
-使用窗口；上限为空时保留客户端本地值。xAI 目录只声明一个窗口，其 Provider 继续以该值作为客户端覆盖上限
+使用窗口；上限为空时保留客户端本地值。xAI 默认窗口取 `context_window`，缺失时取 `context_windows`
+中的首个有效值；覆盖上限取默认窗口和可选窗口的最大值，只有标量时以该值作为上限
 
 ### 透传与错误恢复
 
@@ -397,6 +404,16 @@ Authorization、Cookie、account ID、originator 和 User-Agent 均由代理安�
 Responses wire 之间的协议转换层，转换只在 xAI Provider 内完成。
 上游结构化错误的 message/code/type 按上述边界交付客户端，其中内嵌的账号指纹 UUID 已脱敏。模型映射是
 全局精确映射，未命中时模型名原样交给候选 Provider；分组只限定账号集合，不参与模型改名
+
+xAI 编码器同样保留路由选定的完整模型名，不内置 `grok`、`grok-latest` 等旧型号别名，也不剥离模型前缀；
+需要别名时使用显式模型映射。目录读取失败按错误处理，不用硬编码旧型号补全能力
+
+xAI 的 `reasoning.effort` 接受 `none / minimal / low / medium / high / xhigh / max`，去除两端
+空白并转为小写后保留档位，不按模型名称降档或删除；模型是否支持该选择由上游判断。
+未知值或错误类型返回字段错误，其他 reasoning 字段保留。`web_search.filters` 支持
+`allowed_domains` 与 `excluded_domains`，两者不能同时为非空；客户端函数与托管搜索工具
+同名时使用内部别名，并在返回工具调用时还原客户端名称。搜索工具的旧顶层 `allowed_domains`
+不再映射到 filters，直接返回请求错误
 
 OpenAI 明确返回 `server_is_overloaded`、`slow_down` 或模型容量不足错误时，代理在允许安全重放且
 尚未交付输出的前提下，先做最多 3 次同账号重试，再通过现有调度换号。没有有效服务器建议时，
@@ -982,6 +999,9 @@ OAuth start 使用：
   `quota_exhausted`。额度观测不会清除凭据过期、无效或封禁事实；这些事实统一投影为 `error`，并由
   `errorReason` 区分。额度接口的 401/403 也不足以判定 refresh token 永久失效，credential 终态只由
   OAuth refresh 的明确永久错误写入
+- xAI 额度百分比只读取 `creditUsagePercent`，缺失时保持未知，不由旧月额度与用量计算。
+  预付余额保留上游账本符号，非零余额及剩余按量额度可独立证明可用；窗口已过期或缺少可用证据时，
+  不凭旧快照恢复账号
 - 正常 Responses 请求会解析上游响应的 rate-limit headers，合并进同一 quota 快照并同步状态。Free、
   K12 等套餐共用该状态机；套餐只参与账号展示和按套餐隔离的模型目录 cache，不存在 K12 专属额度路径
 - 账号详情的 Token 统计、模型排行和列表 Token 汇总优先使用账号级周额度窗口，无可统计的周窗口时
@@ -1800,6 +1820,10 @@ OpenAI Responses 采用首个非前导输出事件，包含 `response.output_ite
 OpenAI 与 xAI 的本地费用估算按实际发送给上游的请求模型（`upstreamModel`）查价，结合响应中的实际
 用量计算；客户端请求 A、路由后发送 B 时按 B 计价，响应返回 C 不改变计价模型。实际发送模型缺少
 定价时不估算，也不借用响应模型的价格。Provider 明确上报的已计费金额仍优先于本地估算
+
+xAI 的 `cost_in_usd_ticks=0` 表示上游没有报告费用，不证明请求免费；正数才作为上游账单。
+未报告时，只有已知价格且能覆盖本次费用的请求才使用本地估算，未知价格或无法覆盖的托管工具费用保持未知。
+动态 latest 与旧 beta/internal 别名不借用具体旧型号的内置价格；显式配置的模型价格仍可用于估算
 
 OpenAI Responses 用量记录的 `serviceTier` 与本地费用估算统一采用 Provider 最终发给上游的请求
 `service_tier`，不使用响应档位覆盖或回退。例如发送 `priority`、响应回显 `default` 时，仍显示

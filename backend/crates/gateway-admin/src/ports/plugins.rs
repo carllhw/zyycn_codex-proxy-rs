@@ -26,7 +26,7 @@ use crate::model::{
         PluginCompatibilityRequirements, PluginSource,
     },
 };
-use gateway_core::runtime::extensions::ExtensionSetReference;
+use gateway_core::routing::extensions::ExtensionSetReference;
 
 /// Admin 准备完整候选并保活到提交后的发布结束；进程状态不能代替持久启用状态
 #[async_trait]

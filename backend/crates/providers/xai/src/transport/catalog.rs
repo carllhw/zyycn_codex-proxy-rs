@@ -570,17 +570,12 @@ fn validate_billing_config(config: &Map<String, Value>) -> Result<(), GrokBillin
             return Err(GrokBillingError::InvalidWire);
         }
     }
-    for field in [
-        "monthlyLimit",
-        "used",
-        "onDemandCap",
-        "onDemandUsed",
-        "prepaidBalance",
-    ] {
+    for field in ["onDemandCap", "onDemandUsed", "prepaidBalance"] {
         if let Some(value) = config.get(field)
             && !value.is_null()
         {
-            validate_cent(value)?;
+            // 预付余额使用带符号的账本金额，限额和已使用量仍须非负
+            validate_cent(value, field == "prepaidBalance")?;
         }
     }
     if let Some(period) = config.get("currentPeriod")
@@ -610,12 +605,14 @@ fn validate_billing_config(config: &Map<String, Value>) -> Result<(), GrokBillin
     Ok(())
 }
 
-fn validate_cent(value: &Value) -> Result<(), GrokBillingError> {
+fn validate_cent(value: &Value, allow_negative: bool) -> Result<(), GrokBillingError> {
     let Value::Object(cent) = value else {
         return Err(GrokBillingError::InvalidWire);
     };
     if let Some(value) = cent.get("val")
-        && value.as_i64().is_none_or(|value| value < 0)
+        && value
+            .as_i64()
+            .is_none_or(|value| !allow_negative && value < 0)
     {
         return Err(GrokBillingError::InvalidWire);
     }
@@ -761,6 +758,7 @@ impl GrokCatalogCapabilities {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GrokCatalogLimits {
     context_window_tokens: Option<NonZeroU64>,
+    max_context_window_tokens: Option<NonZeroU64>,
     max_output_tokens: Option<NonZeroU64>,
 }
 
@@ -769,6 +767,12 @@ impl GrokCatalogLimits {
     #[must_use]
     pub const fn context_window_tokens(&self) -> Option<NonZeroU64> {
         self.context_window_tokens
+    }
+
+    /// 返回目录默认窗口与可选窗口中的最大值；缺失表示未知
+    #[must_use]
+    pub const fn max_context_window_tokens(&self) -> Option<NonZeroU64> {
+        self.max_context_window_tokens
     }
 
     /// 返回明确最大输出 token；缺失表示未知
@@ -958,69 +962,27 @@ enum GrokModelsObject {
 #[derive(Debug, Deserialize)]
 struct GrokModelWire {
     id: Option<String>,
-    model: Option<String>,
-    #[serde(rename = "modelId")]
-    model_id: Option<String>,
+    model: String,
     name: Option<String>,
     description: Option<String>,
-    #[serde(rename = "contextWindow", alias = "context_window")]
     context_window: Option<u64>,
-    #[serde(rename = "maxCompletionTokens", alias = "max_completion_tokens")]
+    #[serde(default)]
+    context_windows: Vec<NonZeroU64>,
     max_completion_tokens: Option<u64>,
-    #[serde(rename = "apiBackend", alias = "api_backend")]
     api_backend: Option<GrokCatalogApiBackend>,
-    #[serde(rename = "supportedInApi", alias = "supported_in_api")]
     supported_in_api: Option<bool>,
-    #[serde(
-        rename = "supportsReasoningEffort",
-        alias = "supports_reasoning_effort"
-    )]
-    supports_reasoning_effort: Option<bool>,
-    #[serde(rename = "reasoningEffort", alias = "reasoning_effort")]
-    reasoning_effort: Option<GrokCatalogReasoningEffort>,
-    #[serde(default, rename = "reasoningEfforts", alias = "reasoning_efforts")]
+    #[serde(default)]
     reasoning_efforts: Vec<GrokReasoningEffortOptionWire>,
-    features: Option<GrokModelFeaturesWire>,
-    #[serde(rename = "supportsBackendSearch", alias = "supports_backend_search")]
     supports_backend_search: Option<bool>,
-    #[serde(rename = "streamToolCalls", alias = "stream_tool_calls")]
     stream_tool_calls: Option<bool>,
     hidden: Option<bool>,
 }
 
 #[derive(Debug, Deserialize)]
-struct GrokModelFeaturesWire {
-    reasoning: Option<bool>,
-    #[serde(rename = "reasoningEffortOptions", alias = "reasoning_effort_options")]
-    reasoning_effort_options: Option<GrokReasoningEffortOptionsWire>,
-}
-
-#[derive(Debug, Deserialize)]
-struct GrokReasoningEffortOptionsWire {
-    #[serde(default, rename = "supportedEfforts", alias = "supported_efforts")]
-    supported_efforts: Vec<GrokCatalogReasoningEffort>,
-    #[serde(rename = "defaultEffort", alias = "default_effort")]
-    default_effort: Option<GrokCatalogReasoningEffort>,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(untagged)]
-enum GrokReasoningEffortOptionWire {
-    Bare(GrokCatalogReasoningEffort),
-    Detailed {
-        value: GrokCatalogReasoningEffort,
-        #[serde(default)]
-        default: bool,
-    },
-}
-
-impl GrokReasoningEffortOptionWire {
-    fn into_parts(self) -> (GrokCatalogReasoningEffort, bool) {
-        match self {
-            Self::Bare(value) => (value, false),
-            Self::Detailed { value, default } => (value, default),
-        }
-    }
+struct GrokReasoningEffortOptionWire {
+    value: GrokCatalogReasoningEffort,
+    #[serde(default)]
+    default: bool,
 }
 
 /// 解析唯一受支持的 Grok 官方完整快照
@@ -1062,8 +1024,8 @@ pub fn parse_grok_model_catalog(
 }
 
 fn normalize_model(wire: GrokModelWire) -> Result<GrokCatalogModel, GrokModelCatalogError> {
-    let actual_model = wire.model.or(wire.model_id).or_else(|| wire.id.clone());
-    let actual_model = actual_model.ok_or(GrokModelCatalogError::InvalidModelSlug)?;
+    let (context_window_tokens, max_context_window_tokens) = context_window_limits(&wire)?;
+    let actual_model = wire.model;
     if !valid_model_slug(&actual_model) {
         return Err(GrokModelCatalogError::InvalidModelSlug);
     }
@@ -1082,55 +1044,28 @@ fn normalize_model(wire: GrokModelWire) -> Result<GrokCatalogModel, GrokModelCat
         validate_public_text(description, MAX_DESCRIPTION_BYTES, true)?;
     }
 
-    let context_window_tokens = optional_positive(wire.context_window)?;
     let max_output_tokens = optional_positive(wire.max_completion_tokens)?;
     let api_backend = wire
         .api_backend
         .filter(|backend| *backend != GrokCatalogApiBackend::Unknown);
     let responses_api = responses_evidence(wire.supported_in_api, api_backend);
-    let features = wire.features;
-    let feature_reasoning = features.as_ref().and_then(|features| features.reasoning);
-    let feature_reasoning_options = features.and_then(|features| features.reasoning_effort_options);
-
-    let mut top_level_menu_default = None;
-    // 未识别的 effort 值不进入能力投影，也不作为默认值候选
-    let top_level_reasoning_efforts =
-        reasoning_effort_menu(wire.reasoning_efforts, &mut top_level_menu_default);
-    let (feature_reasoning_efforts, feature_default_reasoning_effort) = feature_reasoning_options
-        .map_or_else(
-            || (Vec::new(), None),
-            |options| {
-                (
-                    options
-                        .supported_efforts
-                        .into_iter()
-                        .filter(|effort| *effort != GrokCatalogReasoningEffort::Unknown)
-                        .collect::<Vec<_>>(),
-                    options
-                        .default_effort
-                        .filter(|effort| *effort != GrokCatalogReasoningEffort::Unknown),
-                )
-            },
-        );
-    let reasoning_efforts = if feature_reasoning_efforts.is_empty() {
-        top_level_reasoning_efforts
-    } else {
-        feature_reasoning_efforts
-    };
-    let default_reasoning_effort = feature_default_reasoning_effort
-        .or_else(|| {
-            wire.reasoning_effort
-                .filter(|effort| *effort != GrokCatalogReasoningEffort::Unknown)
+    // 固定 CLI proxy 的对象菜单拥有档位与默认值，缺失声明时不替用户选择首项
+    let mut default_reasoning_effort = None;
+    let reasoning_efforts = wire
+        .reasoning_efforts
+        .into_iter()
+        .filter_map(|option| {
+            if option.value == GrokCatalogReasoningEffort::Unknown {
+                return None;
+            }
+            if option.default && default_reasoning_effort.is_none() {
+                default_reasoning_effort = Some(option.value);
+            }
+            Some(option.value)
         })
-        .or(top_level_menu_default)
-        .or_else(|| reasoning_efforts.first().copied());
-    let default_reasoning_effort = default_reasoning_effort
-        .filter(|default| reasoning_efforts.iter().any(|effort| effort == default))
-        .or_else(|| reasoning_efforts.first().copied());
+        .collect::<Vec<_>>();
     let reasoning_effort = if reasoning_efforts.is_empty() {
-        GrokCatalogCapabilityEvidence::from_wire(
-            wire.supports_reasoning_effort.or(feature_reasoning),
-        )
+        GrokCatalogCapabilityEvidence::Unknown
     } else {
         GrokCatalogCapabilityEvidence::DeclaredNative
     };
@@ -1149,6 +1084,7 @@ fn normalize_model(wire: GrokModelWire) -> Result<GrokCatalogModel, GrokModelCat
         },
         limits: GrokCatalogLimits {
             context_window_tokens,
+            max_context_window_tokens,
             max_output_tokens,
         },
         metadata: GrokCatalogMetadata {
@@ -1159,23 +1095,16 @@ fn normalize_model(wire: GrokModelWire) -> Result<GrokCatalogModel, GrokModelCat
     })
 }
 
-fn reasoning_effort_menu(
-    values: Vec<GrokReasoningEffortOptionWire>,
-    menu_default: &mut Option<GrokCatalogReasoningEffort>,
-) -> Vec<GrokCatalogReasoningEffort> {
-    values
+fn context_window_limits(
+    wire: &GrokModelWire,
+) -> Result<(Option<NonZeroU64>, Option<NonZeroU64>), GrokModelCatalogError> {
+    let default =
+        optional_positive(wire.context_window)?.or_else(|| wire.context_windows.first().copied());
+    let maximum = default
         .into_iter()
-        .filter_map(|option| {
-            let (effort, is_default) = option.into_parts();
-            if effort == GrokCatalogReasoningEffort::Unknown {
-                return None;
-            }
-            if is_default && menu_default.is_none() {
-                *menu_default = Some(effort);
-            }
-            Some(effort)
-        })
-        .collect()
+        .chain(wire.context_windows.iter().copied())
+        .max();
+    Ok((default, maximum))
 }
 
 fn responses_evidence(

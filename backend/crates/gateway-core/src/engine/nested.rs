@@ -65,7 +65,7 @@ pub struct NestedModelExecutionRequest {
 /// Core 在绑定时冻结当前
 /// Key 策略；每个实际模型请求仍独立经过准入、预算、账本与计费
 pub struct BoundModelExecutionBinding {
-    pub settings: Option<crate::settings::RequestSettings>,
+    pub settings: Option<crate::routing::request_settings::RequestSettings>,
     pub client_key_id: ClientApiKeyId,
     pub initiating_plugin_instance_id: String,
     /// 身份随父调用或连接回收；每个模型请求使用独立的执行期限

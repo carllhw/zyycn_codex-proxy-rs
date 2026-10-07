@@ -775,12 +775,9 @@ impl CodexBackendClient {
         fallback.send().await.map_err(CodexClientError::HttpJson)
     }
 
-    pub(crate) fn with_authentication(
-        mut self,
-        authentication: &crate::credential::CodexRuntimeAuthentication,
-    ) -> Self {
-        if let crate::credential::CodexRuntimeAuthentication::ApiKey(auth) = authentication {
-            self.base_url = auth.configuration.base_url.trim_end_matches('/').to_owned();
+    pub(crate) fn with_responses_api_base_url(mut self, base_url: Option<&str>) -> Self {
+        if let Some(base_url) = base_url {
+            self.base_url = base_url.trim_end_matches('/').to_owned();
             self.protocol = OpenAiUpstreamProtocol::ResponsesApi;
             self.websocket_origin_key = format!(
                 "{}:{}",
@@ -798,7 +795,7 @@ impl CodexBackendClient {
         let mut client = self.clone();
         client.outbound_proxy = account.outbound_proxy().cloned();
         client.egress_key = egress_key(account.id().as_str(), account.outbound_proxy());
-        if account.authentication_kind() == crate::credential::CODEX_AUTHENTICATION_KIND_API_KEY {
+        if account.authentication_kind() == crate::CODEX_AUTHENTICATION_KIND_API_KEY {
             client
                 .egress_key
                 .push_str(&format!(":revision:{}", account.revision().get()));

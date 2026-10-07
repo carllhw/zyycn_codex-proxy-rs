@@ -546,7 +546,7 @@ pub(super) struct TestPluginPorts {
 impl gateway_admin::ports::plugin_management::PluginManagement for TestPluginPorts {
     async fn validate_target(
         &self,
-        _: &gateway_core::runtime::extensions::ExtensionSetReference,
+        _: &gateway_core::routing::extensions::ExtensionSetReference,
         _: &gateway_admin::model::plugins::management::PluginManagementTarget,
     ) -> Result<(), AdminError> {
         Ok(())
@@ -554,7 +554,7 @@ impl gateway_admin::ports::plugin_management::PluginManagement for TestPluginPor
 
     async fn start_callback(
         &self,
-        _: &gateway_core::runtime::extensions::ExtensionSetReference,
+        _: &gateway_core::routing::extensions::ExtensionSetReference,
         _: &gateway_admin::model::plugins::management::PluginManagementTarget,
         _: gateway_admin::model::plugins::management::StartPluginManagementCallback,
         _: &gateway_admin::model::auth::AdminRequestContext,
@@ -564,7 +564,7 @@ impl gateway_admin::ports::plugin_management::PluginManagement for TestPluginPor
     }
     async fn callback(
         &self,
-        _: &gateway_core::runtime::extensions::ExtensionSetReference,
+        _: &gateway_core::routing::extensions::ExtensionSetReference,
         _: &gateway_admin::model::plugins::management::PluginManagementTarget,
         _: &str,
         request: gateway_admin::model::plugins::management::PluginManagementRequest,
@@ -576,14 +576,14 @@ impl gateway_admin::ports::plugin_management::PluginManagement for TestPluginPor
     }
     async fn views(
         &self,
-        _: &gateway_core::runtime::extensions::ExtensionSetReference,
+        _: &gateway_core::routing::extensions::ExtensionSetReference,
     ) -> Result<Vec<gateway_admin::model::plugins::management::PluginManagementView>, AdminError>
     {
         Ok(Vec::new())
     }
     async fn resource(
         &self,
-        _: &gateway_core::runtime::extensions::ExtensionSetReference,
+        _: &gateway_core::routing::extensions::ExtensionSetReference,
         _: &gateway_admin::model::plugins::management::PluginManagementTarget,
         path: &str,
         public: bool,
@@ -596,7 +596,7 @@ impl gateway_admin::ports::plugin_management::PluginManagement for TestPluginPor
     }
     async fn handle(
         &self,
-        _: &gateway_core::runtime::extensions::ExtensionSetReference,
+        _: &gateway_core::routing::extensions::ExtensionSetReference,
         _: &gateway_admin::model::plugins::management::PluginManagementTarget,
         request: gateway_admin::model::plugins::management::PluginManagementRequest,
     ) -> Result<gateway_admin::model::plugins::management::PluginManagementResponse, AdminError>
@@ -611,7 +611,7 @@ impl gateway_admin::ports::plugin_management::PluginManagement for TestPluginPor
 impl gateway_admin::ports::plugins::PluginStateLifecycle for TestPluginPorts {
     async fn activate_state(
         &self,
-        _: &gateway_core::runtime::extensions::ExtensionSetReference,
+        _: &gateway_core::routing::extensions::ExtensionSetReference,
         _: &gateway_admin::model::plugins::instances::PluginInstance,
     ) -> Result<(), AdminError> {
         Ok(())
@@ -621,7 +621,7 @@ impl gateway_admin::ports::plugins::PluginStateLifecycle for TestPluginPorts {
     }
     async fn migrate_state(
         &self,
-        _: &gateway_core::runtime::extensions::ExtensionSetReference,
+        _: &gateway_core::routing::extensions::ExtensionSetReference,
         _: gateway_admin::model::plugins::state::PluginStateTransition,
     ) -> Result<(), AdminError> {
         panic!("unexpected state migration")
@@ -647,7 +647,7 @@ impl gateway_admin::ports::plugins::PluginPreparation for TestPluginPorts {
     async fn prepare(
         &self,
         _: gateway_admin::model::plugins::instances::PluginInstanceSnapshot,
-    ) -> Result<gateway_core::runtime::extensions::ExtensionSetReference, AdminError> {
+    ) -> Result<gateway_core::routing::extensions::ExtensionSetReference, AdminError> {
         Err(AdminError::invalid("unused plugin fixture"))
     }
 }
@@ -658,7 +658,7 @@ impl gateway_admin::ports::plugins::PluginRuntimeDiagnostics for TestPluginPorts
         &self,
         snapshot: &gateway_admin::model::plugins::instances::PluginInstanceSnapshot,
         _: Option<u64>,
-        _: Option<&gateway_core::runtime::extensions::ExtensionSetReference>,
+        _: Option<&gateway_core::routing::extensions::ExtensionSetReference>,
     ) -> Option<BTreeMap<String, gateway_admin::model::plugins::instances::PluginInstanceRuntime>>
     {
         Some(

@@ -10,6 +10,7 @@ use chrono::{DateTime, Utc};
 use gateway_admin::model::system::{
     SystemOperationKind, SystemOperationState, SystemOperationStatus, SystemUpdateStatus,
 };
+use gateway_admin::ports::system::SystemOperationErrorKind;
 use serde::{Deserialize, Serialize};
 
 use super::installation::ReleaseFiles;
@@ -235,7 +236,7 @@ pub(crate) fn recover_interrupted(path: &Path, lock_path: &Path) -> Result<(), O
     }
     let _lock = match OperationFileLock::acquire(lock_path) {
         Ok(lock) => lock,
-        Err(error) if error.kind() == super::SystemOperationErrorKind::Conflict => return Ok(()),
+        Err(error) if error.kind() == SystemOperationErrorKind::Conflict => return Ok(()),
         Err(error) => return Err(error),
     };
     if let (Some(operation_id), Some(kind)) = (state.operation.operation_id, state.operation.kind) {
@@ -392,13 +393,6 @@ pub(crate) fn reconcile_installation(
     }
     // 指纹证明磁盘仍是本进程安装的候选，回滚到旧版本也必须等待重启
     read_status(path, need_restart)
-}
-
-pub(crate) fn default_temp_dir(state_file: &Path) -> PathBuf {
-    state_file
-        .parent()
-        .map(|parent| parent.join("update-tmp"))
-        .unwrap_or_else(|| std::env::temp_dir().join("codex-proxy-rs-update"))
 }
 
 fn stale_lock(path: &Path) -> Result<bool, OperationError> {

@@ -1,6 +1,7 @@
 //! xAI continuation 与 reasoning replay 状态处理
 
 use super::*;
+use crate::transport::GrokReplayItem;
 
 #[derive(Clone, Serialize, Deserialize)]
 pub(super) struct XaiSessionState {
@@ -147,7 +148,12 @@ fn apply_replay(
 ) -> Result<(), ProviderError> {
     let mut input = replay_input_for_account(previous, account.as_str(), true);
     input.reserve(current_input.len());
-    input.extend(current_input.iter().cloned());
+    input.extend(
+        current_input
+            .iter()
+            .cloned()
+            .map(GrokReplayItem::UpstreamInput),
+    );
     request.set_replay_input(input).map_err(map_request_error)?;
     request.set_previous_response_id(None);
     request.inherit_session(None);
@@ -158,21 +164,24 @@ pub(super) fn replay_input_for_account(
     state: &XaiSessionState,
     account_id: &str,
     force_portable: bool,
-) -> Vec<Value> {
+) -> Vec<GrokReplayItem> {
     state
         .transcript
         .iter()
         .filter_map(|item| match item {
-            XaiReplayItem::ClientInput(value) | XaiReplayItem::SanitizedOutput(value) => {
-                Some(value.clone())
+            XaiReplayItem::ClientInput(value) => Some(GrokReplayItem::UpstreamInput(value.clone())),
+            XaiReplayItem::SanitizedOutput(value) => {
+                Some(GrokReplayItem::ClientOutput(value.clone()))
             }
             XaiReplayItem::AccountOutput {
                 account_id: owner,
                 item,
             } if owner == account_id && !force_portable => {
-                portable_output_item(item.clone(), false)
+                portable_output_item(item.clone(), false).map(GrokReplayItem::ClientOutput)
             }
-            XaiReplayItem::AccountOutput { item, .. } => portable_output_item(item.clone(), true),
+            XaiReplayItem::AccountOutput { item, .. } => {
+                portable_output_item(item.clone(), true).map(GrokReplayItem::ClientOutput)
+            }
         })
         .collect()
 }

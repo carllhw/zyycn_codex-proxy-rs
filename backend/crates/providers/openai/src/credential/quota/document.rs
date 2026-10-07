@@ -172,3 +172,75 @@ fn normalize_limit_id(value: &str) -> Option<String> {
     (!value.is_empty() && value.len() <= 128 && !value.chars().any(char::is_control))
         .then(|| value.to_ascii_lowercase().replace('-', "_"))
 }
+
+/// 丢弃 core 限额中上游给出的无事实 `secondary_window` 占位
+///
+/// 生产响应头可能携带 `used_percent=0`、零时长和空 reset 的占位，`/usage` 也会
+/// 返回 `secondary_window: null`
+/// 正常被动同步保留该响应事实，Admin 展示会将其
+/// 隐藏；但主动 `/usage` 刷新或 402 确认投影会把一个存在但无事实的字段写成
+/// 100%，从而显示并不存在的“次级额度”
+/// 因此这些非被动写入口在落库前移除
+/// 无事实值
+/// 带 reset、时长、正用量、触顶、未知或非法字段的次级窗口均完全按
+/// 原有额度逻辑保留
+pub(super) fn normalize_quota_window_placeholders(
+    mut quota: Map<String, Value>,
+) -> Map<String, Value> {
+    quota = canonicalize_rate_limit_document(quota);
+    if let Some(rate_limit) = quota
+        .get_mut(RATE_LIMITS_BY_LIMIT_ID)
+        .and_then(Value::as_object_mut)
+        .and_then(|limits| limits.get_mut(DEFAULT_CODEX_LIMIT_ID))
+        .and_then(Value::as_object_mut)
+    {
+        drop_secondary_window_placeholder(rate_limit);
+    }
+    quota
+}
+
+fn drop_secondary_window_placeholder(rate_limit: &mut Map<String, Value>) {
+    let placeholder = rate_limit.get("secondary_window").is_some_and(|window| {
+        window.is_null()
+            || window
+                .as_object()
+                .is_some_and(secondary_window_is_placeholder)
+    });
+    if placeholder {
+        rate_limit.remove("secondary_window");
+    }
+}
+
+fn secondary_window_is_placeholder(window: &Map<String, Value>) -> bool {
+    window.iter().all(|(field, value)| match field.as_str() {
+        "used_percent" => value
+            .as_f64()
+            .is_some_and(|used_percent| used_percent.is_finite() && used_percent == 0.0),
+        "limit_reached" => value.as_bool() == Some(false),
+        _ => false,
+    })
+}
+
+/// 上游额度可确认套餐变更；同族泛化值不能丢弃 JWT 已给出的具体 SKU
+pub(super) fn observed_account_plan(
+    current: Option<&str>,
+    observed: Option<&str>,
+) -> Option<String> {
+    let plan = observed?.trim().to_ascii_lowercase();
+    if plan.is_empty() || plan == "unknown" {
+        return None;
+    }
+    // 套餐族沿用官方 codex_protocol::account::PlanType 的分类
+    let current = current.unwrap_or_default().trim().to_ascii_lowercase();
+    let generalized = matches!(
+        (plan.as_str(), current.as_str()),
+        (
+            "team",
+            "self_serve_business_prolite" | "self_serve_business_usage_based"
+        ) | (
+            "business",
+            "ent26" | "enterprise_cbp_automation" | "enterprise_cbp_usage_based"
+        ) | ("edu" | "education", "edu_plus" | "edu_pro")
+    );
+    (!generalized).then_some(plan)
+}

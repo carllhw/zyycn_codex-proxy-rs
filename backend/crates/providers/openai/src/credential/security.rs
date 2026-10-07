@@ -46,6 +46,14 @@ pub enum CodexRuntimeAuthentication {
 }
 
 impl CodexRuntimeAuthentication {
+    /// 传输只消费公开连接设置，不读取凭据枚举或秘密
+    pub(crate) fn responses_api_base_url(&self) -> Option<&str> {
+        match self {
+            Self::ApiKey(auth) => Some(&auth.configuration.base_url),
+            Self::OAuth(_) => None,
+        }
+    }
+
     pub fn authorization_header(&self) -> Result<SecretString, CodexCredentialDataError> {
         match self {
             Self::ApiKey(auth) => Ok(SecretString::from(format!(

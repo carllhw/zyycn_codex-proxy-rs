@@ -669,6 +669,40 @@ async fn shutdown_timeout_aborts_uncooperative_task_and_drops_guard() {
 }
 
 #[tokio::test]
+async fn dropping_shutdown_aborts_current_and_unjoined_workers() {
+    let task = HungTask {
+        entered: Arc::new(AtomicBool::new(false)),
+        notification: Arc::new(Notify::new()),
+    };
+    let leases = Arc::new(FakeLeasePort::default());
+    let supervisor = supervisor();
+    supervisor
+        .start(
+            all_active_plan(task),
+            leases.clone(),
+            Arc::new(RecordingDiagnostics::default()),
+        )
+        .expect("complete plan");
+    wait_until(|| lock_unpoisoned(&leases.active_guards).len() == ACTIVE_KINDS.len()).await;
+
+    let mut shutdown = Box::pin(supervisor.shutdown(Duration::from_secs(60)));
+    assert!(futures::poll!(&mut shutdown).is_pending());
+    drop(shutdown);
+    // Supervisor 仍存活，shutdown 自己必须回收当前等待和尚未轮到的所有任务
+    wait_until(|| lock_unpoisoned(&leases.active_guards).is_empty()).await;
+    assert!(
+        supervisor
+            .health_source()
+            .snapshot()
+            .into_iter()
+            .all(|entry| matches!(
+                entry.state,
+                WorkerRuntimeState::Stopped | WorkerRuntimeState::Disabled
+            ))
+    );
+}
+
+#[tokio::test]
 async fn shutdown_timeout_must_not_rejoin_workers_that_already_exited() {
     // 挂死任务放在 join 顺序最末的 kind（Retention），保证超时触发时
     // 排在它前面的合作任务句柄都已被 join 过一次

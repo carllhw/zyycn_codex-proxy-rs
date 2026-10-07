@@ -59,7 +59,9 @@ pub async fn initialize(config: HostConfig) -> Result<HostBundle, HostError> {
     let log_guard = initialize_logging(&config.logging, config.timezone)?;
     let cancellation = CancellationToken::new();
     let connections = Arc::new(ConnectionTracker::new(cancellation.clone()));
-    let workers = WorkerSupervisor::new(cancellation.clone());
+    // 关闭请求先排空 HTTP/WS，写泵仍需接收在途请求的最后写入
+    // Worker 使用独立信号，只由 drain 结束后的 shutdown 或析构触发
+    let workers = WorkerSupervisor::new(CancellationToken::new());
     let system = Arc::new(ProcessSystemOperations::new(
         cancellation.clone(),
         config.system_update.clone(),
@@ -187,6 +189,14 @@ impl HostBundle {
         }
         result?;
         Ok(())
+    }
+}
+
+impl Drop for HostBundle {
+    fn drop(&mut self) {
+        // CLI、启动失败和 serve future 被丢弃也要通知公共能力停止
+        // WorkerSupervisor 自己负责取消并终止剩余任务
+        self.cancellation.cancel();
     }
 }
 

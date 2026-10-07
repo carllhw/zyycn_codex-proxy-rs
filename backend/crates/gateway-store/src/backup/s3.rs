@@ -7,10 +7,7 @@
 
 use std::collections::HashMap;
 use std::path::Path;
-use std::sync::{
-    Arc, Mutex,
-    atomic::{AtomicU64, Ordering},
-};
+use std::sync::Mutex;
 use std::time::Duration;
 
 use aws_credential_types::Credentials;
@@ -24,9 +21,9 @@ use aws_smithy_types::error::metadata::ProvideErrorMetadata;
 use aws_smithy_types::retry::RetryConfig;
 use aws_smithy_types::timeout::TimeoutConfig;
 use chrono::{DateTime, Utc};
+use futures::{StreamExt as _, TryStreamExt as _, stream};
 use secrecy::ExposeSecret as _;
 use tokio::io::{AsyncReadExt as _, AsyncSeekExt as _, SeekFrom};
-use tokio::sync::Semaphore;
 use uuid::Uuid;
 
 use gateway_admin::model::backup::{
@@ -242,7 +239,7 @@ impl BackupObjectStorePort for S3ObjectStoreAdapter {
             })?
             .to_owned();
 
-        let upload = upload_parts(&client, config, &request, upload_id.clone(), file_size);
+        let upload = upload_parts(&client, config, &request, &upload_id, file_size);
         let outcome = tokio::select! {
             result = upload => result,
             _ = request.cancellation.cancelled() => {
@@ -358,78 +355,43 @@ async fn upload_parts(
     client: &S3Client,
     config: &BackupStorageConfig,
     request: &UploadObjectRequest,
-    upload_id: String,
+    upload_id: &str,
     file_size: u64,
 ) -> Result<(), BackupError> {
     let total_parts = file_size.div_ceil(u64::try_from(PART_SIZE).unwrap_or(u64::MAX));
-    let next_part = Arc::new(AtomicU64::new(1));
-    let semaphore = Arc::new(Semaphore::new(CONCURRENCY));
-    let (sender, mut receiver) = tokio::sync::mpsc::channel::<(i32, String)>(CONCURRENCY * 2);
-
-    let mut workers = Vec::with_capacity(CONCURRENCY);
-    for _ in 0..CONCURRENCY {
-        let client = client.clone();
-        let semaphore = Arc::clone(&semaphore);
-        let next_part = Arc::clone(&next_part);
-        let sender = sender.clone();
-        let source = request.source.clone();
-        let bucket = config.bucket.clone();
-        let key = request.object_key.clone();
-        let upload_id = upload_id.clone();
-        workers.push(tokio::spawn(async move {
-            loop {
-                let part = next_part.fetch_add(1, Ordering::Relaxed);
-                if part > total_parts {
-                    break;
-                }
-                let _permit = semaphore.acquire().await.map_err(|_| {
-                    BackupError::new(code::S3_UPLOAD_FAILED, "上传并发闸门关闭".to_owned())
-                })?;
-                let offset = (part - 1) * (PART_SIZE as u64);
-                let remaining = file_size.checked_sub(offset).ok_or_else(|| {
-                    BackupError::new(code::S3_UPLOAD_FAILED, "分片偏移超出归档大小".to_owned())
-                })?;
-                let part_len = usize::try_from(remaining.min(PART_SIZE as u64)).map_err(|_| {
-                    BackupError::new(code::S3_UPLOAD_FAILED, "分片大小溢出".to_owned())
-                })?;
-                let bytes = read_part(&source, offset, part_len).await?;
-                let part_number = i32::try_from(part).map_err(|_| {
-                    BackupError::new(code::S3_UPLOAD_FAILED, "分片号溢出".to_owned())
-                })?;
-                let response = client
-                    .upload_part()
-                    .bucket(&bucket)
-                    .key(&key)
-                    .upload_id(&upload_id)
-                    .part_number(part_number)
-                    .body(ByteStream::from(bytes))
-                    .send()
-                    .await
-                    .map_err(map_s3_error)?;
-                let etag = response
-                    .e_tag()
-                    .ok_or_else(|| {
-                        BackupError::new(code::S3_UPLOAD_FAILED, "S3 未返回分片 ETag".to_owned())
-                    })?
-                    .to_owned();
-                if sender.send((part_number, etag)).await.is_err() {
-                    break;
-                }
-            }
-            Ok::<(), BackupError>(())
-        }));
-    }
-    drop(sender);
-
-    let mut parts = Vec::new();
-    while let Some((part, etag)) = receiver.recv().await {
-        parts.push((part, etag));
-    }
-    for worker in workers {
-        worker.await.map_err(|_| {
-            BackupError::new(code::S3_UPLOAD_FAILED, "上传分片任务崩溃".to_owned())
-        })??;
-    }
+    // 分片 future 由父上传持有；取消或首次失败时一并释放，SDK 重试不能逃逸到清理之后
+    let mut parts: Vec<_> = stream::iter(1..=total_parts)
+        .map(|part| async move {
+            let offset = (part - 1) * (PART_SIZE as u64);
+            let remaining = file_size.checked_sub(offset).ok_or_else(|| {
+                BackupError::new(code::S3_UPLOAD_FAILED, "分片偏移超出归档大小".to_owned())
+            })?;
+            let part_len = usize::try_from(remaining.min(PART_SIZE as u64))
+                .map_err(|_| BackupError::new(code::S3_UPLOAD_FAILED, "分片大小溢出".to_owned()))?;
+            let bytes = read_part(&request.source, offset, part_len).await?;
+            let part_number = i32::try_from(part)
+                .map_err(|_| BackupError::new(code::S3_UPLOAD_FAILED, "分片号溢出".to_owned()))?;
+            let response = client
+                .upload_part()
+                .bucket(&config.bucket)
+                .key(&request.object_key)
+                .upload_id(upload_id)
+                .part_number(part_number)
+                .body(ByteStream::from(bytes))
+                .send()
+                .await
+                .map_err(map_s3_error)?;
+            let etag = response
+                .e_tag()
+                .ok_or_else(|| {
+                    BackupError::new(code::S3_UPLOAD_FAILED, "S3 未返回分片 ETag".to_owned())
+                })?
+                .to_owned();
+            Ok::<_, BackupError>((part_number, etag))
+        })
+        .buffer_unordered(CONCURRENCY)
+        .try_collect()
+        .await?;
     parts.sort_by_key(|(part, _)| *part);
 
     let completed = CompletedMultipartUpload::builder()
@@ -449,7 +411,7 @@ async fn upload_parts(
         .complete_multipart_upload()
         .bucket(&config.bucket)
         .key(&request.object_key)
-        .upload_id(&upload_id)
+        .upload_id(upload_id)
         .multipart_upload(completed)
         .send()
         .await

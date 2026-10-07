@@ -128,7 +128,7 @@ pub struct CoreStartup {
     providers: ProviderRegistry,
     request_observers: Option<engine::observation::RequestObserverExtensionIndex>,
     request_policies: Option<engine::policy::RequestPolicyExtensionIndex>,
-    middlewares: Option<engine::middleware::MiddlewareExtensionIndex>,
+    execution_extensions: Option<engine::extensions::ExecutionExtensionIndex>,
     frontend_authentication: Option<engine::authentication::FrontendAuthenticationExtensionIndex>,
     control: CoreControlPlaneStartup,
 }
@@ -164,7 +164,7 @@ impl CoreStartup {
             self.providers,
             self.request_observers,
             self.request_policies,
-            self.middlewares,
+            self.execution_extensions,
             self.frontend_authentication,
         ));
         let execution: Arc<dyn ExecutionService> = service.clone();
@@ -194,7 +194,7 @@ fn build_execution_service(
     providers: ProviderRegistry,
     request_observers: Option<engine::observation::RequestObserverExtensionIndex>,
     request_policies: Option<engine::policy::RequestPolicyExtensionIndex>,
-    middlewares: Option<engine::middleware::MiddlewareExtensionIndex>,
+    execution_extensions: Option<engine::extensions::ExecutionExtensionIndex>,
     frontend_authentication: Option<engine::authentication::FrontendAuthenticationExtensionIndex>,
 ) -> DefaultExecutionService {
     let mut service = DefaultExecutionService::new(
@@ -215,8 +215,8 @@ fn build_execution_service(
     if let Some(request_policies) = request_policies {
         service = service.with_request_policies(request_policies);
     }
-    if let Some(middlewares) = middlewares {
-        service = service.with_middlewares(middlewares);
+    if let Some(execution_extensions) = execution_extensions {
+        service = service.with_execution_extensions(execution_extensions);
     }
     if let Some(frontend_authentication) = frontend_authentication {
         service = service.with_frontend_authentication(frontend_authentication);
@@ -276,10 +276,10 @@ impl CoreBundle {
 pub async fn initialize(
     ports: CoreStorePorts,
     providers: ProviderRegistry,
-    extensions: Option<Arc<dyn runtime::extensions::ExtensionPreparationPort>>,
+    extensions: Option<Arc<dyn routing::extensions::ExtensionPreparationPort>>,
     request_observers: Option<engine::observation::RequestObserverExtensionIndex>,
     request_policies: Option<engine::policy::RequestPolicyExtensionIndex>,
-    middlewares: Option<engine::middleware::MiddlewareExtensionIndex>,
+    execution_extensions: Option<engine::extensions::ExecutionExtensionIndex>,
     frontend_authentication: Option<engine::authentication::FrontendAuthenticationExtensionIndex>,
 ) -> Result<CoreBundle, CoreError> {
     prepare(
@@ -288,7 +288,7 @@ pub async fn initialize(
         extensions,
         request_observers,
         request_policies,
-        middlewares,
+        execution_extensions,
         frontend_authentication,
     )
     .activate()
@@ -300,10 +300,10 @@ pub async fn initialize(
 pub fn prepare(
     ports: CoreStorePorts,
     providers: ProviderRegistry,
-    extensions: Option<Arc<dyn runtime::extensions::ExtensionPreparationPort>>,
+    extensions: Option<Arc<dyn routing::extensions::ExtensionPreparationPort>>,
     request_observers: Option<engine::observation::RequestObserverExtensionIndex>,
     request_policies: Option<engine::policy::RequestPolicyExtensionIndex>,
-    middlewares: Option<engine::middleware::MiddlewareExtensionIndex>,
+    execution_extensions: Option<engine::extensions::ExecutionExtensionIndex>,
     frontend_authentication: Option<engine::authentication::FrontendAuthenticationExtensionIndex>,
 ) -> CoreStartup {
     let control = prepare_control_plane(ports.clone(), providers.clone(), extensions);
@@ -312,7 +312,7 @@ pub fn prepare(
         providers,
         request_observers,
         request_policies,
-        middlewares,
+        execution_extensions,
         frontend_authentication,
         control,
     }
@@ -377,7 +377,7 @@ pub struct CoreCommandPlaneStartup {
     providers: ProviderRegistry,
     request_observers: Option<engine::observation::RequestObserverExtensionIndex>,
     request_policies: Option<engine::policy::RequestPolicyExtensionIndex>,
-    middlewares: Option<engine::middleware::MiddlewareExtensionIndex>,
+    execution_extensions: Option<engine::extensions::ExecutionExtensionIndex>,
     control: CoreControlPlaneStartup,
 }
 
@@ -407,7 +407,7 @@ impl CoreCommandPlaneStartup {
                 self.providers,
                 self.request_observers,
                 self.request_policies,
-                self.middlewares,
+                self.execution_extensions,
                 None,
             )
             .with_snapshot_refresh(Arc::clone(&control.publisher)),
@@ -449,10 +449,10 @@ impl CoreCommandPlaneBundle {
 pub fn prepare_command_plane(
     ports: CoreStorePorts,
     providers: ProviderRegistry,
-    extensions: Option<Arc<dyn runtime::extensions::ExtensionPreparationPort>>,
+    extensions: Option<Arc<dyn routing::extensions::ExtensionPreparationPort>>,
     request_observers: Option<engine::observation::RequestObserverExtensionIndex>,
     request_policies: Option<engine::policy::RequestPolicyExtensionIndex>,
-    middlewares: Option<engine::middleware::MiddlewareExtensionIndex>,
+    execution_extensions: Option<engine::extensions::ExecutionExtensionIndex>,
 ) -> CoreCommandPlaneStartup {
     let control = prepare_control_plane(ports.clone(), providers.clone(), extensions);
     CoreCommandPlaneStartup {
@@ -460,7 +460,7 @@ pub fn prepare_command_plane(
         providers,
         request_observers,
         request_policies,
-        middlewares,
+        execution_extensions,
         control,
     }
 }
@@ -470,7 +470,7 @@ pub fn prepare_command_plane(
 pub fn prepare_control_plane(
     ports: CoreStorePorts,
     providers: ProviderRegistry,
-    extensions: Option<Arc<dyn runtime::extensions::ExtensionPreparationPort>>,
+    extensions: Option<Arc<dyn routing::extensions::ExtensionPreparationPort>>,
 ) -> CoreControlPlaneStartup {
     let mut compiler = RuntimeSnapshotCompiler::new(ports.snapshots, Arc::new(providers));
     if let Some(extensions) = extensions {

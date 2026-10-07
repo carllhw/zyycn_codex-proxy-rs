@@ -79,18 +79,25 @@ fn core_value_owners_do_not_depend_on_execution_or_routing() {
             path if path.starts_with("policy/") => {
                 Some(&["account", "identity", "policy", "validation"])
             }
-            "settings/values.rs" | "settings/compiled.rs" => {
-                Some(&["account", "concurrency", "identity", "metering", "policy"])
-            }
+            path if path.starts_with("settings/") => Some(&[
+                "account",
+                "concurrency",
+                "identity",
+                "metering",
+                "policy",
+                "settings",
+            ]),
             path if path.starts_with("account/") => Some(&["account", "identity", "validation"]),
             _ => None,
         };
         let Some(allowed) = allowed else { continue };
         let source = fs::read_to_string(root.join(&relative)).expect("read core source");
         let syntax = syn::parse_file(&source).expect("parse core source");
-        let mut references = CrateReferences::default();
+        let mut references = CrateReferences::in_module(&relative);
         references.visit_file(&syntax);
-        for dependency in references.0 {
+        // 相对路径中的 self 指向当前 owner，不是跨 owner 依赖
+        references.owners.remove(&references.module_path[0]);
+        for dependency in references.owners {
             assert!(
                 allowed.contains(&dependency.as_str()),
                 "{} must not depend on crate::{dependency}",
@@ -100,49 +107,155 @@ fn core_value_owners_do_not_depend_on_execution_or_routing() {
     }
 }
 
+#[test]
+fn core_owner_paths_form_a_dag() {
+    let root = backend_root().join("crates/gateway-core/src");
+    let mut graph = BTreeMap::<String, BTreeSet<String>>::new();
+    for relative in super::rust_files(&root) {
+        if relative == Path::new("lib.rs") {
+            continue;
+        }
+        let mut references = CrateReferences::in_module(&relative);
+        let owner = references.module_path[0].clone();
+        let source = fs::read_to_string(root.join(&relative)).expect("read core source");
+        references.visit_file(&syn::parse_file(&source).expect("parse core source"));
+        references.owners.remove(&owner);
+        graph.entry(owner).or_default().extend(references.owners);
+    }
+    for owner in graph.keys() {
+        let mut pending = graph[owner].iter().cloned().collect::<Vec<_>>();
+        let mut visited = BTreeSet::new();
+        while let Some(dependency) = pending.pop() {
+            assert_ne!(
+                &dependency, owner,
+                "Core owner dependency cycle reaches {owner}"
+            );
+            if visited.insert(dependency.clone())
+                && let Some(next) = graph.get(&dependency)
+            {
+                pending.extend(next.iter().cloned());
+            }
+        }
+    }
+}
+
+#[test]
+fn core_reference_scan_resolves_groups_reexports_and_relative_paths() {
+    let syntax = syn::parse_file(
+        r#"
+        pub use crate::{engine::AttemptContext, settings::SettingsValues as Values};
+        use super::super::runtime as publication;
+        use self::compiled::Value;
+        // crate::ignored::Comment
+        const EXAMPLE: &str = "crate::ignored::Literal";
+        "#,
+    )
+    .expect("parse reference fixture");
+    let mut references = CrateReferences::in_module(Path::new("routing/snapshot.rs"));
+    references.visit_file(&syntax);
+    assert_eq!(
+        references.owners,
+        BTreeSet::from([
+            "engine".to_owned(),
+            "settings".to_owned(),
+            "runtime".to_owned(),
+            "routing".to_owned(),
+        ])
+    );
+}
+
 #[derive(Default)]
-struct CrateReferences(BTreeSet<String>);
+struct CrateReferences {
+    owners: BTreeSet<String>,
+    module_path: Vec<String>,
+}
 
 impl<'ast> Visit<'ast> for CrateReferences {
     fn visit_path(&mut self, path: &'ast syn::Path) {
-        let mut segments = path.segments.iter();
-        if segments
-            .next()
-            .is_some_and(|segment| segment.ident == "crate")
-            && let Some(owner) = segments.next()
-        {
-            self.0.insert(owner.ident.to_string());
-        }
+        self.record(
+            &path
+                .segments
+                .iter()
+                .map(|part| part.ident.to_string())
+                .collect::<Vec<_>>(),
+        );
         syn::visit::visit_path(self, path);
     }
 
     fn visit_item_use(&mut self, item: &'ast syn::ItemUse) {
-        self.use_tree(&item.tree, false);
+        self.use_tree(&item.tree, &mut Vec::new());
     }
 }
 
 impl CrateReferences {
-    fn use_tree(&mut self, tree: &syn::UseTree, crate_root: bool) {
+    fn in_module(relative: &Path) -> Self {
+        let mut module = relative
+            .with_extension("")
+            .components()
+            .map(|part| {
+                part.as_os_str()
+                    .to_str()
+                    .expect("UTF-8 module path")
+                    .to_owned()
+            })
+            .collect::<Vec<_>>();
+        if module.last().is_some_and(|part| part == "mod") {
+            module.pop();
+        }
+        Self {
+            owners: BTreeSet::new(),
+            module_path: module,
+        }
+    }
+
+    fn record(&mut self, path: &[String]) {
+        let Some(first) = path.first() else { return };
+        let owner = if first == "crate" {
+            path.get(1).cloned()
+        } else if first == "self" || first == "super" {
+            let mut module = self.module_path.clone();
+            let mut rest = path;
+            while rest
+                .first()
+                .is_some_and(|part| part == "super" || part == "self")
+            {
+                if rest[0] == "super" {
+                    module.pop();
+                }
+                rest = &rest[1..];
+            }
+            module.first().or_else(|| rest.first()).cloned()
+        } else {
+            None
+        };
+        if let Some(owner) = owner {
+            self.owners.insert(owner);
+        }
+    }
+
+    fn use_tree(&mut self, tree: &syn::UseTree, prefix: &mut Vec<String>) {
         match tree {
-            syn::UseTree::Path(path) if crate_root => {
-                self.0.insert(path.ident.to_string());
+            syn::UseTree::Path(path) => {
+                prefix.push(path.ident.to_string());
+                self.use_tree(&path.tree, prefix);
+                prefix.pop();
             }
-            syn::UseTree::Name(name) if crate_root => {
-                self.0.insert(name.ident.to_string());
+            syn::UseTree::Name(name) => {
+                prefix.push(name.ident.to_string());
+                self.record(prefix);
+                prefix.pop();
             }
-            syn::UseTree::Rename(rename) if crate_root => {
-                self.0.insert(rename.ident.to_string());
+            syn::UseTree::Rename(rename) => {
+                prefix.push(rename.ident.to_string());
+                self.record(prefix);
+                prefix.pop();
             }
-            syn::UseTree::Path(path) => self.use_tree(&path.tree, path.ident == "crate"),
             syn::UseTree::Group(group) => {
                 for item in &group.items {
-                    self.use_tree(item, crate_root);
+                    self.use_tree(item, prefix);
                 }
             }
-            syn::UseTree::Glob(_) if crate_root => {
-                self.0.insert("*".to_owned());
-            }
-            _ => {}
+            syn::UseTree::Glob(_) => self.record(prefix),
         }
     }
 }
@@ -221,7 +334,7 @@ const ADAPTER_PUBLIC_MODULES: &[(&str, &[&str])] = &[
         "crates/providers/openai",
         &["config", "credential", "transport"],
     ),
-    ("crates/providers/xai", &["credential", "transport"]),
+    ("crates/providers/xai", &["transport"]),
 ];
 
 /// 不对应单一生产模块、而是校验 crate/workspace 整体契约的根级测试场景
